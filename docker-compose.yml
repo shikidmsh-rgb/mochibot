@@ -1,0 +1,11 @@
+services:
+  mochibot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+      - ./prompts:/app/prompts
+    # Uncomment to expose admin portal
+    # ports:
+    #   - "8080:8080"

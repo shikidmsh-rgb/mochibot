@@ -1,0 +1,1286 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🍡 MochiBot 管理后台</title>
+<style>
+:root {
+  --primary: #D4785C;
+  --primary-hover: #B8604A;
+  --primary-bg: #FDF5F2;
+  --dango-pink: #E8A0BF;
+  --dango-green: #7BAE7F;
+  --bg: #FAF7F4;
+  --card: #FFFFFF;
+  --text: #4A4543;
+  --text-heading: #2D2926;
+  --text-soft: #9A9593;
+  --border: #E8DDD4;
+  --success: #7BAE7F;
+  --danger: #C9544D;
+  --warning: #D4A84C;
+  --radius: 12px;
+  --shadow: 0 2px 12px rgba(180,96,74,0.08);
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--text); display:flex; min-height:100vh; }
+/* ── Sidebar ─────────────────────────── */
+.sidebar { width:220px; background:var(--card); border-right:1px solid var(--border); display:flex; flex-direction:column; position:fixed; top:0; left:0; bottom:0; z-index:10; }
+.sidebar-header { padding:20px 16px 12px; border-bottom:1px solid var(--border); text-align:center; }
+.sidebar-header h1 { font-size:18px; color:var(--text-heading); }
+.sidebar-header .logo { font-size:32px; display:block; margin-bottom:4px; }
+.sidebar-nav { flex:1; padding:12px 8px; }
+.nav-item { display:flex; align-items:center; gap:8px; padding:10px 12px; border-radius:8px; cursor:pointer; font-size:14px; color:var(--text); border:none; background:none; width:100%; text-align:left; transition:background .15s; }
+.nav-item:hover { background:var(--primary-bg); }
+.nav-item.active { background:var(--primary-bg); color:var(--primary); font-weight:600; }
+.nav-icon { font-size:16px; width:20px; text-align:center; }
+/* ── Content ─────────────────────────── */
+.content { margin-left:220px; flex:1; padding:24px 32px; max-width:1100px; }
+.page { display:none; }
+.page.active { display:block; }
+.page-title { font-size:22px; font-weight:700; color:var(--text-heading); margin-bottom:20px; }
+/* ── Cards ────────────────────────────── */
+.card { background:var(--card); border:1px solid var(--border); border-radius:var(--radius); padding:20px; margin-bottom:16px; box-shadow:var(--shadow); }
+.card-title { font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; color:var(--text-soft); margin-bottom:12px; }
+.card-row { display:flex; gap:16px; }
+.card-row > .card { flex:1; }
+/* ── Buttons ──────────────────────────── */
+.btn { display:inline-flex; align-items:center; gap:6px; padding:8px 18px; border-radius:20px; font-size:13px; font-weight:600; cursor:pointer; border:1px solid transparent; transition:all .15s; }
+.btn-primary { background:var(--primary); color:#fff; border-color:var(--primary); }
+.btn-primary:hover { background:var(--primary-hover); }
+.btn-ghost { background:transparent; color:var(--primary); border-color:var(--border); }
+.btn-ghost:hover { background:var(--primary-bg); border-color:var(--primary); }
+.btn-danger { background:var(--danger); color:#fff; }
+.btn-danger:hover { opacity:.85; }
+.btn-sm { padding:5px 12px; font-size:12px; }
+/* ── Badges ───────────────────────────── */
+.badge { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; }
+.badge-ok { background:#e8f5e9; color:#2e7d32; }
+.badge-warn { background:#fff3e0; color:#e65100; }
+.badge-err { background:#ffebee; color:#c62828; }
+.badge-info { background:var(--primary-bg); color:var(--primary); }
+.badge-gray { background:#f0ebe5; color:#7a7573; }
+/* ── Toggle ───────────────────────────── */
+.toggle { position:relative; width:42px; height:24px; display:inline-block; }
+.toggle input { opacity:0; width:0; height:0; }
+.toggle .slider { position:absolute; inset:0; background:#ccc; border-radius:24px; cursor:pointer; transition:.2s; }
+.toggle .slider::before { content:""; position:absolute; height:18px; width:18px; left:3px; bottom:3px; background:#fff; border-radius:50%; transition:.2s; }
+.toggle input:checked + .slider { background:var(--success); }
+.toggle input:checked + .slider::before { transform:translateX(18px); }
+/* ── Inputs ───────────────────────────── */
+.form-group { margin-bottom:12px; }
+.form-label { display:block; font-size:12px; font-weight:600; color:var(--text-soft); margin-bottom:4px; text-transform:uppercase; letter-spacing:.3px; }
+.form-input { width:100%; padding:8px 12px; border:1px solid var(--border); border-radius:8px; font-size:14px; color:var(--text); background:var(--card); transition:border .15s; }
+.form-input:focus { outline:none; border-color:var(--primary); }
+select.form-input { cursor:pointer; }
+/* ── Table ────────────────────────────── */
+.tbl { width:100%; border-collapse:collapse; font-size:13px; }
+.tbl th { text-align:left; padding:8px 10px; border-bottom:2px solid var(--border); font-size:11px; text-transform:uppercase; color:var(--text-soft); }
+.tbl td { padding:8px 10px; border-bottom:1px solid var(--border); vertical-align:middle; }
+.tbl tr:last-child td { border-bottom:none; }
+/* ── Toast ────────────────────────────── */
+.toast { position:fixed; bottom:24px; right:24px; background:var(--text-heading); color:#fff; padding:10px 20px; border-radius:8px; font-size:13px; opacity:0; transform:translateY(10px); transition:all .3s; pointer-events:none; z-index:999; }
+.toast.show { opacity:1; transform:translateY(0); }
+/* ── Modal ────────────────────────────── */
+.modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,.35); z-index:100; display:flex; align-items:center; justify-content:center; opacity:0; pointer-events:none; transition:opacity .2s; }
+.modal-overlay.open { opacity:1; pointer-events:auto; }
+.modal { background:var(--card); border-radius:var(--radius); padding:24px; width:520px; max-height:85vh; overflow-y:auto; box-shadow:0 8px 32px rgba(0,0,0,.15); }
+.modal h3 { margin-bottom:16px; color:var(--text-heading); }
+.modal-footer { display:flex; justify-content:flex-end; gap:8px; margin-top:16px; }
+/* ── Status check ─────────────────────── */
+.check-row { display:flex; align-items:center; gap:8px; padding:6px 0; font-size:14px; }
+.check-icon { font-size:16px; width:20px; text-align:center; }
+/* ── Stat cards ───────────────────────── */
+.stat-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:12px; margin-bottom:16px; }
+.stat-card { background:var(--card); border:1px solid var(--border); border-radius:var(--radius); padding:16px; text-align:center; }
+.stat-number { font-size:28px; font-weight:700; color:var(--primary); }
+.stat-label { font-size:12px; color:var(--text-soft); margin-top:4px; }
+/* ── Skill card ───────────────────────── */
+.skill-card { border:1px solid var(--border); border-radius:var(--radius); padding:16px; margin-bottom:12px; background:var(--card); }
+.skill-card.disabled { opacity:.55; }
+.skill-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; }
+.skill-name { font-size:16px; font-weight:700; color:var(--text-heading); }
+.skill-desc { font-size:13px; color:var(--text-soft); margin-bottom:8px; }
+.skill-tools { display:flex; flex-wrap:wrap; gap:4px; margin-bottom:8px; }
+.pill { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; background:#f0ebe5; color:var(--text); }
+.config-list { margin-top:8px; }
+.config-item { display:flex; align-items:center; gap:6px; font-size:13px; padding:3px 0; }
+/* ── Loading ──────────────────────────── */
+.loading { text-align:center; padding:40px; color:var(--text-soft); }
+/* ── Prompt editor ───────────────────── */
+.prompt-editor { width:100%; min-height:320px; padding:12px; border:1px solid var(--border); border-radius:8px; font-family:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace; font-size:13px; line-height:1.6; color:var(--text); background:var(--card); resize:vertical; tab-size:2; }
+.prompt-editor:focus { outline:none; border-color:var(--primary); }
+.prompt-meta { display:flex; align-items:center; justify-content:space-between; margin-top:8px; font-size:12px; color:var(--text-soft); }
+.spinner { display:inline-block; width:24px; height:24px; border:3px solid var(--border); border-top-color:var(--primary); border-radius:50%; animation:spin .6s linear infinite; }
+@keyframes spin { to { transform:rotate(360deg); } }
+/* ── Bot log panel ───────────────────── */
+.bot-log { max-height:260px; overflow-y:auto; background:#1e1e1e; color:#d4d4d4; font-family:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace; font-size:12px; line-height:1.5; padding:10px 12px; border-radius:8px; margin-top:10px; white-space:pre-wrap; word-break:break-all; }
+.bot-log::-webkit-scrollbar { width:6px; }
+.bot-log::-webkit-scrollbar-thumb { background:#555; border-radius:3px; }
+/* ── Mobile ───────────────────────────── */
+.mobile-toggle { display:none; position:fixed; top:12px; left:12px; z-index:20; background:var(--card); border:1px solid var(--border); border-radius:8px; padding:8px 10px; cursor:pointer; font-size:18px; }
+.sidebar-backdrop { display:none; position:fixed; inset:0; background:rgba(0,0,0,.3); z-index:9; }
+@media (max-width:768px) {
+  .mobile-toggle { display:block; }
+  .sidebar { left:-240px; transition:left .2s; }
+  .sidebar.open { left:0; }
+  .sidebar-backdrop.open { display:block; }
+  .content { margin-left:0; padding:60px 16px 24px; }
+}
+</style>
+</head>
+<body>
+<button class="mobile-toggle" onclick="toggleSidebar()">☰</button>
+<div class="sidebar-backdrop" id="sidebar-backdrop" onclick="toggleSidebar()"></div>
+
+<aside class="sidebar" id="sidebar">
+  <div class="sidebar-header">
+    <span class="logo">🍡</span>
+    <h1>MochiBot</h1>
+  </div>
+  <nav class="sidebar-nav" id="sidebar-nav">
+    <button class="nav-item active" data-page="welcome"><span class="nav-icon">🏠</span> 设置</button>
+    <button class="nav-item" data-page="models"><span class="nav-icon">🤖</span> 模型</button>
+    <button class="nav-item" data-page="heartbeat"><span class="nav-icon">💓</span> Heartbeat</button>
+    <button class="nav-item" data-page="basic"><span class="nav-icon">⚙️</span> 基本配置</button>
+    <button class="nav-item" data-page="skills"><span class="nav-icon">⚡</span> 技能</button>
+    <button class="nav-item" data-page="prompts"><span class="nav-icon">📝</span> 人格 & Prompts</button>
+  </nav>
+</aside>
+
+<main class="content">
+<!-- ═══════ Page 0: Welcome ═══════ -->
+<section id="page-welcome" class="page active">
+  <h2 class="page-title">🍡 设置向导</h2>
+  <div id="welcome-content"><div class="loading"><div class="spinner"></div> 加载中...</div></div>
+</section>
+
+<!-- ═══════ Page 1: Models ═══════ -->
+<section id="page-models" class="page">
+  <h2 class="page-title">模型配置</h2>
+  <div id="models-content"><div class="loading"><div class="spinner"></div> 加载中...</div></div>
+</section>
+
+<!-- ═══════ Page 2: Heartbeat ═══════ -->
+<section id="page-heartbeat" class="page">
+  <h2 class="page-title">Heartbeat 配置</h2>
+  <div id="heartbeat-content"><div class="loading"><div class="spinner"></div> 加载中...</div></div>
+</section>
+
+<!-- ═══════ Page 2b: Basic Config ═══════ -->
+<section id="page-basic" class="page">
+  <h2 class="page-title">基本配置</h2>
+  <div id="basic-content"><div class="loading"><div class="spinner"></div> 加载中...</div></div>
+</section>
+
+<!-- ═══════ Page 3: Skills ═══════ -->
+<section id="page-skills" class="page">
+  <h2 class="page-title">技能管理</h2>
+  <div id="skills-content"><div class="loading"><div class="spinner"></div> 加载中...</div></div>
+</section>
+
+<!-- ═══════ Page 4: Prompts ═══════ -->
+<section id="page-prompts" class="page">
+  <h2 class="page-title">人格 & Prompts</h2>
+  <div id="prompts-content"><div class="loading"><div class="spinner"></div> 加载中...</div></div>
+</section>
+</main>
+
+<!-- Modal -->
+<div class="modal-overlay" id="model-modal" onclick="if(event.target===this)closeModelModal()">
+  <div class="modal">
+    <h3 id="model-modal-title">添加模型</h3>
+    <div class="form-group"><label class="form-label">名称</label><input class="form-input" id="mm-name" placeholder="例如 my-gpt4o"></div>
+    <div class="form-group"><label class="form-label">服务商</label>
+      <select class="form-input" id="mm-provider"><option value="openai">OpenAI（兼容）</option><option value="azure_openai">Azure OpenAI</option><option value="anthropic">Anthropic</option></select>
+    </div>
+    <div class="form-group"><label class="form-label">模型</label><input class="form-input" id="mm-model" placeholder="例如 gpt-4o"></div>
+    <div class="form-group"><label class="form-label">API Key</label><input class="form-input" id="mm-apikey" type="password" autocomplete="new-password" placeholder="sk-..."></div>
+    <div class="form-group"><label class="form-label">Base URL（可选）</label><input class="form-input" id="mm-baseurl" placeholder="https://..."></div>
+    <div id="mm-test-result" style="font-size:13px;margin-top:8px"></div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModelModal()">取消</button>
+      <button class="btn btn-ghost" onclick="testModelInModal()">🔌 测试</button>
+      <button class="btn btn-primary" onclick="saveModelFromModal()">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script>
+// Persist token across page refreshes via sessionStorage (cleared when tab closes)
+const _urlToken = new URLSearchParams(location.search).get('token') || '';
+if (_urlToken) {
+  sessionStorage.setItem('_admin_token', _urlToken);
+  // Remove token from URL to prevent exposure in browser history / Referer headers
+  const cleanUrl = new URL(location);
+  cleanUrl.searchParams.delete('token');
+  window.history.replaceState({}, '', cleanUrl);
+}
+const authToken = _urlToken || sessionStorage.getItem('_admin_token') || '';
+let _telegramBotInfo = null; // {username, first_name} — set after successful token test
+
+async function api(method, path, body) {
+  const opts = {method, headers:{'Content-Type':'application/json'}};
+  if (authToken) opts.headers['Authorization'] = 'Bearer ' + authToken;
+  if (body) opts.body = JSON.stringify(body);
+  const r = await fetch('/api' + path, opts);
+  if (!r.ok) { const t = await r.text(); throw new Error(r.status + ': ' + t); }
+  return r.json();
+}
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function showToast(msg) { const t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(t._t); t._t=setTimeout(()=>t.classList.remove('show'),4000); }
+
+// ── Navigation ───────────────────────────
+const loaded = {};
+const loaders = { welcome:loadWelcome, models:loadModels, heartbeat:loadHeartbeat, basic:loadBasic, skills:loadSkills, prompts:loadPrompts };
+
+document.getElementById('sidebar-nav').addEventListener('click', e => {
+  const item = e.target.closest('.nav-item');
+  if (!item) return;
+  const page = item.dataset.page;
+  stopWelcomePolling();
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  item.classList.add('active');
+  document.getElementById('page-' + page).classList.add('active');
+  if (page === 'welcome') { loaded.welcome = false; loadWelcome(); }
+  else if (!loaded[page]) { loaded[page] = true; loaders[page]?.(); }
+  // mobile
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('sidebar-backdrop').classList.remove('open');
+});
+
+function toggleSidebar() {
+  document.getElementById('sidebar').classList.toggle('open');
+  document.getElementById('sidebar-backdrop').classList.toggle('open');
+}
+
+// Auto-load welcome
+loaded.welcome = true;
+loadWelcome();
+
+function toggleTransportConfig() {
+  const el = document.getElementById('transport-cfg');
+  if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+
+async function saveTransportConfig() {
+  const tokenInput = document.getElementById('cfg-TELEGRAM_BOT_TOKEN');
+  if (!tokenInput || !tokenInput.value.trim()) return showToast('Bot Token 不能为空');
+  const token = tokenInput.value.trim();
+  const statusEl = document.getElementById('tg-connect-status');
+  const saveBtn = document.getElementById('tg-save-btn');
+
+  if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = '保存中...'; }
+  if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-soft)">⏳ 保存并验证中...</span>';
+
+  try {
+    // Step 1: Save to .env
+    const r = await api('PUT', '/env', {'TELEGRAM_BOT_TOKEN': token});
+    if (r.errors && r.errors.length) {
+      if (statusEl) statusEl.innerHTML = '<span style="color:var(--danger)">❌ 保存失败: ' + r.errors.map(e=>esc(e.key)).join(', ') + '</span>';
+      return;
+    }
+
+    // Step 2: Test connection
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-soft)">⏳ 验证 Token...</span>';
+    const test = await api('POST', '/telegram/test', {token});
+
+    if (test.ok) {
+      _telegramBotInfo = {username: test.username, first_name: test.first_name};
+      if (statusEl) {
+        statusEl.innerHTML = '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+          + '<span class="badge badge-ok" style="font-size:13px">✅ 已连接</span>'
+          + '<strong>@' + esc(test.username) + '</strong>'
+          + '<span style="color:var(--text-soft);font-size:12px">(' + esc(test.first_name) + ')</span>'
+          + '</div>'
+          + '<div style="margin-top:10px;color:var(--text-soft);font-size:13px">⏳ 正在启动 Bot...</div>';
+      }
+      showToast('✅ Token 验证成功，正在启动 Bot...');
+      startBotAndRefresh();
+    } else {
+      _telegramBotInfo = null;
+      if (statusEl) statusEl.innerHTML = '<span style="color:var(--danger)">❌ Token 无效: ' + esc(test.error) + '</span>';
+    }
+  } catch(e) {
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--danger)">❌ 错误: ' + esc(e.message) + '</span>';
+  } finally {
+    if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '保存并连接'; }
+  }
+}
+
+async function startBotAndRefresh() {
+  try {
+    await api('POST', '/bot/start');
+    showToast('Bot 启动中...');
+  } catch(e) { showToast('启动失败: ' + e.message); }
+  // Give it a moment then refresh welcome to show running state
+  setTimeout(() => { loaded.welcome = false; loadWelcome(); }, 2000);
+}
+
+// ── Welcome page bot-status polling ──────
+let _welcomePollTimer = null;
+let _welcomeLastRunning = null;
+let _welcomeLastOwner = null;
+
+function startWelcomePolling() {
+  stopWelcomePolling();
+  _welcomePollTimer = setInterval(async () => {
+    try {
+      const st = await api('GET', '/bot/status');
+      const full = await api('GET', '/status');
+      const ownerNow = full.config_status?.owner_user_id?.set || false;
+      if (st.running !== _welcomeLastRunning || ownerNow !== _welcomeLastOwner) {
+        _welcomeLastRunning = st.running;
+        _welcomeLastOwner = ownerNow;
+        loaded.welcome = false;
+        loadWelcome();
+      }
+    } catch(e) { /* ignore transient errors */ }
+  }, 8000);
+}
+function stopWelcomePolling() {
+  if (_welcomePollTimer) { clearInterval(_welcomePollTimer); _welcomePollTimer = null; }
+  _welcomeLastRunning = null;
+  _welcomeLastOwner = null;
+}
+
+// ═══════════════════════════════════════════
+// Page 0: Welcome
+// ═══════════════════════════════════════════
+async function loadWelcome() {
+  const el = document.getElementById('welcome-content');
+  try {
+    const [s, promptsData, skillsData, botStatus] = await Promise.all([
+      api('GET', '/status'),
+      api('GET', '/prompts').catch(() => ({prompts: []})),
+      api('GET', '/skills').catch(() => []),
+      api('GET', '/bot/status').catch(() => ({running: false})),
+    ]);
+    let html = '';
+
+    const hasModel = s.config_status.chat_model.set && s.config_status.chat_api_key.set;
+    const hasTelegram = s.config_status.telegram_bot_token.set;
+
+    // Step 3: check soul.md exists with content
+    const soulPrompt = (promptsData.prompts || []).find(p => p.name === 'system_chat/soul.md');
+    const hasPersonality = soulPrompt && soulPrompt.exists && soulPrompt.chars > 0;
+
+    // Step 5: skill stats (filter out observers)
+    const actualSkills = skillsData.filter(sk => sk.type !== 'observer');
+    const skillsNeedConfig = actualSkills.filter(sk => sk.config_missing && sk.config_missing.length > 0);
+    const skillsDisabled = actualSkills.filter(sk => !sk.enabled);
+
+    const tgConfigured = hasTelegram || _telegramBotInfo;
+    const tgRunning = tgConfigured && botStatus.running;
+    const allDone = hasModel && tgRunning && hasPersonality;
+
+    // Helper: step number circle
+    const stepCircle = (n, active) => `<span style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;border:2px solid ${active?'var(--primary)':'var(--border)'};font-size:12px;color:${active?'var(--primary)':'var(--text-soft)'};font-weight:700">${n}</span>`;
+    // Helper: completed check circle
+    const stepDone = () => `<span style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:var(--success);color:#fff;font-size:14px">✓</span>`;
+
+    // ── Setup Guide (always show, highlights incomplete steps) ──
+    html += '<div class="card">';
+    html += '<div class="card-title">Setup Guide</div>';
+    if (!allDone) {
+      const configDone = hasModel && tgConfigured && hasPersonality;
+      if (configDone && !tgRunning) {
+        html += '<p style="font-size:13px;color:var(--warning);margin-bottom:12px"><span style="display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:4px;background:var(--warning);color:#fff;font-size:12px;margin-right:4px;vertical-align:middle">!</span> 配置已完成，但 Telegram bot 未在运行。</p>';
+      } else {
+        html += '<p style="font-size:13px;color:var(--text-soft);margin-bottom:12px">按顺序完成以下步骤，让 MochiBot 跑起来 🍡</p>';
+      }
+    } else {
+      html += '<p style="font-size:13px;color:var(--success);margin-bottom:12px"><span style="display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:4px;background:var(--success);color:#fff;font-size:12px;margin-right:4px;vertical-align:middle">✓</span> 基础配置已完成！可以和 bot 聊天了。</p>';
+    }
+
+    // Step 1: Model
+    const tierModels = s.config_status.tier_models || {};
+    const tierCount = Object.keys(tierModels).length;
+    let modelBadges = '';
+    if (hasModel) {
+      for (const t of ['lite','chat','deep']) {
+        if (tierModels[t]) modelBadges += `<span class="badge badge-ok" style="margin-right:4px">${esc(t)}: ${esc(tierModels[t])}</span>`;
+      }
+      if (!modelBadges) modelBadges = `<span class="badge badge-ok">${esc(s.config_status.chat_model.value)}</span>`;
+    }
+    html += `<div class="check-row" style="padding:10px 0;border-bottom:1px solid var(--border)">
+      <span class="check-icon" style="font-size:20px">${hasModel?stepDone():stepCircle(1, true)}</span>
+      <div style="flex:1">
+        <strong>配置模型</strong>
+        <div style="font-size:12px;color:var(--text-soft)">添加 LLM 模型和 API Key</div>
+        ${hasModel && tierCount > 0 ? '<div style="display:flex;gap:4px;margin-top:4px;flex-wrap:wrap">'+modelBadges+'</div>':''}
+      </div>
+      ${!hasModel?'<button class=\"btn btn-primary btn-sm\" onclick=\"document.querySelector(\'[data-page=models]\').click()\">去配置 →</button>':(tierCount===0?modelBadges:'')}
+    </div>`;
+
+    // Step 2: Telegram (2 states: unconfigured / configured — bot auto-starts)
+    const ownerBound = s.config_status.owner_user_id && s.config_status.owner_user_id.set;
+    const ownerUid = ownerBound ? s.config_status.owner_user_id.value : '';
+    let tgBadges = '';
+    let tgAction = '';
+    if (tgConfigured) {
+      if (botStatus.running) {
+        tgBadges = '<span class="badge badge-ok">运行中</span>';
+      } else if (botStatus.exit_code !== undefined && botStatus.exit_code !== null) {
+        tgBadges = '<span class="badge badge-err">异常退出 (code ' + botStatus.exit_code + ')</span>'
+          + ' <button class="btn btn-ghost btn-sm" style="padding:2px 8px;font-size:11px" onclick="startBotAndRefresh()">重启</button>';
+      } else {
+        tgBadges = '<span class="badge badge-warn">启动中...</span>';
+      }
+      if (_telegramBotInfo) tgBadges += ' <strong style="font-size:13px">@' + esc(_telegramBotInfo.username) + '</strong>';
+      tgAction = '<button class="btn btn-ghost btn-sm" onclick="toggleTransportConfig()">重新配置</button>';
+    } else {
+      tgAction = '<button class="btn btn-ghost btn-sm" onclick="toggleTransportConfig()">配置</button>';
+    }
+    let ownerLine = '';
+    if (tgConfigured) {
+      if (ownerBound) {
+        ownerLine = '<div style="font-size:12px;color:var(--success);margin-top:2px">Owner 已绑定: <code style="font-size:11px;background:var(--primary-bg);padding:1px 5px;border-radius:4px">' + esc(ownerUid) + '</code></div>';
+      } else {
+        ownerLine = '<div style="font-size:12px;color:var(--warning);margin-top:2px">⚠ Owner 未绑定 — 在 Telegram 中向 bot 发送一条消息即可自动绑定</div>';
+      }
+    }
+    html += `<div class="check-row" style="padding:10px 0;border-bottom:1px solid var(--border)">
+      <span class="check-icon" style="font-size:20px">${tgRunning?stepDone():stepCircle(2, hasModel)}</span>
+      <div style="flex:1">
+        <strong>配置 Telegram</strong>
+        <div style="font-size:12px;color:var(--text-soft)">设置 Bot Token 并连接</div>
+        ${tgBadges?'<div style="display:flex;gap:6px;margin-top:4px;align-items:center">'+tgBadges+'</div>':''}
+        ${ownerLine}
+      </div>
+      ${tgAction}
+    </div>`;
+
+    // Step 3: Personality (required)
+    html += `<div class="check-row" style="padding:10px 0;border-bottom:1px solid var(--border)">
+      <span class="check-icon" style="font-size:20px">${hasPersonality?stepDone():stepCircle(3, tgConfigured)}</span>
+      <div style="flex:1">
+        <strong>配置人格</strong>
+        <div style="font-size:12px;color:var(--text-soft)">定义 bot 的灵魂、性格、说话风格（soul.md）</div>
+      </div>
+      ${hasPersonality?'<span class=\"badge badge-ok\" style=\"margin-right:6px\">'+soulPrompt.chars+' 字符</span>':''}
+      <button class="btn btn-ghost btn-sm" onclick="document.querySelector('[data-page=prompts]').click()">去编辑 →</button>
+    </div>`;
+
+    // Step 4: Basic Config (show checkmark after user saves)
+    const hasBasic = s.basic_configured;
+    html += `<div class="check-row" style="padding:10px 0;border-bottom:1px solid var(--border)">
+      <span class="check-icon" style="font-size:20px">${hasBasic ? stepDone() : stepCircle(4, false)}</span>
+      <div style="flex:1">
+        <strong>基本配置</strong>
+        <div style="font-size:12px;color:var(--text-soft)">Token 限制等运行参数</div>
+      </div>
+      <button class="btn btn-ghost btn-sm" onclick="document.querySelector('[data-page=basic]').click()">去配置 →</button>
+    </div>`;
+
+    // Step 5: Skills (informational — summary + jump)
+    html += `<div class="check-row" style="padding:10px 0">
+      <span class="check-icon" style="font-size:20px">${stepCircle(5, false)}</span>
+      <div style="flex:1">
+        <strong>技能管理</strong>
+        <div style="font-size:12px;color:var(--text-soft)">开关技能、配置 API Key</div>
+        <div style="display:flex;gap:8px;margin-top:4px;flex-wrap:wrap">
+          <span class="badge badge-info">${actualSkills.length} 个技能</span>
+          ${skillsDisabled.length?'<span class=\"badge badge-gray\">'+skillsDisabled.length+' 个已禁用</span>':''}
+          ${skillsNeedConfig.length?'<span class=\"badge badge-warn\">'+skillsNeedConfig.length+' 个需要配置</span>':''}
+        </div>
+      </div>
+      <button class="btn btn-ghost btn-sm" onclick="document.querySelector('[data-page=skills]').click()">去查看 →</button>
+    </div>`;
+
+    html += '</div>';
+
+    // ── Telegram inline config (expandable, always available) ──
+    html += '<div id="transport-cfg" style="display:none">';
+    html += '<div class="card">';
+    html += '<div class="card-title">Telegram 配置</div>';
+    html += '<div class="form-group"><label class="form-label">Bot Token</label>';
+    html += '<input class="form-input" id="cfg-TELEGRAM_BOT_TOKEN" type="password" autocomplete="new-password" placeholder="' + (hasTelegram ? '（已配置，粘贴新 Token 可覆盖）' : '123456:ABC-DEF...') + '"></div>';
+    html += '<div style="display:flex;align-items:center;gap:8px;margin-top:4px">';
+    html += '<button class="btn btn-primary btn-sm" id="tg-save-btn" onclick="saveTransportConfig()">保存并连接</button>';
+    html += '</div>';
+    html += '<div id="tg-connect-status" style="margin-top:10px"></div>';
+    html += '</div></div>';
+
+    html += '</div>'; // close setup steps container
+
+    // ── Stats ──
+    html += '<div class="stat-grid">';
+    html += `<div class="stat-card"><div class="stat-number">${s.skills_count}</div><div class="stat-label">技能</div></div>`;
+    html += `<div class="stat-card"><div class="stat-number">${s.skills_disabled}</div><div class="stat-label">已禁用</div></div>`;
+    html += `<div class="stat-card"><div class="stat-number" style="font-size:18px">${esc(s.heartbeat_state)}</div><div class="stat-label">Heartbeat</div></div>`;
+    html += '</div>';
+
+    // ── Integrations ──
+    html += '<div class="card"><div class="card-title">集成</div>';
+    for (const [name, info] of Object.entries(s.integrations)) {
+      const ok = info.configured;
+      html += `<div class="check-row"><span class="check-icon">${ok?'✅':'⬜'}</span><strong>${esc(name)}</strong>`;
+      if (!ok && info.missing.length) html += ` <span style="color:var(--text-soft);font-size:12px;margin-left:6px">缺少: ${info.missing.map(esc).join(', ')}</span>`;
+      html += '</div>';
+    }
+    html += '</div>';
+
+    el.innerHTML = html;
+    _welcomeLastRunning = botStatus.running;
+    _welcomeLastOwner = ownerBound;
+    startWelcomePolling();
+  } catch(e) { el.innerHTML = `<div class="card" style="color:var(--danger)">❌ ${esc(e.message)}</div>`; }
+}
+
+// ═══════════════════════════════════════════
+// Page 1: Models
+// ═══════════════════════════════════════════
+let _modelEditName = null;
+
+async function loadModels() {
+  const el = document.getElementById('models-content');
+  try {
+    const [models, tiers, embCfg] = await Promise.all([api('GET','/models'), api('GET','/tiers'), api('GET','/embedding/config')]);
+    let html = '';
+
+    // Model Registry
+    html += '<div class="card"><div class="card-title">模型注册表</div>';
+    if (models.length === 0) {
+      html += '<p style="color:var(--text-soft);font-size:13px">还没有注册模型。添加一个开始使用。</p>';
+    } else {
+      html += '<table class="tbl"><tr><th>名称</th><th>服务商</th><th>模型</th><th>Key</th><th></th></tr>';
+      for (const m of models) {
+        html += `<tr>
+          <td><strong>${esc(m.name)}</strong></td>
+          <td><span class="badge badge-info">${esc(m.provider)}</span></td>
+          <td>${esc(m.model)}</td>
+          <td>${m.api_key_set?'<span class="badge badge-ok">已设置</span>':'<span class="badge badge-warn">未设置</span>'}</td>
+          <td style="text-align:right">
+            <button class="btn btn-ghost btn-sm" onclick="editModel('${esc(m.name)}')">编辑</button>
+            <button class="btn btn-ghost btn-sm" onclick="testModel('${esc(m.name)}',this)">测试</button>
+            <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="deleteModel('${esc(m.name)}')">删除</button>
+          </td></tr>`;
+      }
+      html += '</table>';
+    }
+    html += `<div style="margin-top:12px"><button class="btn btn-primary" onclick="openModelModal()">+ 添加模型</button></div></div>`;
+
+    // Tier Assignment
+    const tierDescs = {
+      lite: '干简单任务的模型（习惯打卡等），推荐用便宜模型',
+      chat: '和你聊天的主要模型',
+      deep: '在后台 Heartbeat 干活的模型，不和你直接对话',
+    };
+    html += '<div class="card"><div class="card-title">层级分配</div>';
+    html += '<table class="tbl"><tr><th>层级</th><th>模型</th><th>来源</th><th></th></tr>';
+    for (const tier of ['lite','chat','deep']) {
+      const cfg = tiers[tier] || {};
+      const src = cfg.source || 'env';
+      const isDb = src.startsWith('db:');
+      html += `<tr>
+        <td><strong>${esc(tier)}</strong><div style="font-size:11px;color:var(--text-soft);margin-top:2px;max-width:200px">${esc(tierDescs[tier])}</div></td>
+        <td>${esc(cfg.model||'（未设置）')}</td>
+        <td><span class="badge ${isDb?'badge-info':'badge-gray'}">${esc(src)}</span></td>
+        <td style="text-align:right">
+          <select class="form-input" style="width:auto;display:inline;font-size:12px" onchange="assignTier('${tier}',this.value)">
+            <option value="">使用 .env</option>
+            ${models.map(m=>`<option value="${esc(m.name)}" ${isDb && src==='db:'+m.name?'selected':''}>${esc(m.name)}</option>`).join('')}
+          </select>
+        </td></tr>`;
+    }
+    html += '</table></div>';
+
+    // Embedding Config
+    const embBadge = embCfg.disabled
+      ? '<span class="badge badge-gray" style="margin-left:8px">已禁用</span>'
+      : embCfg.configured
+        ? '<span class="badge badge-ok" style="margin-left:8px">已配置</span>'
+        : '<span class="badge badge-warn" style="margin-left:8px">未配置</span>';
+    const embProvider = embCfg.provider || '';
+    html += `<div class="card"><div class="card-title">Embedding 配置 ${embBadge}</div>`;
+    html += `<div class="form-group"><label class="form-label">服务商</label>
+      <select class="form-input" id="emb-provider" onchange="updateEmbeddingFields()">
+        <option value="openai" ${embProvider==='openai'?'selected':''}>OpenAI（兼容）</option>
+        <option value="azure_openai" ${embProvider==='azure_openai'?'selected':''}>Azure OpenAI</option>
+        <option value="ollama" ${embProvider==='ollama'?'selected':''}>Ollama</option>
+        <option value="none" ${embProvider==='none'||!embProvider?'selected':''}>禁用</option>
+      </select></div>`;
+    // openai fields
+    const apiKeyBadge = embCfg.api_key_set ? ' <span class="badge badge-ok" style="margin-left:6px">已设置</span>' : '';
+    html += '<div id="emb-fields-openai" style="display:none">';
+    html += '<div class="form-group"><label class="form-label">API Key' + apiKeyBadge + '</label>';
+    html += '<input class="form-input" id="emb-apikey" type="password" autocomplete="new-password" placeholder="' + (embCfg.api_key_set ? '（不修改）' : 'sk-...') + '"></div>';
+    html += '<div class="form-group"><label class="form-label">模型</label>';
+    html += '<input class="form-input" id="emb-model" placeholder="text-embedding-3-small" value="' + esc(embCfg.model) + '"></div>';
+    html += '<div class="form-group"><label class="form-label">Base URL（可选）</label>';
+    html += '<input class="form-input" id="emb-baseurl" placeholder="留空使用默认" value="' + esc(embCfg.base_url) + '"></div>';
+    html += '</div>';
+    // azure fields
+    html += '<div id="emb-fields-azure" style="display:none">';
+    html += '<div class="form-group"><label class="form-label">API Key' + apiKeyBadge + '</label>';
+    html += '<input class="form-input" id="emb-azure-apikey" type="password" autocomplete="new-password" placeholder="' + (embCfg.api_key_set ? '（不修改）' : 'API Key') + '"></div>';
+    html += `<div class="form-group"><label class="form-label">Endpoint URL</label>
+        <input class="form-input" id="emb-azure-baseurl" placeholder="https://xxx.openai.azure.com/" value="${esc(embCfg.base_url)}"></div>
+      <div class="form-group"><label class="form-label">Deployment</label>
+        <input class="form-input" id="emb-azure-deployment" placeholder="text-embedding-3-small" value="${esc(embCfg.azure_deployment)}"></div>
+      <div class="form-group"><label class="form-label">API Version</label>
+        <input class="form-input" id="emb-azure-apiversion" placeholder="2024-10-21" value="${esc(embCfg.azure_api_version)}"></div>`;
+    html += '</div>';
+    // ollama fields
+    html += `<div id="emb-fields-ollama" style="display:none">
+      <div class="form-group"><label class="form-label">模型</label>
+        <input class="form-input" id="emb-ollama-model" placeholder="nomic-embed-text" value="${esc(embCfg.model)}"></div>
+      <div class="form-group"><label class="form-label">Base URL</label>
+        <input class="form-input" id="emb-ollama-baseurl" placeholder="http://localhost:11434" value="${esc(embCfg.base_url)}"></div>
+    </div>`;
+    // none
+    html += '<div id="emb-fields-none" style="display:none"><p style="color:var(--text-soft);font-size:13px">Embedding 已禁用，向量记忆搜索不可用。</p></div>';
+    // advanced
+    html += `<div style="margin-top:8px;cursor:pointer;font-size:13px;color:var(--text-soft);user-select:none" onclick="toggleEmbeddingAdvanced()">
+      <span id="emb-adv-arrow">▸</span> 高级设置</div>`;
+    html += `<div id="emb-advanced" style="display:none;margin-top:8px">
+      <div class="form-group"><label class="form-label">缓存最大条数</label>
+        <input class="form-input" id="emb-cache-size" type="number" value="${embCfg.cache_max_size}" placeholder="128"></div>
+      <div class="form-group"><label class="form-label">缓存 TTL（秒）</label>
+        <input class="form-input" id="emb-cache-ttl" type="number" value="${embCfg.cache_ttl_s}" placeholder="300"></div>
+    </div>`;
+    // save button
+    html += '<div style="margin-top:12px"><button class="btn btn-primary" onclick="saveEmbeddingConfig()">保存</button> <span style="font-size:11px;color:var(--text-soft)">保存到 .env（重启生效）</span></div>';
+    html += '</div>';
+
+    el.innerHTML = html;
+    updateEmbeddingFields();
+  } catch(e) { el.innerHTML = `<div class="card" style="color:var(--danger)">❌ ${esc(e.message)}</div>`; }
+}
+
+function openModelModal(name) {
+  _modelEditName = name || null;
+  document.getElementById('model-modal-title').textContent = name ? '编辑模型' : '添加模型';
+  document.getElementById('mm-name').value = name || '';
+  document.getElementById('mm-name').disabled = !!name;
+  document.getElementById('mm-provider').value = 'openai';
+  document.getElementById('mm-model').value = '';
+  document.getElementById('mm-apikey').value = '';
+  document.getElementById('mm-apikey').placeholder = name ? '（不修改）' : 'sk-...';
+  document.getElementById('mm-baseurl').value = '';
+  document.getElementById('mm-test-result').innerHTML = '';
+  if (name) {
+    api('GET','/models').then(models => {
+      const m = models.find(x=>x.name===name);
+      if (m) {
+        document.getElementById('mm-provider').value = m.provider;
+        document.getElementById('mm-model').value = m.model;
+        document.getElementById('mm-baseurl').value = m.base_url || '';
+      }
+    });
+  }
+  document.getElementById('model-modal').classList.add('open');
+}
+function closeModelModal() { document.getElementById('model-modal').classList.remove('open'); }
+
+async function saveModelFromModal() {
+  const name = document.getElementById('mm-name').value.trim();
+  if (!name) return showToast('名称不能为空');
+  const apiKey = document.getElementById('mm-apikey').value;
+  const body = {
+    name,
+    provider: document.getElementById('mm-provider').value,
+    model: document.getElementById('mm-model').value.trim(),
+    api_key: (_modelEditName && !apiKey) ? '__KEEP__' : apiKey,
+    base_url: document.getElementById('mm-baseurl').value.trim(),
+  };
+  try {
+    await api('POST','/models', body);
+    showToast('模型已保存');
+    closeModelModal();
+    loaded.models = false;
+    loadModels();
+  } catch(e) { showToast('错误: ' + e.message); }
+}
+
+function editModel(name) { openModelModal(name); }
+
+async function deleteModel(name) {
+  if (!confirm('确定删除模型 "' + name + '"？')) return;
+  try { await api('DELETE','/models/'+encodeURIComponent(name)); showToast('已删除'); loaded.models=false; loadModels(); }
+  catch(e) { showToast('错误: ' + e.message); }
+}
+
+async function testModel(name, btn) {
+  const orig = btn.textContent;
+  btn.textContent = '测试中...';
+  btn.disabled = true;
+  try {
+    const r = await api('POST','/models/'+encodeURIComponent(name)+'/test');
+    if (r.ok) {
+      btn.textContent = '✅ 成功';
+      btn.style.color = 'var(--success)';
+      showToast('✅ 模型 ' + name + ' 连接成功' + (r.latency_ms ? '（延迟 '+r.latency_ms+'ms）' : ''));
+      setTimeout(() => { btn.textContent = orig; btn.style.color = ''; }, 3000);
+    } else {
+      btn.textContent = '❌ 失败';
+      btn.style.color = 'var(--danger)';
+      showToast('❌ 模型 ' + name + ' 连接失败: ' + (r.error||'未知错误'));
+      setTimeout(() => { btn.textContent = orig; btn.style.color = ''; }, 3000);
+    }
+  } catch(e) {
+    btn.textContent = '❌ 失败';
+    btn.style.color = 'var(--danger)';
+    showToast('❌ ' + e.message);
+    setTimeout(() => { btn.textContent = orig; btn.style.color = ''; }, 3000);
+  }
+  finally { btn.disabled = false; }
+}
+
+async function testModelInModal() {
+  const res = document.getElementById('mm-test-result');
+  const name = document.getElementById('mm-name').value.trim();
+  if (!name) return;
+  // Save first, then test
+  res.innerHTML = '<span style="color:var(--text-soft)">⏳ 保存并测试中...</span>';
+  try {
+    await saveModelFromModal();
+    const r = await api('POST','/models/'+encodeURIComponent(name)+'/test');
+    if (r.ok) {
+      res.innerHTML = `<span style="color:var(--success);font-weight:600;font-size:14px">✅ 连接成功！${r.latency_ms?'延迟 '+r.latency_ms+'ms':''}</span>`;
+      showToast('✅ 模型 ' + name + ' 测试通过');
+    } else {
+      res.innerHTML = `<span style="color:var(--danger);font-weight:600;font-size:14px">❌ 连接失败: ${esc(r.error||'未知错误')}</span>`;
+    }
+    // Re-open modal since saveModelFromModal closes it
+    document.getElementById('model-modal').classList.add('open');
+  } catch(e) {
+    res.innerHTML = `<span style="color:var(--danger);font-weight:600;font-size:14px">❌ ${esc(e.message)}</span>`;
+    document.getElementById('model-modal').classList.add('open');
+  }
+}
+
+async function assignTier(tier, modelName) {
+  try {
+    if (modelName) { await api('PUT','/tiers/'+tier, {model_name:modelName}); }
+    else { await api('DELETE','/tiers/'+tier); }
+    showToast(tier + ' 层级已更新');
+    loaded.models = false;
+    loaded.welcome = false;
+    loadModels();
+  } catch(e) { showToast('错误: ' + e.message); }
+}
+
+// ── Embedding Config helpers ──────────────
+
+let _embApiKeySet = false;
+
+function updateEmbeddingFields() {
+  const p = document.getElementById('emb-provider');
+  if (!p) return;
+  const v = p.value;
+  ['openai','azure','ollama','none'].forEach(id => {
+    const el = document.getElementById('emb-fields-' + id);
+    if (el) el.style.display = 'none';
+  });
+  const mapping = {openai:'openai', azure_openai:'azure', ollama:'ollama', none:'none'};
+  const target = document.getElementById('emb-fields-' + (mapping[v] || 'none'));
+  if (target) target.style.display = 'block';
+}
+
+function toggleEmbeddingAdvanced() {
+  const el = document.getElementById('emb-advanced');
+  const arrow = document.getElementById('emb-adv-arrow');
+  if (!el) return;
+  const show = el.style.display === 'none';
+  el.style.display = show ? 'block' : 'none';
+  if (arrow) arrow.textContent = show ? '▾' : '▸';
+}
+
+async function saveEmbeddingConfig() {
+  const provider = document.getElementById('emb-provider').value;
+  const body = {EMBEDDING_PROVIDER: provider};
+
+  if (provider === 'openai') {
+    const apiKey = document.getElementById('emb-apikey').value.trim();
+    if (apiKey) body.EMBEDDING_API_KEY = apiKey;
+    const model = document.getElementById('emb-model').value.trim();
+    if (model) body.EMBEDDING_MODEL = model;
+    const baseUrl = document.getElementById('emb-baseurl').value.trim();
+    if (baseUrl) body.EMBEDDING_BASE_URL = baseUrl;
+  } else if (provider === 'azure_openai') {
+    const apiKey = document.getElementById('emb-azure-apikey').value.trim();
+    if (apiKey) body.EMBEDDING_API_KEY = apiKey;
+    const baseUrl = document.getElementById('emb-azure-baseurl').value.trim();
+    if (baseUrl) body.EMBEDDING_BASE_URL = baseUrl;
+    const deployment = document.getElementById('emb-azure-deployment').value.trim();
+    if (deployment) body.AZURE_EMBEDDING_DEPLOYMENT = deployment;
+    const apiVersion = document.getElementById('emb-azure-apiversion').value.trim();
+    if (apiVersion) body.AZURE_EMBEDDING_API_VERSION = apiVersion;
+  } else if (provider === 'ollama') {
+    const model = document.getElementById('emb-ollama-model').value.trim();
+    if (model) body.EMBEDDING_MODEL = model;
+    const baseUrl = document.getElementById('emb-ollama-baseurl').value.trim();
+    if (baseUrl) body.EMBEDDING_BASE_URL = baseUrl;
+  }
+
+  // Cache settings (always send if filled)
+  const cacheSize = document.getElementById('emb-cache-size');
+  const cacheTtl = document.getElementById('emb-cache-ttl');
+  if (cacheSize && cacheSize.value) body.EMBEDDING_CACHE_MAX_SIZE = cacheSize.value;
+  if (cacheTtl && cacheTtl.value) body.EMBEDDING_CACHE_TTL_S = cacheTtl.value;
+
+  try {
+    await api('PUT', '/env', body);
+    showToast('Embedding 配置已保存（重启生效）');
+    loaded.models = false;
+    loadModels();
+  } catch(e) { showToast('错误: ' + e.message); }
+}
+
+// ═══════════════════════════════════════════
+// Page 2: Heartbeat
+// ═══════════════════════════════════════════
+async function loadHeartbeat() {
+  const el = document.getElementById('heartbeat-content');
+  try {
+    const [cfg, state] = await Promise.all([api('GET','/heartbeat/config'), api('GET','/heartbeat/state')]);
+    let html = '';
+
+    // State card
+    html += '<div class="stat-grid">';
+    html += `<div class="stat-card"><div class="stat-number" style="font-size:18px">${esc(state.state||'UNKNOWN')}</div><div class="stat-label">状态</div></div>`;
+    html += `<div class="stat-card"><div class="stat-number">${state.proactive_today||0}</div><div class="stat-label">今日主动消息</div></div>`;
+    html += `<div class="stat-card"><div class="stat-number">${state.proactive_limit||'—'}</div><div class="stat-label">每日上限</div></div>`;
+    html += '</div>';
+
+    // Human-readable labels & descriptions for heartbeat params
+    const hbLabels = {
+      HEARTBEAT_INTERVAL_MINUTES:    ['心跳间隔（分钟）',    '每隔多久执行一次心跳循环'],
+      MAX_DAILY_PROACTIVE:           ['每日上限',            'Bot 每天最多主动发多少条消息'],
+    };
+
+    // Config groups
+    const groups = [
+      { title:'心跳配置', keys:['HEARTBEAT_INTERVAL_MINUTES','MAX_DAILY_PROACTIVE'] },
+    ];
+
+    for (const g of groups) {
+      html += `<div class="card"><div class="card-title">${esc(g.title)}</div>`;
+      for (const key of g.keys) {
+        const c = cfg[key];
+        if (!c) continue;
+        const val = c.override !== null && c.override !== undefined ? c.override : c.env_default;
+        const hasOverride = c.override !== null && c.override !== undefined;
+        const [label, tip] = hbLabels[key] || [key, ''];
+        if (c.type === 'bool') {
+          html += `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
+            <label class="toggle"><input type="checkbox" ${val==='true'||val===true?'checked':''} onchange="setHBParam('${key}',this.checked)"><span class="slider"></span></label>
+            <div style="flex:1"><div style="font-size:14px">${esc(label)}</div>${tip?`<div style="font-size:11px;color:var(--text-soft);margin-top:2px">${esc(tip)}</div>`:''}</div>
+            ${hasOverride?`<button class="btn btn-ghost btn-sm" onclick="resetHBParam('${key}')">重置</button>`:''}
+          </div>`;
+        } else {
+          html += `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
+            <div style="min-width:220px"><div style="font-size:13px">${esc(label)}</div>${tip?`<div style="font-size:11px;color:var(--text-soft);margin-top:2px">${esc(tip)}</div>`:''}</div>
+            <input class="form-input" style="width:100px" type="number" value="${esc(val)}" onchange="setHBParam('${key}',this.value)" data-key="${key}">
+            <span style="font-size:11px;color:var(--text-soft)">默认: ${c.env_default}</span>
+            ${hasOverride?`<button class="btn btn-ghost btn-sm" onclick="resetHBParam('${key}')">重置</button>`:''}
+          </div>`;
+        }
+      }
+      html += '</div>';
+    }
+
+    // ── Observers ──
+    try {
+      const observers = await api('GET','/observers');
+      html += '<div class="card"><div class="card-title">观察器 Observers</div>';
+      html += '<table class="tbl"><tr><th>名称</th><th>间隔（分钟）</th><th>状态</th><th>关联技能</th><th></th></tr>';
+      for (const o of observers) {
+        const statusBadge = !o.enabled
+          ? '<span class="badge badge-err">已禁用</span>'
+          : o.consecutive_errors >= 5
+            ? '<span class="badge badge-err">失败</span>'
+            : o.last_collected_at
+              ? '<span class="badge badge-ok">运行中</span>'
+              : '<span class="badge badge-gray">等待中</span>';
+        const linked = o.skill_name
+          ? `<span class="badge badge-info">${esc(o.skill_name)}</span>`
+          : o.infrastructure
+            ? '<span class="badge badge-gray">基础设施</span>'
+            : '—';
+        const intervalInput = o.infrastructure
+          ? `<span>${o.effective_interval}</span>`
+          : `<input class="form-input" style="width:70px;display:inline;font-size:12px;text-align:center" type="number" min="1" max="1440" value="${o.effective_interval}" onchange="setObserverInterval('${esc(o.name)}',this.value)">`;
+        const resetBtn = o.has_override
+          ? ` <button class="btn btn-ghost btn-sm" onclick="resetObserverInterval('${esc(o.name)}')">重置</button>`
+          : '';
+        html += `<tr>
+          <td><strong>👁 ${esc(o.name)}</strong></td>
+          <td>${intervalInput}${resetBtn}${o.has_override?' <span style="font-size:11px;color:var(--text-soft)">(default: '+o.default_interval+')</span>':''}</td>
+          <td>${statusBadge}</td>
+          <td>${linked}</td>
+          <td style="font-size:11px;color:var(--text-soft)">${o.last_collected_at?'上次: '+new Date(o.last_collected_at).toLocaleTimeString():''}</td>
+        </tr>`;
+      }
+      html += '</table></div>';
+    } catch(e) {
+      html += `<div class="card" style="color:var(--text-soft)">无法加载观察器</div>`;
+    }
+
+    el.innerHTML = html;
+  } catch(e) { el.innerHTML = `<div class="card" style="color:var(--danger)">❌ ${esc(e.message)}</div>`; }
+}
+
+async function setHBParam(key, value) {
+  try {
+    await api('PUT','/heartbeat/config', {[key]: value});
+    showToast(key + ' 已更新');
+  } catch(e) { showToast('错误: ' + e.message); }
+}
+
+async function resetHBParam(key) {
+  try {
+    await api('PUT','/heartbeat/config', {[key]: null});
+    showToast(key + ' 已重置为默认值');
+    loaded.heartbeat = false;
+    loadHeartbeat();
+  } catch(e) { showToast('错误: ' + e.message); }
+}
+
+async function setObserverInterval(name, value) {
+  try {
+    await api('PUT','/observers/'+encodeURIComponent(name)+'/config', {interval: parseInt(value)});
+    showToast(name + ' 间隔已更新');
+  } catch(e) { showToast('错误: ' + e.message); }
+}
+
+async function resetObserverInterval(name) {
+  try {
+    await api('PUT','/observers/'+encodeURIComponent(name)+'/config', {interval: null});
+    showToast(name + ' 间隔已重置为默认值');
+    loaded.heartbeat = false;
+    loadHeartbeat();
+  } catch(e) { showToast('错误: ' + e.message); }
+}
+
+// ═══════════════════════════════════════════
+// Page 2b: Basic Config
+// ═══════════════════════════════════════════
+async function loadBasic() {
+  const el = document.getElementById('basic-content');
+  try {
+    const cfg = await api('GET','/basic/config');
+
+    // Auto-detect browser timezone and pre-fill if no override exists
+    const browserTzOffset = -(new Date().getTimezoneOffset() / 60);
+    const tzCfg = cfg['TIMEZONE_OFFSET_HOURS'];
+    if (tzCfg && (tzCfg.override === null || tzCfg.override === undefined) && tzCfg.env_default === 0) {
+      tzCfg._autoDetected = browserTzOffset;
+    }
+
+    let html = '';
+
+    html += '<p style="font-size:13px;color:var(--text-soft);margin-bottom:16px">💡 维护相关配置立即生效，其他配置重启后生效</p>';
+
+    const basicLabels = {
+      TIMEZONE_OFFSET_HOURS:          ['时区偏移（小时）',    'UTC 偏移量，如 +8 = 北京时间'],
+      AI_CHAT_MAX_COMPLETION_TOKENS:  ['对话最大 tokens',     '单次对话回复的 token 上限'],
+      MAINTENANCE_HOUR:               ['维护时间（时）',      '每天几点执行维护任务（清理、优化）'],
+      MAINTENANCE_ENABLED:            ['启用维护',            '是否启用每日自动维护'],
+      HEARTBEAT_LOG_TRIM_DAYS:        ['日志精简（天）',      '多少天后精简心跳日志'],
+      HEARTBEAT_LOG_DELETE_DAYS:      ['日志删除（天）',      '多少天后彻底删除心跳日志'],
+    };
+
+    const groups = [
+      { title:'时区', keys:['TIMEZONE_OFFSET_HOURS'] },
+      { title:'对话', keys:['AI_CHAT_MAX_COMPLETION_TOKENS'] },
+      { title:'维护', keys:['MAINTENANCE_HOUR','MAINTENANCE_ENABLED','HEARTBEAT_LOG_TRIM_DAYS','HEARTBEAT_LOG_DELETE_DAYS'] },
+    ];
+
+    for (const g of groups) {
+      html += `<div class="card"><div class="card-title">${esc(g.title)}</div>`;
+      for (const key of g.keys) {
+        const c = cfg[key];
+        if (!c) continue;
+        const val = c.override !== null && c.override !== undefined ? c.override : c.env_default;
+        const hasOverride = c.override !== null && c.override !== undefined;
+        const [label, tip] = basicLabels[key] || [key, ''];
+        if (c.type === 'bool') {
+          html += `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
+            <label class="toggle"><input type="checkbox" data-basic-key="${key}" ${val==='true'||val===true?'checked':''} onchange="markBasicDirty()"><span class="slider"></span></label>
+            <div style="flex:1"><div style="font-size:14px">${esc(label)}</div>${tip?`<div style="font-size:11px;color:var(--text-soft);margin-top:2px">${esc(tip)}</div>`:''}</div>
+            ${hasOverride?`<button class="btn btn-ghost btn-sm" onclick="resetBasicParam('${key}')">重置</button>`:''}
+          </div>`;
+        } else {
+          const step = c.type === 'float' ? ' step="0.1"' : '';
+          const displayVal = c._autoDetected !== undefined ? c._autoDetected : val;
+          const autoTag = c._autoDetected !== undefined ? `<span style="font-size:11px;color:var(--accent);margin-left:4px">🌐 已自动检测</span>` : '';
+          html += `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
+            <div style="min-width:220px"><div style="font-size:13px">${esc(label)}${autoTag}</div>${tip?`<div style="font-size:11px;color:var(--text-soft);margin-top:2px">${esc(tip)}</div>`:''}</div>
+            <input class="form-input" style="width:100px" type="number"${step} data-basic-key="${key}" value="${esc(displayVal)}" onchange="markBasicDirty()">
+            <span style="font-size:11px;color:var(--text-soft)">默认: ${c.env_default}</span>
+            ${hasOverride?`<button class="btn btn-ghost btn-sm" onclick="resetBasicParam('${key}')">重置</button>`:''}
+          </div>`;
+        }
+      }
+      html += '</div>';
+    }
+
+    html += '<div style="margin-top:16px;display:flex;align-items:center;gap:12px">'
+      + '<button class="btn btn-primary" id="basic-save-btn" onclick="saveAllBasic()" disabled>保存</button>'
+      + '<span id="basic-save-hint" style="font-size:12px;color:var(--text-soft)"></span>'
+      + '</div>';
+
+    el.innerHTML = html;
+    // If timezone was auto-detected, mark form dirty so user can save
+    if (tzCfg && tzCfg._autoDetected !== undefined) markBasicDirty();
+  } catch(e) { el.innerHTML = `<div class="card" style="color:var(--danger)">❌ ${esc(e.message)}</div>`; }
+}
+
+function markBasicDirty() {
+  const btn = document.getElementById('basic-save-btn');
+  const hint = document.getElementById('basic-save-hint');
+  if (btn) btn.disabled = false;
+  if (hint) hint.textContent = '有未保存的修改';
+}
+
+function _collectBasicValues() {
+  const body = {};
+  document.querySelectorAll('[data-basic-key]').forEach(el => {
+    const key = el.dataset.basicKey;
+    if (el.type === 'checkbox') body[key] = el.checked;
+    else body[key] = el.value;
+  });
+  return body;
+}
+
+async function saveAllBasic() {
+  const btn = document.getElementById('basic-save-btn');
+  const hint = document.getElementById('basic-save-hint');
+  if (btn) { btn.disabled = true; btn.textContent = '保存中...'; }
+  try {
+    const body = _collectBasicValues();
+    await api('PUT','/basic/config', body);
+    showToast('配置已保存');
+    if (hint) hint.textContent = '';
+    if (btn) btn.textContent = '保存';
+    loaded.welcome = false; // refresh setup status so checkmark updates
+  } catch(e) {
+    showToast('错误: ' + e.message);
+    if (btn) { btn.disabled = false; btn.textContent = '保存'; }
+  }
+}
+
+async function resetBasicParam(key) {
+  try {
+    await api('PUT','/basic/config', {[key]: null});
+    showToast(key + ' 已重置为默认值');
+    loaded.basic = false;
+    loadBasic();
+  } catch(e) { showToast('错误: ' + e.message); }
+}
+
+// ═══════════════════════════════════════════
+// Page 3: Skills
+// ═══════════════════════════════════════════
+async function loadSkills() {
+  const el = document.getElementById('skills-content');
+  try {
+    const skills = await api('GET','/skills');
+    if (skills.length === 0) {
+      el.innerHTML = '<div class="card"><p style="color:var(--text-soft)">没有注册的技能。</p></div>';
+      return;
+    }
+    const typeIcons = { tool:'🔧', automation:'🤖', hybrid:'⚡', observer:'👁' };
+    const typeLabels = { tool:'工具', automation:'自动化', hybrid:'混合', observer:'观察器' };
+    skills.sort((a, b) => (b.core ? 1 : 0) - (a.core ? 1 : 0));
+    let html = '';
+    for (const s of skills) {
+      const icon = typeIcons[s.type] || '📦';
+      const typeLabel = typeLabels[s.type] || s.type;
+      const senseBadge = s.has_observer ? ' <span class="badge badge-info">观察器</span>' : '';
+      const configMissing = s.config_missing && s.config_missing.length > 0;
+      let toggleHtml;
+      if (s.core) {
+        toggleHtml = '<span class="badge" style="background:var(--text-soft);color:#fff;font-size:11px">🔒 核心</span>';
+      } else if (!s.enabled && configMissing) {
+        toggleHtml = '<label class="toggle" title="需要先配置必填项"><input type="checkbox" disabled><span class="slider"></span></label>';
+      } else {
+        toggleHtml = `<label class="toggle"><input type="checkbox" ${s.enabled?'checked':''} onchange="toggleSkill('${esc(s.name)}',this.checked)"><span class="slider"></span></label>`;
+      }
+      html += `<div class="skill-card ${s.enabled?'':'disabled'}">
+        <div class="skill-header">
+          <div><span class="skill-name">${icon} ${esc(s.name)}</span> <span class="badge badge-gray">${esc(typeLabel)}</span>${senseBadge}</div>
+          ${toggleHtml}
+        </div>
+        ${s.description?`<div class="skill-desc">${esc(s.description)}</div>`:''}
+        <div class="skill-tools">${(s.tools||[]).map(t=>`<span class="pill">${esc(t)}</span>`).join('')}</div>`;
+
+      // Config section — prefer config_schema if available
+      const hasSchema = s.config_schema && s.config_schema.length > 0;
+      const hasRequires = s.requires_config && s.requires_config.length > 0;
+
+      if (hasSchema || hasRequires) {
+        const configKeys = hasSchema
+          ? s.config_schema.map(e => ({key:e.key, secret:e.secret, desc:e.description, isSet: s.config_status && s.config_status[e.key]}))
+          : s.requires_config.map(k => ({key:k, secret:true, desc:'', isSet: s.config_status && s.config_status[k]}));
+
+        html += '<div class="config-list"><div style="font-size:12px;font-weight:600;color:var(--text-soft);margin-bottom:4px">配置</div>';
+        for (const c of configKeys) {
+          html += `<div class="config-item"><span>${c.isSet?'✅':'❌'}</span><code style="font-size:12px">${esc(c.key)}</code>`;
+          if (c.desc) html += ` <span style="font-size:11px;color:var(--text-soft);margin-left:4px">${esc(c.desc)}</span>`;
+          html += '</div>';
+        }
+        const keysJson = JSON.stringify(configKeys.map(c=>({key:c.key,secret:c.secret}))).replace(/"/g,'&quot;');
+        html += `<button class="btn btn-ghost btn-sm" style="margin-top:6px" onclick="toggleSkillConfig('${esc(s.name)}')">配置</button>`;
+        html += `<div id="skill-cfg-${esc(s.name)}" style="display:none;margin-top:8px">`;
+        for (const c of configKeys) {
+          const inputType = c.secret ? 'password' : 'text';
+          html += `<div class="form-group"><label class="form-label">${esc(c.key)}</label><input class="form-input" id="scfg-${esc(s.name)}-${esc(c.key)}" type="${inputType}" autocomplete="off" placeholder="${esc(c.desc||c.key)}"></div>`;
+        }
+        html += `<button class="btn btn-primary btn-sm" onclick="saveSkillConfig('${esc(s.name)}')">保存</button>`;
+        html += `<span style="font-size:11px;color:var(--text-soft);margin-left:8px">保存到数据库（立即生效）</span>`;
+        html += '</div></div>';
+      }
+      html += '</div>';
+    }
+    el.innerHTML = html;
+  } catch(e) { el.innerHTML = `<div class="card" style="color:var(--danger)">❌ ${esc(e.message)}</div>`; }
+}
+
+async function toggleSkill(name, enabled) {
+  try {
+    const r = await api('PUT','/skills/'+encodeURIComponent(name)+'/enabled', {enabled});
+    if (r.ok === false) { showToast('❌ ' + r.error); loaded.skills = false; loadSkills(); return; }
+    showToast(name + (enabled?' 已启用':' 已禁用'));
+    loaded.skills = false;
+    loadSkills();
+  } catch(e) { showToast('错误: ' + e.message); }
+}
+
+function toggleSkillConfig(name) {
+  const el = document.getElementById('skill-cfg-' + name);
+  if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+
+async function saveSkillConfig(name) {
+  const cfgDiv = document.getElementById('skill-cfg-' + name);
+  if (!cfgDiv) return;
+  const inputs = cfgDiv.querySelectorAll('.form-input');
+  const body = {};
+  let hasValue = false;
+  for (const input of inputs) {
+    if (input.value.trim()) {
+      const key = input.id.replace('scfg-' + name + '-', '');
+      body[key] = input.value.trim();
+      hasValue = true;
+    }
+  }
+  if (!hasValue) return showToast('没有要保存的值');
+  try {
+    const r = await api('PUT','/skills/'+encodeURIComponent(name)+'/config', body);
+    if (r.errors && r.errors.length) showToast('部分保存失败: ' + r.errors.map(e=>e.key+': '+e.error).join(', '));
+    else showToast('✅ 配置已保存（立即生效）');
+    loaded.skills = false;
+    loadSkills();
+  } catch(e) { showToast('错误: ' + e.message); }
+}
+
+// ═══════════════════════════════════════════
+// Page 4: Prompts
+// ═══════════════════════════════════════════
+let _currentPrompt = null;
+let _promptMeta = {};  // name -> {label, desc}
+
+function encodePromptPath(name) {
+  // Encode each segment but preserve '/' for FastAPI {name:path}
+  return name.split('/').map(encodeURIComponent).join('/');
+}
+
+async function loadPrompts() {
+  const el = document.getElementById('prompts-content');
+  try {
+    const data = await api('GET','/prompts');
+    const prompts = data.prompts;
+    _promptMeta = {};
+    for (const p of prompts) _promptMeta[p.name] = {label: p.label, desc: p.desc};
+    let html = '';
+
+    // Prompt list
+    html += '<div class="card"><div class="card-title">Prompt 文件</div>';
+    html += '<table class="tbl"><tr><th>名称</th><th>说明</th><th>大小</th><th>状态</th><th></th></tr>';
+    for (const p of prompts) {
+      html += `<tr>
+        <td><strong>${esc(p.label)}</strong><div style="font-size:11px;color:var(--text-soft)">${esc(p.name)}</div></td>
+        <td style="font-size:12px;color:var(--text-soft)">${esc(p.desc)}</td>
+        <td>${p.chars} 字符</td>
+        <td>${p.exists?'<span class="badge badge-ok">存在</span>':'<span class="badge badge-warn">缺失</span>'}</td>
+        <td style="text-align:right"><button class="btn btn-ghost btn-sm" onclick="openPromptEditor('${esc(p.name)}')">${p.exists?'编辑':'创建'}</button></td>
+      </tr>`;
+    }
+    html += '</table></div>';
+
+    // Editor area (hidden until a prompt is selected)
+    html += '<div id="prompt-editor-area" style="display:none">';
+    html += '<div class="card">';
+    html += '<div class="card-title" id="prompt-editor-title">编辑中: —</div>';
+    html += '<textarea class="prompt-editor" id="prompt-textarea" oninput="updatePromptCharCount()"></textarea>';
+    html += '<div class="prompt-meta"><span id="prompt-char-count">0 字符</span>';
+    html += '<div><button class="btn btn-ghost btn-sm" onclick="closePromptEditor()">取消</button> ';
+    html += '<button class="btn btn-primary btn-sm" onclick="savePrompt()">保存</button></div>';
+    html += '</div></div></div>';
+
+    el.innerHTML = html;
+  } catch(e) { el.innerHTML = `<div class="card" style="color:var(--danger)">❌ ${esc(e.message)}</div>`; }
+}
+
+async function openPromptEditor(name) {
+  _currentPrompt = name;
+  const area = document.getElementById('prompt-editor-area');
+  const textarea = document.getElementById('prompt-textarea');
+  const title = document.getElementById('prompt-editor-title');
+  const meta = _promptMeta[name] || {};
+  title.textContent = '编辑中: ' + (meta.label || name);
+  textarea.value = '';
+  area.style.display = 'block';
+  try {
+    const data = await api('GET','/prompts/'+encodePromptPath(name));
+    textarea.value = data.content;
+    updatePromptCharCount();
+    textarea.focus();
+  } catch(e) {
+    if (e.message.includes('404')) {
+      // New file
+      textarea.value = '';
+      updatePromptCharCount();
+      textarea.focus();
+    } else {
+      showToast('错误: ' + e.message);
+    }
+  }
+}
+
+function closePromptEditor() {
+  _currentPrompt = null;
+  const area = document.getElementById('prompt-editor-area');
+  if (area) area.style.display = 'none';
+}
+
+function updatePromptCharCount() {
+  const textarea = document.getElementById('prompt-textarea');
+  const counter = document.getElementById('prompt-char-count');
+  if (textarea && counter) counter.textContent = textarea.value.length + ' 字符';
+}
+
+async function savePrompt() {
+  if (!_currentPrompt) return;
+  const textarea = document.getElementById('prompt-textarea');
+  const content = textarea.value;
+  try {
+    const r = await api('POST','/prompts/'+encodePromptPath(_currentPrompt), {content});
+    const label = (_promptMeta[_currentPrompt] || {}).label || _currentPrompt;
+    showToast('✅ 已保存 ' + label + '（' + r.chars + ' 字符）');
+    loaded.prompts = false;
+    loadPrompts();
+  } catch(e) { showToast('错误: ' + e.message); }
+}
+</script>
+</body>
+</html>
