@@ -1,0 +1,34 @@
+[project]
+name = "mochibot"
+version = "0.1.0-alpha"
+description = "A lightweight AI companion framework with autonomous heartbeat, layered memory, and modular skills."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.11"
+keywords = ["ai", "agent", "companion", "chatbot", "memory", "autonomous"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "openai>=1.30.0",
+    "python-telegram-bot>=21.0",
+    "python-dotenv>=1.0.0",
+    "httpx>=0.27.0",
+    "tiktoken>=0.7.0",
+]
+
+[project.optional-dependencies]
+anthropic = ["anthropic>=0.25.0"]
+search = ["tavily-python>=0.3.0"]
+all = ["anthropic>=0.25.0", "tavily-python>=0.3.0"]
+
+[project.urls]
+Homepage = "https://github.com/mochi-bot/mochibot"
+Repository = "https://github.com/mochi-bot/mochibot"
+Issues = "https://github.com/mochi-bot/mochibot/issues"
