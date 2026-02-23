@@ -22,8 +22,7 @@ Emotional support. Daily check-ins. Gentle reminders. Always-on memory. Fully pr
 - **Proactive** — a heartbeat loop that checks in on you, not just waits for input
 - **Private** — fully self-hosted, your data never leaves your machine
 - **Extensible** — drop-in skills & observers, auto-discovered at startup
-
-> 🧪 **This is the MVP.** The real magic starts when you connect a wearable like [Oura Ring](https://ouraring.com) — the heartbeat wakes when you wake, winds down when you sleep, and notices when your body says something your words don't.
+- **Body-aware** — built-in [Oura Ring](https://ouraring.com) integration: sleep, readiness, activity, stress — your bot notices what your words don't say
 
 ---
 
@@ -80,8 +79,8 @@ MochiBot separates **Chat** (conversations) from **Think** (heartbeat + maintena
 
 | Concept | Role | Examples |
 |---------|------|---------|
-| **Observers** | Passive sensors that feed context into Think — zero LLM calls, interval-throttled | `time_context`, `weather`, `activity_pattern`, custom wearable integrations |
-| **Skills** | Active capabilities the Chat model can invoke via tool calls | `memory`, `reminder`, `todo`, `web_search` |
+| **Observers** | Passive sensors that feed context into Think — zero LLM calls, interval-throttled | `time_context`, `weather`, `activity_pattern`, `oura` (sleep/readiness/stress) |
+| **Skills** | Active capabilities the Chat model can invoke via tool calls | `memory`, `reminder`, `todo`, `oura`, `web_search` |
 
 Both are **auto-discovered at startup** — drop a folder, restart, done. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to create your own.
 
@@ -145,6 +144,7 @@ All config lives in `.env`. Key variables:
 | `MAX_DAILY_PROACTIVE` | `10` | Rate limit for proactive messages |
 | `MAINTENANCE_HOUR` | `3` | Nightly maintenance (local time) |
 | `TIMEZONE_OFFSET_HOURS` | `0` | Your UTC offset |
+| `OURA_CLIENT_ID` | — | Oura Ring OAuth2 client ID (optional — run `python oura_auth.py` to set up) |
 
 See [.env.example](.env.example) for the full list.
 
@@ -188,7 +188,7 @@ THINK_MODEL=llama-3.3-70b-versatile
 ## Best Practices
 
 - **Deploy on a VM** — the heartbeat needs 24/7 uptime to be a true companion
-- **Connect a wearable** — an [Oura Ring](https://ouraring.com) (or similar) feeding sleep/readiness/activity data into the heartbeat is the single biggest experience upgrade. Write a custom observer for your device
+- **Connect an Oura Ring** — run `python oura_auth.py` to authorize, then sleep/readiness/activity/stress data feeds into the heartbeat automatically. The built-in `oura` observer + skill handle everything
 - **Use a cheaper Think model** — heartbeat and maintenance don't need your smartest model (see [Dual-Model Architecture](#dual-model-architecture))
 - **Start with `prompts/personality.md`** — customizing your bot's voice matters more than any config variable
 - **Start with built-in observers** before writing custom ones — time, activity, and weather provide a solid baseline
@@ -216,8 +216,8 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design.
 - [x] Any OpenAI-compatible API (DeepSeek, Ollama, Groq, etc.)
 - [x] Dual-model architecture (Chat + Think)
 - [ ] Morning / evening reports (scaffolded, enable via `MORNING_REPORT_HOUR` / `EVENING_REPORT_HOUR`)
+- [x] Oura Ring integration — sleep, readiness, activity, stress (observer + skill)
 - [ ] Tool governance — per-skill approval policies, audit logging
-- [ ] Hardware integration — Oura Ring observer (sleep, readiness, activity)
 - [ ] Admin portal — web UI for memory inspection, config, and diagnostics
 - [ ] Voice message support
 - [ ] Multi-user support

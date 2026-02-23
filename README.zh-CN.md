@@ -22,8 +22,7 @@
 - **主动关心** — 心跳循环主动找你聊，而不是干等你输入
 - **完全私有** — 自托管，数据永远不离开你的机器
 - **易扩展** — 即插即用的 Skills 和 Observers，启动时自动发现
-
-> 🧪 **这只是 MVP 版本。** 真正的魔法从接入可穿戴设备开始——比如 [Oura Ring](https://ouraring.com)。心跳随你醒来而跳动，随你入睡而安静，在你说不出口的时候，身体数据替你开口。
+- **感知身体** — 内置 [Oura Ring](https://ouraring.com) 集成：睡眠、准备度、活动、压力——你说不出口的，身体数据替你开口
 
 ---
 
@@ -80,8 +79,8 @@ MochiBot 把 **Chat**（对话）和 **Think**（心跳 + 维护）分开——�
 
 | 概念 | 角色 | 举例 |
 |------|------|------|
-| **Observers** | 被动传感器，为 Think 提供上下文——零 LLM 调用，按间隔节流 | `time_context`、`weather`、`activity_pattern`、自定义穿戴设备 |
-| **Skills** | Chat 模型通过 tool call 调用的主动能力 | `memory`、`reminder`、`todo`、`web_search` |
+| **Observers** | 被动传感器，为 Think 提供上下文——零 LLM 调用，按间隔节流 | `time_context`、`weather`、`activity_pattern`、`oura`（睡眠/准备度/压力） |
+| **Skills** | Chat 模型通过 tool call 调用的主动能力 | `memory`、`reminder`、`todo`、`oura`、`web_search` |
 
 两者都**启动时自动发现**——放个文件夹，重启即可。详见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
@@ -145,6 +144,7 @@ python -m mochi.main
 | `MAX_DAILY_PROACTIVE` | `10` | 每日主动消息上限 |
 | `MAINTENANCE_HOUR` | `3` | 每晚维护时间（本地时间） |
 | `TIMEZONE_OFFSET_HOURS` | `0` | 你的 UTC 偏移 |
+| `OURA_CLIENT_ID` | — | Oura Ring OAuth2 客户端 ID（可选——运行 `python oura_auth.py` 设置） |
 
 完整列表见 [.env.example](.env.example)。
 
@@ -188,7 +188,7 @@ THINK_MODEL=llama-3.3-70b-versatile
 ## 最佳实践
 
 - **部署到 VM** — 心跳需要 7×24 在线才能成为真正的陪伴
-- **接入可穿戴设备** — [Oura Ring](https://ouraring.com)（或类似设备）把睡眠/准备度/活动数据接入心跳，是体验提升最大的一步。为你的设备写一个自定义 observer 即可
+- **接入 Oura Ring** — 运行 `python oura_auth.py` 授权后，睡眠/准备度/活动/压力数据会自动接入心跳。内置的 `oura` observer + skill 搞定一切
 - **用便宜的 Think 模型** — 心跳和维护不需要你最聪明的模型（见[双模型架构](#双模型架构)）
 - **从 `prompts/personality.md` 开始** — 定制 bot 的声音比任何配置项都重要
 - **先用内置 observer** — time、activity、weather 提供了不错的基线
@@ -215,9 +215,12 @@ THINK_MODEL=llama-3.3-70b-versatile
 
 - [x] 支持任意 OpenAI 兼容 API（DeepSeek、Ollama、Groq 等）
 - [x] 双模型架构（Chat + Think）
+- [ ] 早晚报告（已预埋，在 `.env` 里设 `MORNING_REPORT_HOUR` / `EVENING_REPORT_HOUR` 开启）
+- [x] Oura Ring 集成 — 睡眠、准备度、活动、压力（observer + skill）
 - [ ] 工具治理 — 按 skill 的审批策略、审计日志
-- [ ] 硬件集成 — Oura Ring observer（睡眠、准备度、活动）
 - [ ] 管理后台 — 记忆查看、配置、诊断的 Web UI
+- [ ] 语音消息支持
+- [ ] 多用户支持
 
 ## 贡献
 

@@ -58,12 +58,14 @@ mochi/
 ├── observers/
 │   ├── __init__.py       # Observer registry + discover() + collect_all()
 │   ├── base.py           # Observer ABC + ObserverMeta + safe_observe() cache
+│   ├── oura/             # Oura Ring (sleep, readiness, activity, stress)
 │   ├── weather/          # Weather data (OpenWeatherMap)
 │   └── habit/            # Habit tracking (SQLite)
 └── skills/
     ├── __init__.py       # Skill registry + auto-discovery
     ├── base.py           # Skill base class + SKILL.md parser
     ├── memory/           # Save, recall, update core memory
+    ├── oura/             # Oura Ring data tool (get_oura_data)
     ├── reminder/         # Time-based reminders
     └── todo/             # Todo list management
 

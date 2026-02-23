@@ -139,6 +139,15 @@ MAINTENANCE_HOUR = _env_int("MAINTENANCE_HOUR", 3)
 TAVILY_API_KEY = _env("TAVILY_API_KEY")
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Oura Ring (optional — OAuth2)
+# ═════════════════════════════════════════════════════════════════════════
+# Run `python oura_auth.py` to authorize and get your tokens.
+
+OURA_CLIENT_ID = _env("OURA_CLIENT_ID")
+OURA_CLIENT_SECRET = _env("OURA_CLIENT_SECRET")
+OURA_REFRESH_TOKEN = _env("OURA_REFRESH_TOKEN")
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Database
 # ═══════════════════════════════════════════════════════════════════════════
 
