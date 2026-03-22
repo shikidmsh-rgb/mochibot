@@ -55,28 +55,7 @@ Rate-limited and conservative. A companion, not a spammer.
 
 ### 5-Tier Model Routing
 
-MochiBot routes different tasks to the right model for the job — from cheap/fast for simple tool calls to powerful for deep analysis:
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                                                                 │
-│  LITE             CHAT            DEEP                          │
-│  ┌────────────┐   ┌────────────┐  ┌────────────┐               │
-│  │ Simple tool │   │ Conver-    │  │ Complex    │               │
-│  │ tasks       │   │ sations    │  │ analysis   │               │
-│  └────────────┘   └────────────┘  └────────────┘               │
-│                                                                 │
-│  BG_FAST                          BG_DEEP                       │
-│  ┌────────────┐                   ┌────────────┐               │
-│  │ Background  │                   │ Background │               │
-│  │ tagging     │                   │ reasoning  │               │
-│  └────────────┘                   └────────────┘               │
-│                                                                 │
-│  Each tier: TIER_{name}_PROVIDER / API_KEY / MODEL / BASE_URL   │
-│  Unconfigured tiers fall back to CHAT_* (zero-config = works)   │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+Route different tasks to the right model — cheap/fast for simple tool calls, powerful for deep analysis:
 
 | Tier | Purpose | Example use |
 |------|---------|-------------|
@@ -86,7 +65,7 @@ MochiBot routes different tasks to the right model for the job — from cheap/fa
 | **BG_FAST** | Cheap background | Classification, tagging, summarization |
 | **BG_DEEP** | Strong background | Heartbeat reasoning, memory operations |
 
-**Backward compatible**: set `TIER_ROUTING_ENABLED=false` (default) and the system uses the original 2-model setup (Chat + Think). Enable tier routing when you're ready to optimize costs.
+Unconfigured tiers fall back to `CHAT_*`. Set `TIER_ROUTING_ENABLED=false` (default) to use the original 2-model setup (Chat + Think).
 
 ### Observers & Skills
 
@@ -143,8 +122,6 @@ The heartbeat runs continuously. **If you run on a laptop, the bot goes offline 
 
 All config lives in `.env`. Key variables:
 
-### Core
-
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CHAT_PROVIDER` | `openai` | SDK: `openai` (+ any compatible), `azure_openai`, `anthropic` |
@@ -152,64 +129,34 @@ All config lives in `.env`. Key variables:
 | `CHAT_MODEL` | — | Model for conversations (required) |
 | `CHAT_BASE_URL` | — | Custom endpoint for OpenAI-compatible APIs |
 | `THINK_MODEL` | *=CHAT* | Cheaper model for heartbeat + maintenance (optional) |
-| `THINK_PROVIDER` | *=CHAT* | Separate provider for Think (optional) |
 | `TELEGRAM_BOT_TOKEN` | — | From @BotFather |
-
-### Behavior
-
-| Variable | Default | Description |
-|----------|---------|-------------|
 | `HEARTBEAT_INTERVAL_MINUTES` | `20` | Observe → Think → Act cycle |
 | `AWAKE_HOUR_START` / `END` | `7` / `23` | Heartbeat sleeps outside these hours |
 | `MAX_DAILY_PROACTIVE` | `10` | Rate limit for proactive messages |
-| `MAINTENANCE_HOUR` | `3` | Nightly maintenance (local time) |
 | `TIMEZONE_OFFSET_HOURS` | `0` | Your UTC offset |
 
-### 5-Tier Model Routing (optional)
+<details>
+<summary>Advanced: 5-tier routing, embeddings, integrations</summary>
 
-Set `TIER_ROUTING_ENABLED=true` to enable. Each tier has four keys:
+**5-tier routing** — set `TIER_ROUTING_ENABLED=true`, then configure each tier:
 
 ```
 TIER_{LITE,CHAT,DEEP,BG_FAST,BG_DEEP}_{PROVIDER,API_KEY,MODEL,BASE_URL}
 ```
 
-Unconfigured tiers fall back to `CHAT_*` / `THINK_*`. Zero-config = original 2-model behavior.
+**Embeddings** — `AZURE_EMBEDDING_ENDPOINT`, `AZURE_EMBEDDING_API_KEY`, `AZURE_EMBEDDING_DEPLOYMENT`
 
-### Embedding & Vector Search (optional)
+**Oura Ring** — `OURA_CLIENT_ID`, `OURA_CLIENT_SECRET` (run `python oura_auth.py` to set up)
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `AZURE_EMBEDDING_ENDPOINT` | — | Azure OpenAI endpoint for embeddings |
-| `AZURE_EMBEDDING_API_KEY` | — | Embedding API key |
-| `AZURE_EMBEDDING_DEPLOYMENT` | — | Deployment name (e.g. `text-embedding-3-small`) |
-| `VEC_SEARCH_NATIVE_ENABLED` | `false` | Enable sqlite-vec native vector KNN search |
-| `RECALL_VEC_SIM_THRESHOLD` | `0.6` | Minimum cosine similarity for vector recall |
+See [.env.example](.env.example) for the full list (~80 tunables).
 
-### Integrations (optional)
+</details>
 
-| Variable | Description |
-|----------|-------------|
-| `OURA_CLIENT_ID` | Oura Ring OAuth2 client ID (run `python oura_auth.py` to set up) |
-
-See [.env.example](.env.example) for the full list.
-
-**Dual-model example** — save tokens by using a cheaper Think model:
+**Example** — dual-model setup to save tokens:
 
 ```dotenv
 CHAT_MODEL=gpt-4o            # smart model for conversations
 THINK_MODEL=gpt-4o-mini      # fast model for heartbeat + maintenance
-```
-
-**5-tier example** — fine-grained cost optimization:
-
-```dotenv
-TIER_ROUTING_ENABLED=true
-
-TIER_LITE_MODEL=gpt-4o-mini       # cheap/fast for simple tool tasks
-TIER_CHAT_MODEL=gpt-4o            # balanced for conversations
-TIER_DEEP_MODEL=o3                 # powerful for complex analysis
-TIER_BG_FAST_MODEL=gpt-4o-mini    # cheap for background tagging
-TIER_BG_DEEP_MODEL=gpt-4o         # strong for background reasoning
 ```
 
 ---
@@ -225,37 +172,13 @@ TIER_BG_DEEP_MODEL=gpt-4o         # strong for background reasoning
 | Observer intervals | `OBSERVATION.md` in each observer directory |
 | Add a new skill or observer | See [CONTRIBUTING.md](CONTRIBUTING.md) |
 
-> `prompts/personality.md` is the single most impactful file — it defines both how Mochi talks (`## Chat`) and what the heartbeat pays attention to (`## Think`).
-
----
-
-## Best Practices
-
-- **Deploy on a VM** — the heartbeat needs 24/7 uptime to be a true companion
-- **Connect an Oura Ring** — run `python oura_auth.py` to authorize, then sleep/readiness/activity/stress data feeds into the heartbeat automatically. The built-in `oura` observer + skill handle everything
-- **Use a cheaper Think model** — heartbeat and maintenance don't need your smartest model. Or enable 5-tier routing for fine-grained cost control (see [5-Tier Model Routing](#5-tier-model-routing))
-- **Start with `prompts/personality.md`** — customizing your bot's voice matters more than any config variable
-- **Start with built-in observers** before writing custom ones — time, activity, and weather provide a solid baseline
+> **Tip**: `prompts/personality.md` is the single most impactful file — it defines how Mochi talks (`## Chat`) and what the heartbeat pays attention to (`## Think`). Start here before tuning any config variable.
 
 ---
 
 ## Architecture
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design.
-
-```
-┌─────────────────────────────────┐
-│ L1: Identity (prompts)          │  ← Your bot's personality
-├─────────────────────────────────┤
-│ L2: Config (.env → config.py)   │  ← 80+ tunables
-├─────────────────────────────────┤
-│ L3: Skills + Observers          │  ← Auto-discovered capabilities + sensors
-├─────────────────────────────────┤
-│ L4: Model Pool (5-tier routing) │  ← LLM orchestration
-├─────────────────────────────────┤
-│ L5: Core (DB + orchestration)   │  ← SQLite (22+ tables, FTS5, vector search)
-└─────────────────────────────────┘
-```
 
 ## Roadmap
 

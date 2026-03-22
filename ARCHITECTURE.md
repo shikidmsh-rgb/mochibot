@@ -13,18 +13,20 @@
 │  → Customize freely, this is YOUR bot's soul        │
 ├─────────────────────────────────────────────────────┤
 │  L2: Config — thresholds, schedules, limits         │
-│  → .env / config.py                                 │
+│  → .env / config.py (~80 tunables)                  │
 │  → Tunable without code change                      │
 ├─────────────────────────────────────────────────────┤
-│  L3: Skills — modular capabilities                  │
+│  L3: Skills + Observers                             │
 │  → mochi/skills/*/ (SKILL.md + handler.py)          │
-│  → Self-contained, auto-discovered                  │
-├─────────────────────────────────────────────────────┤
-│  L3.5: Observers — passive world sensors            │
 │  → mochi/observers/*/ (OBSERVATION.md + observer.py)│
-│  → Read-only, interval-throttled, auto-discovered   │
+│  → Self-contained, auto-discovered at startup       │
 ├─────────────────────────────────────────────────────┤
-│  L4: Core — orchestration, transport, infra         │
+│  L4: Model Pool — 5-tier LLM routing               │
+│  → model_pool.py + llm.py                           │
+│  → lite / chat / deep / bg_fast / bg_deep           │
+├─────────────────────────────────────────────────────┤
+│  L5: Core — DB, orchestration, transport            │
+│  → SQLite (22+ tables, FTS5, optional sqlite-vec)   │
 │  → mochi/*.py — glue code                           │
 └─────────────────────────────────────────────────────┘
 ```
@@ -46,36 +48,41 @@ mochi/
 ├── main.py               # Entry point — boots all subsystems
 ├── ai_client.py          # LLM chat + tool dispatch loop
 ├── llm.py                # LLM provider abstraction (OpenAI/Azure/Anthropic)
+├── model_pool.py         # 5-tier model routing + embedding client (Azure OpenAI)
 ├── heartbeat.py          # Observe → Think → Act autonomous loop
 ├── memory_engine.py      # 3-layer memory (extract, dedup, rebuild)
 ├── prompt_loader.py      # Prompt hot-reload from prompts/*.md
-├── runtime_state.py      # In-memory shared state
-├── db.py                 # SQLite database layer (messages, reminders, todos, habits)
-├── config.py             # Environment config (~30 settings)
+├── runtime_state.py      # Thread-safe in-memory cross-module state
+├── db.py                 # SQLite (22+ tables, FTS5, optional sqlite-vec)
+├── config.py             # Environment config (~80 tunables)
+├── oura_client.py        # Oura Ring OAuth2 + token refresh + API cache
 ├── transport/
 │   ├── __init__.py       # Abstract Transport base class
 │   └── telegram.py       # Telegram Bot API transport
 ├── observers/
 │   ├── __init__.py       # Observer registry + discover() + collect_all()
 │   ├── base.py           # Observer ABC + ObserverMeta + safe_observe() cache
-│   ├── oura/             # Oura Ring (sleep, readiness, activity, stress)
+│   ├── time_context/     # Date, time-of-day, holidays, silence duration
+│   ├── activity_pattern/ # 7-day conversation trend detection
+│   ├── recent_conversation/ # Last 20 messages (context for Think)
 │   ├── weather/          # Weather data (OpenWeatherMap)
-│   └── habit/            # Habit tracking (SQLite)
+│   ├── habit/            # Habit tracking (SQLite)
+│   └── oura/             # Oura Ring (sleep, readiness, activity, stress)
 └── skills/
     ├── __init__.py       # Skill registry + auto-discovery
-    ├── base.py           # Skill base class + SKILL.md parser
-    ├── memory/           # Save, recall, update core memory
-    ├── oura/             # Oura Ring data tool (get_oura_data)
-    ├── reminder/         # Time-based reminders
-    └── todo/             # Todo list management
+    ├── base.py           # Skill base class + SKILL.md parser (v1 + v2)
+    ├── memory/           # save_memory, recall_memory, update_core_memory
+    ├── oura/             # get_oura_data (sleep, activity, readiness, stress)
+    ├── reminder/         # manage_reminder (create/list/delete)
+    └── todo/             # manage_todo (add/list/complete/delete)
 
 prompts/                  # Editable prompt templates
-├── system_chat.md        # Bot personality
+├── personality.md        # Bot personality (## Chat + ## Think sections)
+├── system_chat.md        # Chat model system prompt
 ├── think_system.md       # Heartbeat decision prompt
-├── memory_extract.md     # Memory extraction prompt
-├── report_morning.md     # Morning briefing
-└── report_evening.md     # Evening reflection
-
+├── memory_extract.md     # Memory extraction rules
+├── report_morning.md     # Morning briefing (disabled by default)
+└── report_evening.md     # Evening reflection (disabled by default)
 ```
 
 ---
