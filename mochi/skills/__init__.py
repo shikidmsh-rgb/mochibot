@@ -1,13 +1,20 @@
-"""Skill registry — auto-discovery and management of skills.
+"""Skill registry — auto-discovery and management of skills (v2).
 
 Skills are discovered by scanning the skills/ directory for subdirectories
 containing handler.py and SKILL.md.
 
 Usage:
-    from mochi.skills import registry
-    registry.discover()           # scan and load all skills
-    tools = registry.get_tools()  # get all exposed tool definitions
-    result = await registry.dispatch(tool_name, args, user_id)
+    from mochi.skills import discover, get_tools, dispatch
+    discover()                        # scan and load all skills
+    tools = get_tools()               # get all exposed tool definitions
+    result = await dispatch(tool_name, args, user_id)
+
+v2 additions:
+    get_usage_rules_for_tools()       # collect usage rules for active tools
+    get_by_trigger()                  # find skills by trigger config
+    get_cron_skills()                 # return cron-scheduled skills
+    skill_for_tool()                  # tool_name → skill_name lookup
+    get_skill_info_all()              # admin metadata
 """
 
 import importlib
@@ -67,6 +74,10 @@ def discover() -> list[str]:
                 continue
 
             skill = skill_cls()
+
+            # Force SKILL.md loading to populate v2 attributes
+            _ = skill.skill_md
+
             _skills[skill.name] = skill
 
             # Map tool names to skill
@@ -77,8 +88,9 @@ def discover() -> list[str]:
                         _tool_map[tool_name] = skill.name
 
             registered.append(skill.name)
-            log.info("✅ Registered skill: %s (tools: %s, triggers: %s)",
+            log.info("Registered skill: %s (type=%s, tools=%s, triggers=%s)",
                      skill.name,
+                     skill.skill_type,
                      [t["function"]["name"] for t in skill.get_tools()] if skill.get_tools() else "none",
                      skill.triggers)
 
@@ -88,6 +100,10 @@ def discover() -> list[str]:
     log.info("Skill discovery complete: %d skills registered", len(registered))
     return registered
 
+
+# ---------------------------------------------------------------------------
+# Core API (backward-compatible)
+# ---------------------------------------------------------------------------
 
 def get_skill(name: str) -> Skill | None:
     """Get a skill by name."""
@@ -106,6 +122,10 @@ def get_tools() -> list[dict]:
 def get_tool_skill(tool_name: str) -> str | None:
     """Get the skill name that owns a tool."""
     return _tool_map.get(tool_name)
+
+
+# Alias for consistency with private Mochi
+skill_for_tool = get_tool_skill
 
 
 async def dispatch(tool_name: str, args: dict, user_id: int = 0,
@@ -130,8 +150,72 @@ async def dispatch(tool_name: str, args: dict, user_id: int = 0,
     return await skill.run(context)
 
 
+# ---------------------------------------------------------------------------
+# v2 API additions
+# ---------------------------------------------------------------------------
+
+def get_usage_rules_for_tools(tool_names: list[str]) -> str:
+    """Collect usage rules from skills owning the given tools.
+
+    Returns a concatenated string of all unique usage rules, or "".
+    """
+    seen_skills: set[str] = set()
+    rules_parts: list[str] = []
+
+    for tn in tool_names:
+        sn = _tool_map.get(tn)
+        if not sn or sn in seen_skills:
+            continue
+        seen_skills.add(sn)
+        skill = _skills.get(sn)
+        if skill and skill.usage_rules:
+            rules_parts.append(f"### {skill.name}\n{skill.usage_rules}")
+
+    return "\n\n".join(rules_parts) if rules_parts else ""
+
+
+def get_by_trigger(trigger_type: str, **conditions) -> list[Skill]:
+    """Find all skills that match a trigger type and optional conditions."""
+    return [
+        s for s in _skills.values()
+        if s.has_trigger(trigger_type, **conditions)
+    ]
+
+
+def get_cron_skills() -> list[tuple[Skill, str]]:
+    """Return cron-scheduled skills with their cron expressions.
+
+    Returns: [(skill, "0 3 * * *"), ...] — only skills with type=cron triggers.
+    """
+    results = []
+    for skill in _skills.values():
+        for t in skill.triggers:
+            if isinstance(t, dict) and t.get("type") == "cron":
+                schedule = t.get("schedule", "")
+                if schedule:
+                    results.append((skill, schedule))
+    return results
+
+
+def get_skill_info_all() -> list[dict]:
+    """Return metadata for all registered skills (for admin display)."""
+    return [
+        {
+            "name": s.name,
+            "description": s.description,
+            "type": s.skill_type,
+            "expose_as_tool": s.expose_as_tool,
+            "multi_turn": s.multi_turn,
+            "triggers": s.triggers,
+            "tools": [t["function"]["name"] for t in s.get_tools()] if s.get_tools() else [],
+            "has_usage_rules": bool(s.usage_rules),
+        }
+        for s in _skills.values()
+    ]
+
+
 def list_skills() -> list[dict]:
-    """List all registered skills with metadata."""
+    """List all registered skills with metadata (backward compat)."""
     return [
         {
             "name": s.name,

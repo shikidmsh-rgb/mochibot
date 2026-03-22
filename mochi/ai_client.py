@@ -85,7 +85,8 @@ async def chat(message: IncomingMessage) -> str:
         messages.append({"role": msg["role"], "content": msg["content"]})
 
     # LLM call (with tool loop)
-    max_tool_rounds = 5
+    from mochi.config import TOOL_LOOP_MAX_ROUNDS, AI_CHAT_MAX_COMPLETION_TOKENS
+    max_tool_rounds = TOOL_LOOP_MAX_ROUNDS
     client = get_client()
 
     for round_num in range(max_tool_rounds):
@@ -93,6 +94,7 @@ async def chat(message: IncomingMessage) -> str:
             messages=messages,
             tools=tools if tools else None,
             temperature=0.7,
+            max_tokens=AI_CHAT_MAX_COMPLETION_TOKENS,
         )
 
         log_usage(

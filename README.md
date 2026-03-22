@@ -18,10 +18,11 @@ Emotional support. Daily check-ins. Gentle reminders. Always-on memory. Fully pr
 ## Why MochiBot
 
 - **Lightweight** — single process, SQLite, no Docker/Redis/Postgres. `pip install` and go
-- **Persistent memory** — 3-layer memory that survives restarts and self-organizes nightly
+- **Persistent memory** — 3-layer memory that survives restarts and self-organizes nightly, with full-text search and optional vector search
 - **Proactive** — a heartbeat loop that checks in on you, not just waits for input
 - **Private** — fully self-hosted, your data never leaves your machine
-- **Extensible** — drop-in skills & observers, auto-discovered at startup
+- **Extensible** — drop-in skills & observers, auto-discovered at startup. Skills support rich metadata, usage rules, and flexible triggers
+- **Cost-efficient** — 5-tier model routing: use cheap models for simple tasks, powerful models only when needed
 - **Body-aware** — built-in [Oura Ring](https://ouraring.com) integration: sleep, readiness, activity, stress — your bot notices what your words don't say
 
 ---
@@ -52,37 +53,49 @@ An autonomous background loop, not a cron job:
 
 Rate-limited and conservative. A companion, not a spammer.
 
-### Dual-Model Architecture
+### 5-Tier Model Routing
 
-MochiBot separates **Chat** (conversations) from **Think** (heartbeat + maintenance) — they can run on different models, or the same one:
+MochiBot routes different tasks to the right model for the job — from cheap/fast for simple tool calls to powerful for deep analysis:
 
 ```
-┌──────────────────────────────────────────────────┐
-│                                                  │
-│  Chat Model              Think Model             │
-│  ┌──────────────┐        ┌──────────────┐        │
-│  │ Conversations │        │ Heartbeat    │        │
-│  │ Tool calls    │        │ Maintenance  │        │
-│  │ Memory recall │        │ Memory dedup │        │
-│  └──────────────┘        └──────────────┘        │
-│         ▲                       ▲                │
-│    CHAT_MODEL              THINK_MODEL           │
-│    (required)         (optional — falls back     │
-│                        to CHAT_MODEL)            │
-│                                                  │
-└──────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                 │
+│  LITE             CHAT            DEEP                          │
+│  ┌────────────┐   ┌────────────┐  ┌────────────┐               │
+│  │ Simple tool │   │ Conver-    │  │ Complex    │               │
+│  │ tasks       │   │ sations    │  │ analysis   │               │
+│  └────────────┘   └────────────┘  └────────────┘               │
+│                                                                 │
+│  BG_FAST                          BG_DEEP                       │
+│  ┌────────────┐                   ┌────────────┐               │
+│  │ Background  │                   │ Background │               │
+│  │ tagging     │                   │ reasoning  │               │
+│  └────────────┘                   └────────────┘               │
+│                                                                 │
+│  Each tier: TIER_{name}_PROVIDER / API_KEY / MODEL / BASE_URL   │
+│  Unconfigured tiers fall back to CHAT_* (zero-config = works)   │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-**Why?** The heartbeat runs every N minutes; maintenance processes memories nightly. These are simpler than conversations — a cheaper model handles them fine, cutting API costs significantly.
+| Tier | Purpose | Example use |
+|------|---------|-------------|
+| **LITE** | Cheap/fast | Simple tool tasks (check-ins, reminders) |
+| **CHAT** | Balanced (default) | Daily conversations, proactive messages |
+| **DEEP** | Powerful | Code analysis, complex reasoning |
+| **BG_FAST** | Cheap background | Classification, tagging, summarization |
+| **BG_DEEP** | Strong background | Heartbeat reasoning, memory operations |
+
+**Backward compatible**: set `TIER_ROUTING_ENABLED=false` (default) and the system uses the original 2-model setup (Chat + Think). Enable tier routing when you're ready to optimize costs.
 
 ### Observers & Skills
 
 | Concept | Role | Examples |
 |---------|------|---------|
 | **Observers** | Passive sensors that feed context into Think — zero LLM calls, interval-throttled | `time_context`, `weather`, `activity_pattern`, `oura` (sleep/readiness/stress) |
-| **Skills** | Active capabilities the Chat model can invoke via tool calls | `memory`, `reminder`, `todo`, `oura`, `web_search` |
+| **Skills** | Active capabilities the Chat model can invoke via tool calls — auto-discovered from `SKILL.md` + `handler.py` | `memory`, `reminder`, `todo`, `oura` |
 
-Both are **auto-discovered at startup** — drop a folder, restart, done. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to create your own.
+Both are **auto-discovered at startup** — drop a folder, restart, done. Skills support two SKILL.md formats (v1 and v2) with rich metadata: type, multi-turn, usage rules, and flexible trigger configuration. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to create your own.
 
 ---
 
@@ -130,6 +143,8 @@ The heartbeat runs continuously. **If you run on a laptop, the bot goes offline 
 
 All config lives in `.env`. Key variables:
 
+### Core
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CHAT_PROVIDER` | `openai` | SDK: `openai` (+ any compatible), `azure_openai`, `anthropic` |
@@ -139,12 +154,42 @@ All config lives in `.env`. Key variables:
 | `THINK_MODEL` | *=CHAT* | Cheaper model for heartbeat + maintenance (optional) |
 | `THINK_PROVIDER` | *=CHAT* | Separate provider for Think (optional) |
 | `TELEGRAM_BOT_TOKEN` | — | From @BotFather |
+
+### Behavior
+
+| Variable | Default | Description |
+|----------|---------|-------------|
 | `HEARTBEAT_INTERVAL_MINUTES` | `20` | Observe → Think → Act cycle |
 | `AWAKE_HOUR_START` / `END` | `7` / `23` | Heartbeat sleeps outside these hours |
 | `MAX_DAILY_PROACTIVE` | `10` | Rate limit for proactive messages |
 | `MAINTENANCE_HOUR` | `3` | Nightly maintenance (local time) |
 | `TIMEZONE_OFFSET_HOURS` | `0` | Your UTC offset |
-| `OURA_CLIENT_ID` | — | Oura Ring OAuth2 client ID (optional — run `python oura_auth.py` to set up) |
+
+### 5-Tier Model Routing (optional)
+
+Set `TIER_ROUTING_ENABLED=true` to enable. Each tier has four keys:
+
+```
+TIER_{LITE,CHAT,DEEP,BG_FAST,BG_DEEP}_{PROVIDER,API_KEY,MODEL,BASE_URL}
+```
+
+Unconfigured tiers fall back to `CHAT_*` / `THINK_*`. Zero-config = original 2-model behavior.
+
+### Embedding & Vector Search (optional)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AZURE_EMBEDDING_ENDPOINT` | — | Azure OpenAI endpoint for embeddings |
+| `AZURE_EMBEDDING_API_KEY` | — | Embedding API key |
+| `AZURE_EMBEDDING_DEPLOYMENT` | — | Deployment name (e.g. `text-embedding-3-small`) |
+| `VEC_SEARCH_NATIVE_ENABLED` | `false` | Enable sqlite-vec native vector KNN search |
+| `RECALL_VEC_SIM_THRESHOLD` | `0.6` | Minimum cosine similarity for vector recall |
+
+### Integrations (optional)
+
+| Variable | Description |
+|----------|-------------|
+| `OURA_CLIENT_ID` | Oura Ring OAuth2 client ID (run `python oura_auth.py` to set up) |
 
 See [.env.example](.env.example) for the full list.
 
@@ -155,17 +200,16 @@ CHAT_MODEL=gpt-4o            # smart model for conversations
 THINK_MODEL=gpt-4o-mini      # fast model for heartbeat + maintenance
 ```
 
-Chat and Think can even use **different providers** — e.g. a capable model for Chat, a cheap one for Think:
+**5-tier example** — fine-grained cost optimization:
 
 ```dotenv
-CHAT_PROVIDER=anthropic
-CHAT_API_KEY=sk-ant-...
-CHAT_MODEL=claude-sonnet-4-20250514
+TIER_ROUTING_ENABLED=true
 
-THINK_PROVIDER=openai          # any OpenAI-compatible API
-THINK_BASE_URL=https://api.groq.com/openai/v1
-THINK_API_KEY=your-groq-key
-THINK_MODEL=llama-3.3-70b-versatile
+TIER_LITE_MODEL=gpt-4o-mini       # cheap/fast for simple tool tasks
+TIER_CHAT_MODEL=gpt-4o            # balanced for conversations
+TIER_DEEP_MODEL=o3                 # powerful for complex analysis
+TIER_BG_FAST_MODEL=gpt-4o-mini    # cheap for background tagging
+TIER_BG_DEEP_MODEL=gpt-4o         # strong for background reasoning
 ```
 
 ---
@@ -189,7 +233,7 @@ THINK_MODEL=llama-3.3-70b-versatile
 
 - **Deploy on a VM** — the heartbeat needs 24/7 uptime to be a true companion
 - **Connect an Oura Ring** — run `python oura_auth.py` to authorize, then sleep/readiness/activity/stress data feeds into the heartbeat automatically. The built-in `oura` observer + skill handle everything
-- **Use a cheaper Think model** — heartbeat and maintenance don't need your smartest model (see [Dual-Model Architecture](#dual-model-architecture))
+- **Use a cheaper Think model** — heartbeat and maintenance don't need your smartest model. Or enable 5-tier routing for fine-grained cost control (see [5-Tier Model Routing](#5-tier-model-routing))
 - **Start with `prompts/personality.md`** — customizing your bot's voice matters more than any config variable
 - **Start with built-in observers** before writing custom ones — time, activity, and weather provide a solid baseline
 
@@ -200,23 +244,30 @@ THINK_MODEL=llama-3.3-70b-versatile
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design.
 
 ```
-┌─────────────────────────────┐
-│ L1: Identity (prompts)      │  ← Your bot's personality
-├─────────────────────────────┤
-│ L2: Config (.env)           │  ← Tunables
-├─────────────────────────────┤
-│ L3: Skills + Observers      │  ← Capabilities + Sensors
-├─────────────────────────────┤
-│ L4: Core (orchestration)    │  ← Framework
-└─────────────────────────────┘
+┌─────────────────────────────────┐
+│ L1: Identity (prompts)          │  ← Your bot's personality
+├─────────────────────────────────┤
+│ L2: Config (.env → config.py)   │  ← 80+ tunables
+├─────────────────────────────────┤
+│ L3: Skills + Observers          │  ← Auto-discovered capabilities + sensors
+├─────────────────────────────────┤
+│ L4: Model Pool (5-tier routing) │  ← LLM orchestration
+├─────────────────────────────────┤
+│ L5: Core (DB + orchestration)   │  ← SQLite (22+ tables, FTS5, vector search)
+└─────────────────────────────────┘
 ```
 
 ## Roadmap
 
 - [x] Any OpenAI-compatible API (DeepSeek, Ollama, Groq, etc.)
 - [x] Dual-model architecture (Chat + Think)
+- [x] 5-tier model routing (lite / chat / deep / bg_fast / bg_deep)
+- [x] Skill v2 system — rich metadata, usage rules, multi-turn, flexible triggers
+- [x] Expanded DB schema — 22+ tables, FTS5 full-text search, optional sqlite-vec vector search
+- [x] Embedding support — Azure OpenAI embeddings with TTL cache
 - [ ] Morning / evening reports (scaffolded, enable via `MORNING_REPORT_HOUR` / `EVENING_REPORT_HOUR`)
 - [x] Oura Ring integration — sleep, readiness, activity, stress (observer + skill)
+- [ ] Pre-router — automatic skill selection before LLM call
 - [ ] Tool governance — per-skill approval policies, audit logging
 - [ ] Admin portal — web UI for memory inspection, config, and diagnostics
 - [ ] Voice message support

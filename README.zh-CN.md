@@ -18,10 +18,11 @@
 ## 为什么选 MochiBot
 
 - **轻量级** — 单进程、SQLite，不需要 Docker/Redis/Postgres。`pip install` 就能跑
-- **持久记忆** — 三层记忆系统，重启不丢失，每晚自动整理
+- **持久记忆** — 三层记忆系统，重启不丢失，每晚自动整理。支持全文搜索和可选的向量搜索
 - **主动关心** — 心跳循环主动找你聊，而不是干等你输入
 - **完全私有** — 自托管，数据永远不离开你的机器
-- **易扩展** — 即插即用的 Skills 和 Observers，启动时自动发现
+- **易扩展** — 即插即用的 Skills 和 Observers，启动时自动发现。支持丰富的元数据、使用规则和灵活的触发配置
+- **省钱** — 5 级模型路由：简单任务用便宜模型，复杂任务才上强模型
 - **感知身体** — 内置 [Oura Ring](https://ouraring.com) 集成：睡眠、准备度、活动、压力——你说不出口的，身体数据替你开口
 
 ---
@@ -52,37 +53,49 @@ Layer 3: 对话记录    — 原始消息，随时间压缩
 
 有限速、很克制。是陪伴，不是骚扰。
 
-### 双模型架构
+### 5 级模型路由
 
-MochiBot 把 **Chat**（对话）和 **Think**（心跳 + 维护）分开——可以跑不同的模型，也可以用同一个：
+MochiBot 把不同任务路由到最合适的模型——简单任务用便宜/快的，复杂分析才上强模型：
 
 ```
-┌──────────────────────────────────────────────────┐
-│                                                  │
-│  Chat Model              Think Model             │
-│  ┌──────────────┐        ┌──────────────┐        │
-│  │ 对话          │        │ 心跳循环      │        │
-│  │ 工具调用      │        │ 记忆维护      │        │
-│  │ 记忆检索      │        │ 记忆去重      │        │
-│  └──────────────┘        └──────────────┘        │
-│         ▲                       ▲                │
-│    CHAT_MODEL              THINK_MODEL           │
-│    （必填）            （可选——默认使用            │
-│                        CHAT_MODEL）              │
-│                                                  │
-└──────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                 │
+│  LITE             CHAT            DEEP                          │
+│  ┌────────────┐   ┌────────────┐  ┌────────────┐               │
+│  │ 简单工具    │   │ 日常对话    │  │ 复杂分析    │               │
+│  │ 任务        │   │            │  │            │               │
+│  └────────────┘   └────────────┘  └────────────┘               │
+│                                                                 │
+│  BG_FAST                          BG_DEEP                       │
+│  ┌────────────┐                   ┌────────────┐               │
+│  │ 后台分类    │                   │ 后台推理    │               │
+│  │ 打标        │                   │ 分析        │               │
+│  └────────────┘                   └────────────┘               │
+│                                                                 │
+│  每层: TIER_{name}_PROVIDER / API_KEY / MODEL / BASE_URL        │
+│  未配置的层自动回退到 CHAT_*（零配置 = 直接能用）                  │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-**为什么要分开？** 心跳每 N 分钟跑一次，记忆维护每晚跑一次。这些任务比对话简单——用便宜的模型就够了，能大幅降低 API 费用。
+| 层 | 用途 | 举例 |
+|----|------|------|
+| **LITE** | 便宜/快 | 简单工具任务（打卡、提醒） |
+| **CHAT** | 均衡（默认） | 日常对话、主动问候 |
+| **DEEP** | 强力 | 代码分析、复杂推理 |
+| **BG_FAST** | 便宜后台 | 分类、打标、摘要 |
+| **BG_DEEP** | 强力后台 | 心跳推理、记忆操作 |
+
+**向后兼容**：`TIER_ROUTING_ENABLED=false`（默认）时使用原来的双模型（Chat + Think）。准备好了再开启 tier 路由优化成本。
 
 ### Observers 与 Skills
 
 | 概念 | 角色 | 举例 |
 |------|------|------|
 | **Observers** | 被动传感器，为 Think 提供上下文——零 LLM 调用，按间隔节流 | `time_context`、`weather`、`activity_pattern`、`oura`（睡眠/准备度/压力） |
-| **Skills** | Chat 模型通过 tool call 调用的主动能力 | `memory`、`reminder`、`todo`、`oura`、`web_search` |
+| **Skills** | Chat 模型通过 tool call 调用的主动能力——由 `SKILL.md` + `handler.py` 自动发现 | `memory`、`reminder`、`todo`、`oura` |
 
-两者都**启动时自动发现**——放个文件夹，重启即可。详见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+两者都**启动时自动发现**——放个文件夹，重启即可。Skills 支持两种 SKILL.md 格式（v1 和 v2），具有丰富的元数据：类型、多轮对话、使用规则和灵活的触发配置。详见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ---
 
@@ -130,6 +143,8 @@ python -m mochi.main
 
 所有配置在 `.env`。核心变量：
 
+### 核心
+
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `CHAT_PROVIDER` | `openai` | SDK：`openai`（+ 兼容）、`azure_openai`、`anthropic` |
@@ -139,12 +154,42 @@ python -m mochi.main
 | `THINK_MODEL` | *=CHAT* | 心跳 + 维护用的便宜模型（可选） |
 | `THINK_PROVIDER` | *=CHAT* | Think 的独立服务商（可选） |
 | `TELEGRAM_BOT_TOKEN` | — | 从 @BotFather 获取 |
+
+### 行为
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
 | `HEARTBEAT_INTERVAL_MINUTES` | `20` | Observe → Think → Act 循环间隔 |
 | `AWAKE_HOUR_START` / `END` | `7` / `23` | 心跳在这些时间外休眠 |
 | `MAX_DAILY_PROACTIVE` | `10` | 每日主动消息上限 |
 | `MAINTENANCE_HOUR` | `3` | 每晚维护时间（本地时间） |
 | `TIMEZONE_OFFSET_HOURS` | `0` | 你的 UTC 偏移 |
-| `OURA_CLIENT_ID` | — | Oura Ring OAuth2 客户端 ID（可选——运行 `python oura_auth.py` 设置） |
+
+### 5 级模型路由（可选）
+
+设 `TIER_ROUTING_ENABLED=true` 开启。每层有四个配置键：
+
+```
+TIER_{LITE,CHAT,DEEP,BG_FAST,BG_DEEP}_{PROVIDER,API_KEY,MODEL,BASE_URL}
+```
+
+未配置的层回退到 `CHAT_*` / `THINK_*`。零配置 = 原来的双模型行为。
+
+### 向量嵌入和搜索（可选）
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `AZURE_EMBEDDING_ENDPOINT` | — | Azure OpenAI 嵌入端点 |
+| `AZURE_EMBEDDING_API_KEY` | — | 嵌入 API key |
+| `AZURE_EMBEDDING_DEPLOYMENT` | — | 部署名（如 `text-embedding-3-small`） |
+| `VEC_SEARCH_NATIVE_ENABLED` | `false` | 启用 sqlite-vec 原生向量 KNN 搜索 |
+| `RECALL_VEC_SIM_THRESHOLD` | `0.6` | 向量召回最低余弦相似度 |
+
+### 集成（可选）
+
+| 变量 | 说明 |
+|------|------|
+| `OURA_CLIENT_ID` | Oura Ring OAuth2 客户端 ID（运行 `python oura_auth.py` 设置） |
 
 完整列表见 [.env.example](.env.example)。
 
@@ -155,17 +200,16 @@ CHAT_MODEL=gpt-4o            # 聪明模型处理对话
 THINK_MODEL=gpt-4o-mini      # 快速模型处理心跳 + 维护
 ```
 
-Chat 和 Think 甚至可以用**不同的服务商**——比如 Chat 用强模型，Think 用便宜的：
+**5 级路由示例** — 精细化成本优化：
 
 ```dotenv
-CHAT_PROVIDER=anthropic
-CHAT_API_KEY=sk-ant-...
-CHAT_MODEL=claude-sonnet-4-20250514
+TIER_ROUTING_ENABLED=true
 
-THINK_PROVIDER=openai          # 任何 OpenAI 兼容 API
-THINK_BASE_URL=https://api.groq.com/openai/v1
-THINK_API_KEY=your-groq-key
-THINK_MODEL=llama-3.3-70b-versatile
+TIER_LITE_MODEL=gpt-4o-mini       # 便宜/快，处理简单工具任务
+TIER_CHAT_MODEL=gpt-4o            # 均衡，处理对话
+TIER_DEEP_MODEL=o3                 # 强力，处理复杂分析
+TIER_BG_FAST_MODEL=gpt-4o-mini    # 便宜，后台分类打标
+TIER_BG_DEEP_MODEL=gpt-4o         # 强力，后台推理
 ```
 
 ---
@@ -189,7 +233,7 @@ THINK_MODEL=llama-3.3-70b-versatile
 
 - **部署到 VM** — 心跳需要 7×24 在线才能成为真正的陪伴
 - **接入 Oura Ring** — 运行 `python oura_auth.py` 授权后，睡眠/准备度/活动/压力数据会自动接入心跳。内置的 `oura` observer + skill 搞定一切
-- **用便宜的 Think 模型** — 心跳和维护不需要你最聪明的模型（见[双模型架构](#双模型架构)）
+- **用便宜的 Think 模型** — 心跳和维护不需要你最聪明的模型。或者开启 5 级路由精细化控制成本（见 [5 级模型路由](#5-级模型路由)）
 - **从 `prompts/personality.md` 开始** — 定制 bot 的声音比任何配置项都重要
 - **先用内置 observer** — time、activity、weather 提供了不错的基线
 
@@ -200,23 +244,30 @@ THINK_MODEL=llama-3.3-70b-versatile
 详见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
 ```
-┌─────────────────────────────┐
-│ L1: Identity (prompts)      │  ← Bot 的人格
-├─────────────────────────────┤
-│ L2: Config (.env)           │  ← 可调参数
-├─────────────────────────────┤
-│ L3: Skills + Observers      │  ← 能力 + 传感器
-├─────────────────────────────┤
-│ L4: Core (orchestration)    │  ← 框架
-└─────────────────────────────┘
+┌─────────────────────────────────┐
+│ L1: Identity (prompts)          │  ← Bot 的人格
+├─────────────────────────────────┤
+│ L2: Config (.env → config.py)   │  ← 80+ 可调参数
+├─────────────────────────────────┤
+│ L3: Skills + Observers          │  ← 自动发现的能力 + 传感器
+├─────────────────────────────────┤
+│ L4: Model Pool (5 级路由)       │  ← LLM 调度编排
+├─────────────────────────────────┤
+│ L5: Core (DB + 编排)            │  ← SQLite（22+ 表、FTS5、向量搜索）
+└─────────────────────────────────┘
 ```
 
 ## 路线图
 
 - [x] 支持任意 OpenAI 兼容 API（DeepSeek、Ollama、Groq 等）
 - [x] 双模型架构（Chat + Think）
+- [x] 5 级模型路由（lite / chat / deep / bg_fast / bg_deep）
+- [x] Skill v2 系统 — 丰富的元数据、使用规则、多轮对话、灵活触发
+- [x] 扩展 DB schema — 22+ 表、FTS5 全文搜索、可选 sqlite-vec 向量搜索
+- [x] 向量嵌入支持 — Azure OpenAI 嵌入 + TTL 缓存
 - [ ] 早晚报告（已预埋，在 `.env` 里设 `MORNING_REPORT_HOUR` / `EVENING_REPORT_HOUR` 开启）
 - [x] Oura Ring 集成 — 睡眠、准备度、活动、压力（observer + skill）
+- [ ] Pre-router — LLM 调用前自动选择 skill
 - [ ] 工具治理 — 按 skill 的审批策略、审计日志
 - [ ] 管理后台 — 记忆查看、配置、诊断的 Web UI
 - [ ] 语音消息支持

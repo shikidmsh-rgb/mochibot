@@ -21,6 +21,9 @@ def _env_int(key: str, default: int) -> int:
 def _env_bool(key: str, default: bool = False) -> bool:
     return os.getenv(key, str(default)).lower() in ("1", "true", "yes")
 
+def _env_float(key: str, default: float) -> float:
+    return float(os.getenv(key, str(default)))
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # LLM — Chat Model (required)
@@ -51,6 +54,51 @@ THINK_BASE_URL = _env("THINK_BASE_URL")  # defaults to CHAT_BASE_URL
 # ═══════════════════════════════════════════════════════════════════════════
 
 AZURE_API_VERSION = _env("AZURE_API_VERSION", "2024-12-01-preview")
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Model Tier Routing (5-tier system)
+# ═══════════════════════════════════════════════════════════════════════════
+# When TIER_ROUTING_ENABLED=true, each tier can use a different model/provider.
+# When false (default), all tiers fall back to CHAT_* / THINK_* config.
+# Zero-config = existing 2-model behavior.
+
+TIER_ROUTING_ENABLED = _env_bool("TIER_ROUTING_ENABLED", False)
+
+TIER_LITE_PROVIDER = _env("TIER_LITE_PROVIDER")
+TIER_LITE_API_KEY = _env("TIER_LITE_API_KEY")
+TIER_LITE_MODEL = _env("TIER_LITE_MODEL")
+TIER_LITE_BASE_URL = _env("TIER_LITE_BASE_URL")
+
+TIER_CHAT_PROVIDER = _env("TIER_CHAT_PROVIDER")
+TIER_CHAT_API_KEY = _env("TIER_CHAT_API_KEY")
+TIER_CHAT_MODEL = _env("TIER_CHAT_MODEL")
+TIER_CHAT_BASE_URL = _env("TIER_CHAT_BASE_URL")
+
+TIER_DEEP_PROVIDER = _env("TIER_DEEP_PROVIDER")
+TIER_DEEP_API_KEY = _env("TIER_DEEP_API_KEY")
+TIER_DEEP_MODEL = _env("TIER_DEEP_MODEL")
+TIER_DEEP_BASE_URL = _env("TIER_DEEP_BASE_URL")
+
+TIER_BG_FAST_PROVIDER = _env("TIER_BG_FAST_PROVIDER")
+TIER_BG_FAST_API_KEY = _env("TIER_BG_FAST_API_KEY")
+TIER_BG_FAST_MODEL = _env("TIER_BG_FAST_MODEL")
+TIER_BG_FAST_BASE_URL = _env("TIER_BG_FAST_BASE_URL")
+
+TIER_BG_DEEP_PROVIDER = _env("TIER_BG_DEEP_PROVIDER")
+TIER_BG_DEEP_API_KEY = _env("TIER_BG_DEEP_API_KEY")
+TIER_BG_DEEP_MODEL = _env("TIER_BG_DEEP_MODEL")
+TIER_BG_DEEP_BASE_URL = _env("TIER_BG_DEEP_BASE_URL")
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Embedding (vector memory search)
+# ═══════════════════════════════════════════════════════════════════════════
+
+AZURE_EMBEDDING_ENDPOINT = _env("AZURE_EMBEDDING_ENDPOINT")
+AZURE_EMBEDDING_API_KEY = _env("AZURE_EMBEDDING_API_KEY")
+AZURE_EMBEDDING_DEPLOYMENT = _env("AZURE_EMBEDDING_DEPLOYMENT", "text-embedding-3-small")
+AZURE_EMBEDDING_API_VERSION = _env("AZURE_EMBEDDING_API_VERSION", "2024-10-21")
+EMBEDDING_CACHE_MAX_SIZE = _env_int("EMBEDDING_CACHE_MAX_SIZE", 128)
+EMBEDDING_CACHE_TTL_S = _env_int("EMBEDDING_CACHE_TTL_S", 300)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Transport
@@ -161,3 +209,88 @@ HEARTBEAT_LOG_DELETE_DAYS = _env_int("HEARTBEAT_LOG_DELETE_DAYS", 30)
 # ═══════════════════════════════════════════════════════════════════════════
 
 TIMEZONE_OFFSET_HOURS = _env_int("TIMEZONE_OFFSET_HOURS", 0)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Memory Recall / Vector Search
+# ═══════════════════════════════════════════════════════════════════════════
+
+RECALL_VEC_SIM_THRESHOLD = _env_float("RECALL_VEC_SIM_THRESHOLD", 0.25)
+RECALL_BM25_WEIGHT = _env_float("RECALL_BM25_WEIGHT", 2.0)
+RECALL_VEC_SIM_WEIGHT = _env_float("RECALL_VEC_SIM_WEIGHT", 6.0)
+VEC_SEARCH_NATIVE_ENABLED = _env_bool("VEC_SEARCH_NATIVE_ENABLED", True)
+VEC_EMBEDDING_DIM = _env_int("VEC_EMBEDDING_DIM", 1536)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Memory Lifecycle
+# ═══════════════════════════════════════════════════════════════════════════
+
+MEMORY_DEMOTE_AFTER_DAYS = _env_int("MEMORY_DEMOTE_AFTER_DAYS", 60)
+MEMORY_DEMOTE_MIN_ACCESS = _env_int("MEMORY_DEMOTE_MIN_ACCESS", 3)
+RECALL_DECAY_HALF_LIFE_DAYS = _env_float("RECALL_DECAY_HALF_LIFE_DAYS", 30.0)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Token Limits
+# ═══════════════════════════════════════════════════════════════════════════
+
+AI_CHAT_MAX_COMPLETION_TOKENS = _env_int("AI_CHAT_MAX_COMPLETION_TOKENS", 4096)
+REPORT_MAX_TOKENS = _env_int("REPORT_MAX_TOKENS", 2048)
+TOOL_LOOP_MAX_ROUNDS = _env_int("TOOL_LOOP_MAX_ROUNDS", 5)
+TOOL_LOOP_PER_TOOL_LIMIT = _env_int("TOOL_LOOP_PER_TOOL_LIMIT", 5)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Observer Thresholds
+# ═══════════════════════════════════════════════════════════════════════════
+
+DELTA_SILENCE_JUMP_HOURS = _env_float("DELTA_SILENCE_JUMP_HOURS", 1.5)
+DELTA_NEW_TODOS = _env_int("DELTA_NEW_TODOS", 3)
+OBSERVER_FAILURE_ALERT_THRESHOLD = _env_int("OBSERVER_FAILURE_ALERT_THRESHOLD", 3)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Log Compression
+# ═══════════════════════════════════════════════════════════════════════════
+
+PET_LOG_WEEKLY_AFTER_DAYS = _env_int("PET_LOG_WEEKLY_AFTER_DAYS", 7)
+PET_LOG_MONTHLY_AFTER_DAYS = _env_int("PET_LOG_MONTHLY_AFTER_DAYS", 30)
+LIFE_LOG_WEEKLY_AFTER_DAYS = _env_int("LIFE_LOG_WEEKLY_AFTER_DAYS", 7)
+LIFE_LOG_MONTHLY_AFTER_DAYS = _env_int("LIFE_LOG_MONTHLY_AFTER_DAYS", 30)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Chatty Rhythm
+# ═══════════════════════════════════════════════════════════════════════════
+
+TG_INTERIM_ENABLED = _env_bool("TG_INTERIM_ENABLED", False)
+TG_BUBBLE_DELAY_S = _env_float("TG_BUBBLE_DELAY_S", 1.0)
+TG_BUBBLE_MAX = _env_int("TG_BUBBLE_MAX", 4)
+TG_AGGREGATE_ENABLED = _env_bool("TG_AGGREGATE_ENABLED", False)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Startup Validation
+# ═══════════════════════════════════════════════════════════════════════════
+
+def validate_config() -> None:
+    """Preflight check at startup — exit on missing critical config."""
+    import sys
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+    issues: list[tuple[str, str, str]] = []
+
+    if not CHAT_MODEL:
+        issues.append(("CRITICAL", "CHAT_MODEL", "No LLM model configured"))
+    if not CHAT_API_KEY and CHAT_PROVIDER != "ollama":
+        issues.append(("CRITICAL", "CHAT_API_KEY", "No API key for chat model"))
+    if not TELEGRAM_BOT_TOKEN and not DISCORD_BOT_TOKEN:
+        issues.append(("WARN", "TELEGRAM_BOT_TOKEN / DISCORD_BOT_TOKEN",
+                        "No transport configured — bot will not receive messages"))
+
+    has_critical = False
+    for level, name, impact in issues:
+        if level == "CRITICAL":
+            _log.critical("[%s] %s — %s", level, name, impact)
+            has_critical = True
+        else:
+            _log.warning("[%s] %s — %s", level, name, impact)
+
+    if has_critical:
+        _log.critical("Critical config missing. Set them in .env and restart.")
+        sys.exit(1)

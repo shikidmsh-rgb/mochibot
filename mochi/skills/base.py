@@ -1,8 +1,10 @@
-"""Skill base class and SKILL.md parser.
+"""Skill base class and SKILL.md parser (v2).
 
-Two modes:
-1. SKILL.md: tool definitions live in a sibling SKILL.md file (parsed automatically)
-2. Classic: subclass overrides get_tools() with Python dicts
+Supports two SKILL.md formats:
+  v1 (legacy): ``## Tool: tool_name`` sections, ``expose: true`` front-matter
+  v2 (current): ``## Tools`` / ``### tool_name`` sections, ``expose_as_tool: true``
+
+The parser auto-detects which format is in use.
 
 Every skill directory must have:
   - SKILL.md       (tool definitions + metadata)
@@ -48,25 +50,28 @@ class SkillResult:
     success: bool = True
 
 
+# ---------------------------------------------------------------------------
+# SKILL.md Parsing (v1 + v2 dual-format)
+# ---------------------------------------------------------------------------
+
 def _parse_skill_md(md_path: str) -> dict:
-    """Parse a SKILL.md file -> {meta, tools, expose_as_tool, triggers}.
+    """Parse a SKILL.md file -> {meta, tools, expose_as_tool, triggers, usage_rules, type, multi_turn}.
 
-    Expected format:
-      ---
-      name: reminder
-      expose: true
-      triggers: [tool_call]
-      ---
+    Supports two formats:
+      v1: ``## Tool: name`` + ``expose: true`` + ``triggers: [tool_call]``
+      v2: ``## Tools`` / ``### name`` + ``expose_as_tool: true`` + ``type: tool``
 
-      ## Tool: manage_reminder
-      Description: ...
-
-      ### Parameters
-      | Name | Type | Required | Description |
-      |------|------|----------|-------------|
-      | action | string | yes | ... |
+    Auto-detects based on content headers.
     """
-    result = {"meta": {}, "tools": [], "expose_as_tool": True, "triggers": ["tool_call"]}
+    result: dict = {
+        "meta": {},
+        "tools": [],
+        "expose_as_tool": True,
+        "triggers": ["tool_call"],
+        "usage_rules": "",
+        "type": "tool",
+        "multi_turn": False,
+    }
 
     if not os.path.exists(md_path):
         return result
@@ -74,77 +79,155 @@ def _parse_skill_md(md_path: str) -> dict:
     with open(md_path, "r", encoding="utf-8") as f:
         content = f.read()
 
-    # Parse front matter
+    # ── Parse front matter ──
     fm_match = re.match(r"^---\s*\n(.*?)\n---", content, re.DOTALL)
     if fm_match:
         for line in fm_match.group(1).strip().split("\n"):
-            if ":" in line:
-                key, val = line.split(":", 1)
-                key = key.strip()
-                val = val.strip()
-                if key == "expose":
-                    result["expose_as_tool"] = val.lower() in ("true", "yes", "1")
-                elif key == "triggers":
-                    # Parse [tool_call, cron] format
-                    triggers = re.findall(r"\w+", val)
-                    result["triggers"] = triggers if triggers else ["tool_call"]
-                else:
-                    result["meta"][key] = val
+            if ":" not in line:
+                continue
+            key, val = line.split(":", 1)
+            key = key.strip()
+            val = val.strip()
+            if key == "expose" or key == "expose_as_tool":
+                result["expose_as_tool"] = val.lower() in ("true", "yes", "1")
+            elif key == "triggers":
+                triggers = re.findall(r"\w+", val)
+                result["triggers"] = triggers if triggers else ["tool_call"]
+            elif key == "type":
+                result["type"] = val
+            elif key == "multi_turn":
+                result["multi_turn"] = val.lower() in ("true", "yes", "1")
+            else:
+                result["meta"][key] = val
 
-    # Parse tool definitions
+    # ── Extract usage rules ──
+    result["usage_rules"] = _extract_usage_rules(content)
+
+    # ── Detect format and parse tools ──
+    if re.search(r"^## Tools\s*$", content, re.MULTILINE):
+        # v2 format: ## Tools / ### tool_name
+        result["tools"] = _parse_tools_v2(content)
+    elif re.search(r"^## Tool:\s*", content, re.MULTILINE):
+        # v1 format: ## Tool: tool_name
+        result["tools"] = _parse_tools_v1(content)
+
+    return result
+
+
+def _extract_usage_rules(content: str) -> str:
+    """Extract ## Usage Rules / ## Behavior Rules sections from SKILL.md."""
+    rules_parts: list[str] = []
+    for header in ("Usage Rules", "Behavior Rules", "Response Gotchas", "Category Guide"):
+        pattern = rf"^## {re.escape(header)}\s*\n(.*?)(?=\n## |\Z)"
+        match = re.search(pattern, content, re.MULTILINE | re.DOTALL)
+        if match:
+            rules_parts.append(match.group(1).strip())
+    return "\n\n".join(rules_parts) if rules_parts else ""
+
+
+def _parse_tools_v1(content: str) -> list[dict]:
+    """Parse v1 format: ``## Tool: tool_name`` sections."""
+    tools = []
     tool_blocks = re.split(r"^## Tool:\s*", content, flags=re.MULTILINE)[1:]
     for block in tool_blocks:
         lines = block.strip().split("\n")
         tool_name = lines[0].strip()
 
-        # Extract description
         desc = ""
         desc_match = re.search(r"Description[:\s]*(.+?)(?:\n##|\n###|\Z)",
                                block, re.DOTALL | re.IGNORECASE)
         if desc_match:
             desc = desc_match.group(1).strip().split("\n")[0].strip()
 
-        # Extract parameters from markdown table
-        params = {}
-        required_params = []
-        table_match = re.findall(
-            r"\|\s*(\w+)\s*\|\s*(\w+)\s*\|\s*(yes|no|true|false)\s*\|\s*(.+?)\s*\|",
-            block, re.IGNORECASE,
-        )
-        for pname, ptype, req, pdesc in table_match:
-            if pname.lower() == "name":  # Skip header row
-                continue
-            params[pname] = {
-                "type": ptype.lower(),
-                "description": pdesc.strip(),
-            }
-            if req.lower() in ("yes", "true"):
-                required_params.append(pname)
+        params, required_params = _parse_param_table(block)
+        tools.append(_build_tool_schema(tool_name, desc, params, required_params))
+    return tools
 
-        # Build OpenAI-compatible tool schema
-        tool = {
-            "type": "function",
-            "function": {
-                "name": tool_name,
-                "description": desc,
-                "parameters": {
-                    "type": "object",
-                    "properties": params,
-                    "required": required_params,
-                },
-            },
+
+def _parse_tools_v2(content: str) -> list[dict]:
+    """Parse v2 format: ``## Tools`` then ``### tool_name`` sub-sections."""
+    tools = []
+    # Find the ## Tools section
+    tools_match = re.search(r"^## Tools\s*\n(.*?)(?=\n## |\Z)", content, re.MULTILINE | re.DOTALL)
+    if not tools_match:
+        return tools
+
+    tools_section = tools_match.group(1)
+    tool_blocks = re.split(r"^### ", tools_section, flags=re.MULTILINE)[1:]
+    for block in tool_blocks:
+        lines = block.strip().split("\n")
+        tool_name = lines[0].strip()
+
+        # Description is the first non-empty line after the tool name
+        desc = ""
+        for line in lines[1:]:
+            line = line.strip()
+            if line and not line.startswith("|") and not line.startswith("-"):
+                desc = line
+                break
+
+        params, required_params = _parse_param_table(block)
+        tools.append(_build_tool_schema(tool_name, desc, params, required_params))
+    return tools
+
+
+def _parse_param_table(block: str) -> tuple[dict, list[str]]:
+    """Extract parameters from a markdown table in a tool block."""
+    params: dict = {}
+    required: list[str] = []
+    table_match = re.findall(
+        r"\|\s*(\w+)\s*\|\s*(\w+)\s*\|\s*(yes|no|true|false)\s*\|\s*(.+?)\s*\|",
+        block, re.IGNORECASE,
+    )
+    for pname, ptype, req, pdesc in table_match:
+        if pname.lower() in ("name", "parameter"):
+            continue
+        params[pname] = {
+            "type": ptype.lower(),
+            "description": pdesc.strip(),
         }
-        result["tools"].append(tool)
+        if req.lower() in ("yes", "true"):
+            required.append(pname)
+    return params, required
 
-    return result
 
+def _build_tool_schema(name: str, desc: str, params: dict, required: list[str]) -> dict:
+    """Build an OpenAI-compatible tool schema dict."""
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": desc,
+            "parameters": {
+                "type": "object",
+                "properties": params,
+                "required": required,
+            },
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Skill Base Class (v2)
+# ---------------------------------------------------------------------------
 
 class Skill(ABC):
-    """Base class for all MochiBot skills."""
+    """Base class for all MochiBot skills (v2).
+
+    v2 attributes (populated from SKILL.md during discovery):
+        skill_type  — "tool" | "automation" | "hybrid"
+        multi_turn  — sticky skill for follow-ups
+        usage_rules — LLM guidance from SKILL.md
+        description — human-readable description
+    """
 
     def __init__(self):
         self._skill_md: dict | None = None
         self._name: str = ""
+        self.description: str = ""
+        self.skill_type: str = "tool"
+        self.multi_turn: bool = False
+        self.usage_rules: str = ""
 
     @property
     def name(self) -> str:
@@ -153,7 +236,6 @@ class Skill(ABC):
         # Infer from class module path
         module = self.__class__.__module__ or ""
         parts = module.split(".")
-        # e.g., mochi.skills.reminder.handler → reminder
         if len(parts) >= 3:
             self._name = parts[-2]
         else:
@@ -164,16 +246,26 @@ class Skill(ABC):
     def skill_md(self) -> dict:
         """Parsed SKILL.md content (cached)."""
         if self._skill_md is None:
-            # Look for SKILL.md in the same directory as handler.py
             handler_file = os.path.abspath(
                 os.path.dirname(self.__class__.__module__.replace(".", "/") + ".py")
             )
-            # Fallback: use __file__ from subclass if available
             if hasattr(self, "__module_file__"):
                 handler_file = os.path.dirname(self.__module_file__)
             md_path = os.path.join(handler_file, "SKILL.md")
             self._skill_md = _parse_skill_md(md_path)
+            self._populate_from_md(self._skill_md)
         return self._skill_md
+
+    def _populate_from_md(self, parsed: dict) -> None:
+        """Populate v2 attributes from parsed SKILL.md data."""
+        meta = parsed.get("meta", {})
+        if not self._name and meta.get("name"):
+            self._name = meta["name"]
+        if not self.description and meta.get("description"):
+            self.description = meta["description"]
+        self.skill_type = parsed.get("type", "tool")
+        self.multi_turn = parsed.get("multi_turn", False)
+        self.usage_rules = parsed.get("usage_rules", "")
 
     def get_tools(self) -> list[dict]:
         """Return OpenAI-compatible tool definitions.
@@ -188,9 +280,34 @@ class Skill(ABC):
         return self.skill_md.get("expose_as_tool", True)
 
     @property
-    def triggers(self) -> list[str]:
+    def triggers(self) -> list:
         """How this skill can be invoked: tool_call, heartbeat, cron, slash."""
         return self.skill_md.get("triggers", ["tool_call"])
+
+    def tool_names(self) -> set[str]:
+        """Return set of tool names this skill exposes."""
+        return {t["function"]["name"] for t in self.get_tools()}
+
+    def handles(self, tool_name: str) -> bool:
+        """Check if this skill handles a specific tool name."""
+        return tool_name in self.tool_names()
+
+    def has_trigger(self, trigger_type: str, **kwargs) -> bool:
+        """Check if this skill matches a trigger type and optional conditions.
+
+        For simple triggers (list of strings): checks if trigger_type is in list.
+        For v2 triggers (list of dicts): checks type field + all kwargs match.
+        """
+        for t in self.triggers:
+            if isinstance(t, str):
+                if t == trigger_type:
+                    return True
+            elif isinstance(t, dict):
+                if t.get("type") != trigger_type:
+                    continue
+                if all(t.get(k) == v for k, v in kwargs.items()):
+                    return True
+        return False
 
     @abstractmethod
     async def execute(self, context: SkillContext) -> SkillResult:

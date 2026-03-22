@@ -141,14 +141,372 @@ def init_db() -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_habit_logs_habit
             ON habit_logs(habit_id, logged_at);
+
+        -- ──────────────────────────────────────────────────────────
+        -- New tables (Phase 1 parity with private Mochi)
+        -- ──────────────────────────────────────────────────────────
+
+        -- Notes
+        CREATE TABLE IF NOT EXISTS notes (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id    INTEGER NOT NULL,
+            title      TEXT    NOT NULL,
+            content    TEXT    NOT NULL DEFAULT '',
+            category   TEXT    NOT NULL DEFAULT '',
+            created_at TEXT    NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_notes_user ON notes(user_id);
+
+        -- Domain knowledge
+        CREATE TABLE IF NOT EXISTS knowledge (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id    INTEGER NOT NULL,
+            domain     TEXT    NOT NULL,
+            subject    TEXT    NOT NULL DEFAULT '',
+            content    TEXT    NOT NULL,
+            created_at TEXT    NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_knowledge_domain ON knowledge(user_id, domain);
+
+        -- Proactive message history
+        CREATE TABLE IF NOT EXISTS proactive_log (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            type       TEXT    NOT NULL DEFAULT 'proactive',
+            content    TEXT    NOT NULL DEFAULT '',
+            created_at TEXT    NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_proactive_created ON proactive_log(created_at);
+
+        -- Operational context items (code digests, system metadata)
+        CREATE TABLE IF NOT EXISTS ops_context_items (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id       INTEGER NOT NULL,
+            context_type  TEXT    NOT NULL DEFAULT '',
+            content       TEXT    NOT NULL,
+            source        TEXT    NOT NULL DEFAULT 'system',
+            created_at    TEXT    NOT NULL,
+            updated_at    TEXT    NOT NULL,
+            embedding     BLOB    DEFAULT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_ops_context_user_type ON ops_context_items(user_id, context_type);
+
+        -- Health time-series (oura, meals, symptoms, vitals)
+        CREATE TABLE IF NOT EXISTS health_log (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id    INTEGER NOT NULL,
+            date       TEXT    NOT NULL,
+            type       TEXT    NOT NULL,
+            source     TEXT    NOT NULL DEFAULT 'oura_daily',
+            content    TEXT    NOT NULL,
+            metrics    TEXT    DEFAULT NULL,
+            importance INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT    NOT NULL,
+            updated_at TEXT    NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_hl_type_date ON health_log(user_id, type, date DESC);
+        CREATE INDEX IF NOT EXISTS idx_hl_date ON health_log(user_id, date DESC);
+
+        -- Pet device snapshots
+        CREATE TABLE IF NOT EXISTS pet_log (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id    INTEGER NOT NULL,
+            date       TEXT    NOT NULL,
+            pet_name   TEXT    DEFAULT NULL,
+            source     TEXT    NOT NULL DEFAULT 'petkit_daily',
+            content    TEXT    NOT NULL,
+            metrics    TEXT    DEFAULT NULL,
+            importance INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT    NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_pl_pet_date ON pet_log(user_id, pet_name, date DESC);
+
+        -- Life events triage (events/mood/work)
+        CREATE TABLE IF NOT EXISTS life_log (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id    INTEGER NOT NULL,
+            date       TEXT    NOT NULL,
+            category   TEXT    NOT NULL,
+            source     TEXT    NOT NULL DEFAULT 'memory_triage',
+            content    TEXT    NOT NULL,
+            importance INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT    NOT NULL,
+            updated_at TEXT    NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_ll_cat_date ON life_log(user_id, category, date DESC);
+
+        -- Notification queue
+        CREATE TABLE IF NOT EXISTS notifications (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id    INTEGER NOT NULL,
+            ntype      TEXT    NOT NULL DEFAULT 'reminder',
+            title      TEXT    NOT NULL DEFAULT '',
+            body       TEXT    NOT NULL,
+            channel_id INTEGER NOT NULL DEFAULT 0,
+            acked      INTEGER NOT NULL DEFAULT 0,
+            tg_sent    INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT    NOT NULL,
+            acked_at   TEXT    DEFAULT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_notifications_pending ON notifications(acked, tg_sent, created_at);
+
+        -- Soft-delete archive for memory items
+        CREATE TABLE IF NOT EXISTS memory_trash (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            original_id      INTEGER NOT NULL,
+            user_id          INTEGER NOT NULL,
+            category         TEXT    NOT NULL DEFAULT '',
+            content          TEXT    NOT NULL,
+            importance       INTEGER NOT NULL DEFAULT 1,
+            source           TEXT    NOT NULL DEFAULT 'chat',
+            deleted_by       TEXT    NOT NULL DEFAULT 'user',
+            original_created TEXT    NOT NULL,
+            deleted_at       TEXT    NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_trash_deleted ON memory_trash(deleted_at);
+
+        -- Per-skill admin configuration
+        CREATE TABLE IF NOT EXISTS skill_config (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            skill_name TEXT    NOT NULL,
+            key        TEXT    NOT NULL,
+            value      TEXT    NOT NULL DEFAULT '',
+            updated_at TEXT    NOT NULL,
+            UNIQUE(skill_name, key)
+        );
+
+        -- Telegram sticker cache
+        CREATE TABLE IF NOT EXISTS sticker_registry (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id    INTEGER NOT NULL,
+            file_id    TEXT    NOT NULL UNIQUE,
+            set_name   TEXT    DEFAULT '',
+            emoji      TEXT    DEFAULT '',
+            tags       TEXT    DEFAULT '',
+            created_at TEXT    NOT NULL
+        );
     """)
+
+    # ── Migrations (safe column additions for existing databases) ──────
+    _run_migrations(conn)
+
+    # ── FTS5 virtual table for memory full-text search ─────────────────
+    _init_fts(conn)
+
+    # ── sqlite-vec for native vector KNN (optional) ────────────────────
+    _init_vec(conn)
+
     conn.close()
     logger.info("Database initialized at %s", DB_PATH)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Messages
-# ═══════════════════════════════════════════════════════════════════════════
+# Module-level flags for optional features
+_FTS_AVAILABLE = False
+_VEC_AVAILABLE = False
+
+
+def _run_migrations(conn: sqlite3.Connection) -> None:
+    """Safe column additions for existing databases (ALTER TABLE + PRAGMA guard)."""
+
+    def _has_col(table: str, col: str) -> bool:
+        return col in [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+
+    def _add_col(table: str, col: str, typedef: str) -> None:
+        if not _has_col(table, col):
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typedef}")
+            logger.info("Migrated %s: added %s", table, col)
+
+    # messages
+    _add_col("messages", "processed", "INTEGER NOT NULL DEFAULT 0")
+    _add_col("messages", "image_data", "TEXT DEFAULT NULL")
+
+    # memory_items
+    _add_col("memory_items", "access_count", "INTEGER NOT NULL DEFAULT 0")
+    _add_col("memory_items", "last_accessed", "TEXT NOT NULL DEFAULT ''")
+    _add_col("memory_items", "embedding", "BLOB DEFAULT NULL")
+
+    # reminders
+    _add_col("reminders", "recurrence", "TEXT DEFAULT NULL")
+
+    # todos
+    _add_col("todos", "nudge_date", "TEXT DEFAULT NULL")
+
+    # usage_log
+    for col, typedef in [
+        ("tool_name", "TEXT DEFAULT NULL"),
+        ("model_role", "TEXT DEFAULT 'P'"),
+        ("call_type", "TEXT DEFAULT 'chat'"),
+        ("usage_stage", "TEXT DEFAULT ''"),
+        ("prompt_system_tokens", "INTEGER DEFAULT NULL"),
+        ("prompt_history_tokens", "INTEGER DEFAULT NULL"),
+        ("prompt_tool_tokens", "INTEGER DEFAULT NULL"),
+        ("cost_usd", "REAL DEFAULT NULL"),
+    ]:
+        _add_col("usage_log", col, typedef)
+
+    # heartbeat_log: old schema (state/action/summary) → new (trigger/observations/actions/thought)
+    if _has_col("heartbeat_log", "state") and not _has_col("heartbeat_log", "trigger"):
+        conn.execute("ALTER TABLE heartbeat_log ADD COLUMN trigger TEXT NOT NULL DEFAULT 'delta'")
+        conn.execute("ALTER TABLE heartbeat_log ADD COLUMN observations TEXT NOT NULL DEFAULT '{}'")
+        conn.execute("ALTER TABLE heartbeat_log ADD COLUMN actions TEXT NOT NULL DEFAULT '[]'")
+        conn.execute("ALTER TABLE heartbeat_log ADD COLUMN thought TEXT NOT NULL DEFAULT ''")
+        conn.execute("UPDATE heartbeat_log SET trigger = state, thought = summary")
+        logger.info("Migrated heartbeat_log: state/action/summary → trigger/observations/actions/thought")
+
+    # habits
+    for col, typedef in [
+        ("frequency", "TEXT NOT NULL DEFAULT 'daily'"),
+        ("category", "TEXT NOT NULL DEFAULT ''"),
+        ("downstream", "TEXT NOT NULL DEFAULT ''"),
+        ("importance", "TEXT NOT NULL DEFAULT 'normal'"),
+        ("context", "TEXT NOT NULL DEFAULT ''"),
+        ("paused_until", "TEXT DEFAULT NULL"),
+    ]:
+        _add_col("habits", col, typedef)
+
+    # habit_logs
+    _add_col("habit_logs", "note", "TEXT NOT NULL DEFAULT ''")
+    _add_col("habit_logs", "period", "TEXT NOT NULL DEFAULT ''")
+
+    conn.commit()
+
+
+def _init_fts(conn: sqlite3.Connection) -> None:
+    """Initialize FTS5 virtual table for memory keyword search."""
+    global _FTS_AVAILABLE
+    fts_exists = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='memory_items_fts'"
+    ).fetchone()
+    if not fts_exists:
+        try:
+            conn.execute("""
+                CREATE VIRTUAL TABLE memory_items_fts USING fts5(
+                    content, content_rowid='id', tokenize='unicode61'
+                )
+            """)
+            # Backfill existing data
+            rows = conn.execute("SELECT id, content FROM memory_items").fetchall()
+            for r in rows:
+                conn.execute(
+                    "INSERT INTO memory_items_fts(rowid, content) VALUES (?, ?)",
+                    (r["id"], r["content"]),
+                )
+            conn.commit()
+            logger.info("Created memory_items_fts and backfilled %d rows", len(rows))
+        except Exception as e:
+            logger.warning("FTS5 init failed (not critical): %s", e)
+    try:
+        conn.execute("SELECT COUNT(*) FROM memory_items_fts")
+        _FTS_AVAILABLE = True
+    except Exception:
+        _FTS_AVAILABLE = False
+
+
+def _init_vec(conn: sqlite3.Connection) -> None:
+    """Initialize sqlite-vec virtual table for native vector KNN (optional)."""
+    global _VEC_AVAILABLE
+    try:
+        import sqlite_vec
+        conn.enable_load_extension(True)
+        sqlite_vec.load(conn)
+        conn.enable_load_extension(False)
+
+        vec_exists = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='vec_memories'"
+        ).fetchone()
+        if not vec_exists:
+            from mochi.config import VEC_EMBEDDING_DIM
+            conn.execute(
+                f"CREATE VIRTUAL TABLE vec_memories USING vec0("
+                f"item_id INTEGER PRIMARY KEY, "
+                f"embedding float[{VEC_EMBEDDING_DIM}] distance_metric=cosine)"
+            )
+            count = 0
+            for r in conn.execute(
+                "SELECT id, embedding FROM memory_items WHERE embedding IS NOT NULL"
+            ).fetchall():
+                conn.execute(
+                    "INSERT INTO vec_memories(item_id, embedding) VALUES (?, ?)",
+                    (r["id"], r["embedding"]),
+                )
+                count += 1
+            conn.commit()
+            if count:
+                logger.info("Created vec_memories and backfilled %d rows", count)
+
+        _VEC_AVAILABLE = True
+        logger.info("sqlite-vec loaded, native vector search enabled")
+    except ImportError:
+        logger.info("sqlite-vec not installed (pip install sqlite-vec for native vector search)")
+        _VEC_AVAILABLE = False
+    except Exception as e:
+        logger.warning("sqlite-vec init failed: %s", e)
+        _VEC_AVAILABLE = False
+
+
+def fts_upsert(item_id: int, content: str) -> None:
+    """Update FTS index for a memory item."""
+    if not _FTS_AVAILABLE:
+        return
+    conn = _connect()
+    try:
+        conn.execute("DELETE FROM memory_items_fts WHERE rowid = ?", (item_id,))
+        conn.execute(
+            "INSERT INTO memory_items_fts(rowid, content) VALUES (?, ?)",
+            (item_id, content),
+        )
+        conn.commit()
+    except Exception as e:
+        logger.warning("FTS upsert failed for item %d: %s", item_id, e)
+    finally:
+        conn.close()
+
+
+def fts_delete(item_ids: list[int]) -> None:
+    """Remove items from FTS index."""
+    if not _FTS_AVAILABLE or not item_ids:
+        return
+    conn = _connect()
+    try:
+        placeholders = ",".join("?" * len(item_ids))
+        conn.execute(f"DELETE FROM memory_items_fts WHERE rowid IN ({placeholders})", item_ids)
+        conn.commit()
+    except Exception as e:
+        logger.warning("FTS delete failed: %s", e)
+    finally:
+        conn.close()
+
+
+def vec_upsert(item_id: int, embedding: bytes) -> None:
+    """Update vector index for a memory item."""
+    if not _VEC_AVAILABLE or not embedding:
+        return
+    conn = _connect()
+    try:
+        conn.execute("DELETE FROM vec_memories WHERE item_id = ?", (item_id,))
+        conn.execute(
+            "INSERT INTO vec_memories(item_id, embedding) VALUES (?, ?)",
+            (item_id, embedding),
+        )
+        conn.commit()
+    except Exception as e:
+        logger.warning("Vec upsert failed for item %d: %s", item_id, e)
+    finally:
+        conn.close()
+
+
+def vec_delete(item_ids: list[int]) -> None:
+    """Remove items from vector index."""
+    if not _VEC_AVAILABLE or not item_ids:
+        return
+    conn = _connect()
+    try:
+        placeholders = ",".join("?" * len(item_ids))
+        conn.execute(f"DELETE FROM vec_memories WHERE item_id IN ({placeholders})", item_ids)
+        conn.commit()
+    except Exception as e:
+        logger.warning("Vec delete failed: %s", e)
+    finally:
+        conn.close()
 
 def save_message(user_id: int, role: str, content: str) -> None:
     now = datetime.now(TZ).isoformat()
@@ -381,13 +739,25 @@ def delete_todo(todo_id: int) -> None:
 # ═══════════════════════════════════════════════════════════════════════════
 
 def log_usage(prompt_tokens: int, completion_tokens: int, total_tokens: int,
-              tool_calls: int = 0, model: str = "", purpose: str = "chat") -> None:
+              tool_calls: int = 0, model: str = "", purpose: str = "chat",
+              tool_name: str | None = None, model_role: str = "P",
+              call_type: str | None = None, usage_stage: str = "",
+              prompt_system_tokens: int | None = None,
+              prompt_history_tokens: int | None = None,
+              prompt_tool_tokens: int | None = None,
+              cost_usd: float | None = None) -> None:
     now = datetime.now(TZ).isoformat()
+    eff_call_type = call_type or purpose
     conn = _connect()
     conn.execute(
         """INSERT INTO usage_log (prompt_tokens, completion_tokens, total_tokens,
-           tool_calls, model, purpose, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (prompt_tokens, completion_tokens, total_tokens, tool_calls, model, purpose, now),
+           tool_calls, model, purpose, created_at,
+           tool_name, model_role, call_type, usage_stage,
+           prompt_system_tokens, prompt_history_tokens, prompt_tool_tokens, cost_usd)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (prompt_tokens, completion_tokens, total_tokens, tool_calls, model, purpose, now,
+         tool_name, model_role, eff_call_type, usage_stage,
+         prompt_system_tokens, prompt_history_tokens, prompt_tool_tokens, cost_usd),
     )
     conn.commit()
     conn.close()
@@ -670,3 +1040,37 @@ def _compute_streak(conn: sqlite3.Connection, habit_id: int, today_str: str) -> 
         streak += 1
         check -= timedelta(days=1)
     return streak
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Skill Config
+# ═══════════════════════════════════════════════════════════════════════════
+
+def get_disabled_skills() -> set[str]:
+    """Return set of skill names that are admin-disabled."""
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT skill_name FROM skill_config WHERE key = '_enabled' AND value = 'false'"
+    ).fetchall()
+    conn.close()
+    return {r["skill_name"] for r in rows}
+
+
+def set_skill_enabled(skill_name: str, enabled: bool) -> None:
+    """Enable or disable a skill via admin config."""
+    now = datetime.now(TZ).isoformat()
+    conn = _connect()
+    if enabled:
+        conn.execute(
+            "DELETE FROM skill_config WHERE skill_name = ? AND key = '_enabled'",
+            (skill_name,),
+        )
+    else:
+        conn.execute(
+            "INSERT INTO skill_config (skill_name, key, value, updated_at) "
+            "VALUES (?, '_enabled', 'false', ?) "
+            "ON CONFLICT(skill_name, key) DO UPDATE SET value = 'false', updated_at = ?",
+            (skill_name, now, now),
+        )
+    conn.commit()
+    conn.close()

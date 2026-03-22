@@ -12,6 +12,7 @@ class TestSkillMdParser:
         assert result["tools"] == []
 
     def test_parse_real_skill(self, tmp_path):
+        """v1 format: ## Tool: tool_name"""
         md = tmp_path / "SKILL.md"
         md.write_text("""---
 name: test_skill
@@ -80,6 +81,159 @@ expose: false
 """)
         result = _parse_skill_md(str(md))
         assert result["expose_as_tool"] is False
+
+
+class TestSkillMdParserV2:
+    """Tests for v2 SKILL.md format."""
+
+    def test_parse_v2_format(self, tmp_path):
+        """v2 format: ## Tools / ### tool_name"""
+        md = tmp_path / "SKILL.md"
+        md.write_text("""---
+name: v2skill
+description: A v2 skill
+type: tool
+expose_as_tool: true
+multi_turn: true
+---
+
+## Tools
+
+### do_thing
+Does the thing with v2 format
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| action | string | yes | what to do |
+| count | integer | no | how many times |
+
+### do_other
+Does something else
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| target | string | yes | target name |
+""")
+        result = _parse_skill_md(str(md))
+        assert result["expose_as_tool"] is True
+        assert result["multi_turn"] is True
+        assert result["type"] == "tool"
+        assert result["meta"]["name"] == "v2skill"
+        assert result["meta"]["description"] == "A v2 skill"
+        assert len(result["tools"]) == 2
+        names = [t["function"]["name"] for t in result["tools"]]
+        assert "do_thing" in names
+        assert "do_other" in names
+        # Check params
+        do_thing = [t for t in result["tools"] if t["function"]["name"] == "do_thing"][0]
+        assert "action" in do_thing["function"]["parameters"]["properties"]
+        assert "action" in do_thing["function"]["parameters"]["required"]
+
+    def test_extract_usage_rules(self, tmp_path):
+        md = tmp_path / "SKILL.md"
+        md.write_text("""---
+name: rules_test
+expose_as_tool: true
+---
+
+## Tools
+
+### my_tool
+A tool
+
+## Usage Rules
+- Always call with action=check first
+- Never call more than 3 times per conversation
+
+## Behavior Rules
+- Be polite in responses
+""")
+        result = _parse_skill_md(str(md))
+        assert "Always call with action=check first" in result["usage_rules"]
+        assert "Be polite in responses" in result["usage_rules"]
+
+    def test_expose_as_tool_false_v2(self, tmp_path):
+        md = tmp_path / "SKILL.md"
+        md.write_text("""---
+name: bg_task
+expose_as_tool: false
+type: automation
+---
+""")
+        result = _parse_skill_md(str(md))
+        assert result["expose_as_tool"] is False
+        assert result["type"] == "automation"
+
+    def test_v2_returns_same_shape_as_v1(self, tmp_path):
+        """Both formats must return the same dict keys."""
+        v1 = tmp_path / "v1.md"
+        v1.write_text("""---
+name: test
+expose: true
+triggers: [tool_call]
+---
+
+## Tool: my_tool
+Description: A tool
+""")
+        v2 = tmp_path / "v2.md"
+        v2.write_text("""---
+name: test
+expose_as_tool: true
+---
+
+## Tools
+
+### my_tool
+A tool
+""")
+        r1 = _parse_skill_md(str(v1))
+        r2 = _parse_skill_md(str(v2))
+        # Same top-level keys
+        assert set(r1.keys()) == set(r2.keys())
+
+
+class TestSkillV2Attributes:
+    """Test v2 Skill class attributes and methods."""
+
+    def test_has_trigger_simple(self):
+        """Test has_trigger with simple string triggers."""
+        class DummySkill(Skill):
+            async def execute(self, context):
+                return SkillResult()
+
+        s = DummySkill()
+        # Default triggers from skill_md
+        assert s.has_trigger("tool_call")
+
+    def test_tool_names_and_handles(self):
+        """Test tool_names() and handles()."""
+        import mochi.skills as skill_registry
+        skill_registry._skills.clear()
+        skill_registry._tool_map.clear()
+        skill_registry.discover()
+
+        skill = skill_registry.get_skill("memory")
+        assert skill is not None
+        names = skill.tool_names()
+        assert "save_memory" in names
+        assert "recall_memory" in names
+        assert skill.handles("save_memory")
+        assert not skill.handles("nonexistent_tool")
+
+    def test_skill_info_all(self):
+        """Test get_skill_info_all returns v2 metadata."""
+        import mochi.skills as skill_registry
+        skill_registry._skills.clear()
+        skill_registry._tool_map.clear()
+        skill_registry.discover()
+
+        infos = skill_registry.get_skill_info_all()
+        assert len(infos) >= 3  # at least memory, reminder, todo
+        for info in infos:
+            assert "type" in info
+            assert "multi_turn" in info
+            assert "has_usage_rules" in info
 
 
 class TestSkillDiscovery:
