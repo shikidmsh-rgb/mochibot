@@ -632,6 +632,40 @@ def merge_memory_items(keep_id: int, delete_ids: list[int], merged_content: str)
     conn.close()
 
 
+def get_stale_memory_items(user_id: int) -> list[dict]:
+    """Get memory items not accessed recently with low importance.
+
+    Uses MEMORY_DEMOTE_AFTER_DAYS from config for the staleness threshold.
+    """
+    from mochi.config import MEMORY_DEMOTE_AFTER_DAYS
+
+    conn = _connect()
+    cutoff = (datetime.now(TZ) - timedelta(days=MEMORY_DEMOTE_AFTER_DAYS)).isoformat()
+    rows = conn.execute(
+        """SELECT id, category, content, importance, created_at, updated_at, last_accessed
+           FROM memory_items
+           WHERE user_id = ?
+             AND importance <= 1
+             AND (last_accessed < ? OR last_accessed = '')
+             AND updated_at < ?""",
+        (user_id, cutoff, cutoff),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def demote_memory_item(item_id: int) -> None:
+    """Soft-delete a stale memory item by setting importance to 0."""
+    now = datetime.now(TZ).isoformat()
+    conn = _connect()
+    conn.execute(
+        "UPDATE memory_items SET importance = 0, updated_at = ? WHERE id = ?",
+        (now, item_id),
+    )
+    conn.commit()
+    conn.close()
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Core Memory (Layer 1)
 # ═══════════════════════════════════════════════════════════════════════════

@@ -127,6 +127,11 @@ def get_observer(name: str) -> Observer | None:
     return _observers.get(name)
 
 
+def get_all_observers() -> dict[str, Observer]:
+    """Get all registered observers. Used by heartbeat for delta detection."""
+    return _observers
+
+
 def list_observers() -> list[dict]:
     """List all registered observers with metadata."""
     return [

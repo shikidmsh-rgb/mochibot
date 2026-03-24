@@ -6,11 +6,12 @@ proactively reach out.
 
 Architecture:
   - Observe (every N minutes): collect state — time, silence duration, etc.
+  - Delta detection: per-observer has_delta() -- only Think when something changed
   - Think (on delta or fallback): LLM decides what to do
   - Act: execute the decision (send message / save memory / nothing)
 
-The Think step only fires when something changed (delta detection) or
-after a fallback timeout, saving LLM tokens on quiet periods.
+The Think step only fires when an observer reports a delta or after a
+fallback timeout, saving LLM tokens on quiet periods.
 """
 
 import asyncio
@@ -25,6 +26,7 @@ from mochi.config import (
     MAX_DAILY_PROACTIVE, PROACTIVE_COOLDOWN_SECONDS,
     THINK_FALLBACK_MINUTES,
     MORNING_REPORT_HOUR, EVENING_REPORT_HOUR,
+    MAINTENANCE_HOUR, MAINTENANCE_ENABLED,
     TIMEZONE_OFFSET_HOURS,
     OWNER_USER_ID,
 )
@@ -75,6 +77,10 @@ _proactive_count_today: int = 0
 _last_proactive_date: str = ""
 _last_morning_report_date: str = ""
 _last_evening_report_date: str = ""
+_last_maintenance_date: str = ""
+
+# Per-observer delta tracking
+_prev_observer_raw: dict[str, dict] = {}
 
 # Send callback — set by transport layer
 _send_callback = None
@@ -163,6 +169,15 @@ async def _observe(user_id: int) -> dict:
     if maint:
         observation["maintenance_summary"] = maint
 
+    # Diary snapshot (today's working memory)
+    try:
+        from mochi.skills.diary.handler import read_diary
+        diary = read_diary()
+        if diary and not diary.startswith("(Diary is empty"):
+            observation["diary"] = diary[:500]
+    except Exception:
+        pass
+
     # Observer plugin data (weather, habits, etc.)
     try:
         from mochi.observers import collect_all
@@ -173,6 +188,47 @@ async def _observe(user_id: int) -> dict:
         log.warning("Observer collect_all failed: %s", e)
 
     return observation
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Delta Detection — per-observer change tracking
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _check_observer_deltas(observation: dict) -> bool:
+    """Check if any observer reports meaningful change.
+
+    Compares current observer data against previous run using each
+    observer's has_delta() method.
+    """
+    global _prev_observer_raw
+
+    observer_data = observation.get("observers", {})
+    if not observer_data and not _prev_observer_raw:
+        return False
+
+    has_any_delta = False
+
+    try:
+        from mochi.observers import get_all_observers
+        all_observers = get_all_observers()
+    except Exception:
+        # Fallback: simple dict comparison
+        has_any_delta = observer_data != _prev_observer_raw
+        _prev_observer_raw = dict(observer_data)
+        return has_any_delta
+
+    for name, curr_data in observer_data.items():
+        prev_data = _prev_observer_raw.get(name, {})
+        obs = all_observers.get(name)
+        if obs:
+            if obs.has_delta(prev_data, curr_data):
+                log.debug("Delta detected from observer: %s", name)
+                has_any_delta = True
+        elif prev_data != curr_data:
+            has_any_delta = True
+
+    _prev_observer_raw = dict(observer_data)
+    return has_any_delta
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -232,11 +288,49 @@ async def _send_report(report_type: str, user_id: int, observation: dict) -> Non
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Nightly Maintenance — trigger at MAINTENANCE_HOUR
+# ═══════════════════════════════════════════════════════════════════════════
+
+async def _run_maintenance_if_due(user_id: int) -> bool:
+    """Run nightly maintenance if MAINTENANCE_HOUR and not yet run today."""
+    global _last_maintenance_date
+
+    if not MAINTENANCE_ENABLED:
+        return False
+
+    now = datetime.now(TZ)
+    today = now.strftime("%Y-%m-%d")
+    if now.hour != MAINTENANCE_HOUR or today == _last_maintenance_date:
+        return False
+
+    _last_maintenance_date = today
+    log.info("Running nightly maintenance...")
+
+    try:
+        from mochi.skills.maintenance.handler import run_maintenance
+        results = await run_maintenance(user_id)
+        log_heartbeat(_state, "maintenance", str(results)[:200])
+        return True
+    except Exception as e:
+        log.error("Nightly maintenance failed: %s", e, exc_info=True)
+        log_heartbeat(_state, "maintenance_error", str(e)[:200])
+        return False
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Think — LLM decides what to do (only on delta or fallback)
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _should_think(observation: dict) -> bool:
-    """Decide whether to invoke LLM Think step."""
+    """Decide whether to invoke LLM Think step.
+
+    Triggers:
+      1. First run (never thought before)
+      2. Fallback timeout (THINK_FALLBACK_MINUTES elapsed)
+      3. Observer delta detected
+      4. Maintenance summary arrived
+      5. Upcoming reminders need attention
+    """
     global _last_think_at
 
     now = datetime.now(TZ)
@@ -259,14 +353,8 @@ def _should_think(observation: dict) -> bool:
     if observation.get("upcoming_reminders"):
         return True
 
-    # Delta: activity_pattern observer detected anomalous signals
-    # e.g. "silent_after_active_day", "unusually_quiet", "silent_3_days"
-    pattern_signals = (
-        observation.get("observers", {})
-        .get("activity_pattern", {})
-        .get("signals", [])
-    )
-    if pattern_signals:
+    # Delta: per-observer change detection
+    if _check_observer_deltas(observation):
         return True
 
     return False
@@ -380,6 +468,17 @@ async def _act(action: dict, user_id: int) -> None:
             save_memory_item(user_id, category="observation", content=mem_content)
             log_heartbeat(_state, "save_memory", mem_content[:100])
 
+    elif action_type == "update_diary":
+        # Heartbeat can write to diary
+        try:
+            from mochi.skills.diary.handler import append_entry
+            diary_content = action.get("content", "")
+            if diary_content:
+                append_entry(diary_content, source="think")
+                log_heartbeat(_state, "update_diary", diary_content[:100])
+        except Exception as e:
+            log.error("Heartbeat diary update failed: %s", e)
+
     else:
         log.warning("Unknown action type: %s", action_type)
         log_heartbeat(_state, "unknown", str(action))
@@ -435,6 +534,9 @@ async def heartbeat_loop() -> None:
                 log_heartbeat(_state, "sleeping")
                 await asyncio.sleep(interval)
                 continue
+
+            # Nightly maintenance (runs once per day at MAINTENANCE_HOUR)
+            await _run_maintenance_if_due(user_id)
 
             # Observe (cheap: no LLM — needed for both reports and think)
             observation = await _observe(user_id)

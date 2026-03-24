@@ -3,6 +3,7 @@
 This is the default transport. Requires TELEGRAM_BOT_TOKEN in .env.
 """
 
+import asyncio
 import logging
 from telegram import Update
 from telegram.ext import (
@@ -11,9 +12,43 @@ from telegram.ext import (
 )
 
 from mochi.transport import Transport, IncomingMessage
-from mochi.config import TELEGRAM_BOT_TOKEN, OWNER_USER_ID, set_owner_user_id
+from mochi.config import (
+    TELEGRAM_BOT_TOKEN, OWNER_USER_ID, set_owner_user_id,
+    TG_BUBBLE_DELAY_S, TG_BUBBLE_MAX, TG_BUBBLE_DELIMITER,
+    TG_BUBBLE_MIN_CHARS,
+)
 
 log = logging.getLogger(__name__)
+
+
+def _split_bubbles(text: str, max_bubbles: int = 4,
+                   delimiter: str = "|||",
+                   min_chars: int = 8) -> list[str]:
+    """Split text into chat bubbles.
+
+    Primary split: explicit delimiter (LLM-controlled).
+    Fallback: double-newline split when no delimiter found.
+    Merge short fragments into previous bubble.
+    """
+    # Try explicit delimiter first
+    if delimiter and delimiter in text:
+        parts = [p.strip() for p in text.split(delimiter) if p.strip()]
+    else:
+        # Fallback: double-newline split
+        parts = [p.strip() for p in text.split("\n\n") if p.strip()]
+
+    if len(parts) <= 1:
+        return [text.strip()]
+
+    # Merge short fragments
+    bubbles: list[str] = [parts[0]]
+    for part in parts[1:]:
+        if len(part) < min_chars:
+            bubbles[-1] += "\n\n" + part
+        else:
+            bubbles.append(part)
+
+    return bubbles[:max_bubbles]
 
 
 def _is_owner(user_id: int) -> bool:
@@ -79,12 +114,19 @@ class TelegramTransport(Transport):
             log.warning("Telegram not started, cannot send message")
             return
         try:
-            # Split long messages (Telegram limit: 4096 chars)
-            for i in range(0, len(text), 4096):
-                await self._app.bot.send_message(
-                    chat_id=user_id,
-                    text=text[i:i + 4096],
-                )
+            bubbles = _split_bubbles(text, TG_BUBBLE_MAX, TG_BUBBLE_DELIMITER, TG_BUBBLE_MIN_CHARS)
+            for i, bubble in enumerate(bubbles):
+                if i > 0:
+                    await self._app.bot.send_chat_action(
+                        chat_id=user_id, action="typing",
+                    )
+                    await asyncio.sleep(TG_BUBBLE_DELAY_S)
+                # Respect Telegram 4096 char limit per message
+                for start in range(0, len(bubble), 4096):
+                    await self._app.bot.send_message(
+                        chat_id=user_id,
+                        text=bubble[start:start + 4096],
+                    )
         except Exception as e:
             log.error("Failed to send Telegram message: %s", e)
 

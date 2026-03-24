@@ -168,3 +168,11 @@ class Observer(ABC):
                     self.name,
                 )
             return self._last_data  # stale cache, never crash heartbeat
+
+    def has_delta(self, prev: dict, curr: dict) -> bool:
+        """Check if observation changed meaningfully since last collection.
+
+        Default: any change triggers delta. Override in subclasses to
+        suppress noisy sources (e.g., weather changes are not actionable).
+        """
+        return prev != curr

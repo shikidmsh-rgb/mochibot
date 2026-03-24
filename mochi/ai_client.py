@@ -7,6 +7,7 @@ This is the "brain" that ties together:
 - Prompt loader (system personality)
 """
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timezone, timedelta
@@ -22,8 +23,13 @@ from mochi.transport import IncomingMessage
 log = logging.getLogger(__name__)
 
 
-def _build_system_prompt(user_id: int) -> str:
-    """Build the system prompt: personality(Chat) + heartbeat context + core memory."""
+def _build_system_prompt(user_id: int, usage_rules: str = "") -> str:
+    """Build the system prompt: personality(Chat) + heartbeat context + core memory.
+
+    Args:
+        user_id: Owner user ID for core memory lookup.
+        usage_rules: Optional tool usage rules to inject (from pre-router).
+    """
     from mochi.config import HEARTBEAT_INTERVAL_MINUTES, AWAKE_HOUR_START, AWAKE_HOUR_END, TIMEZONE_OFFSET_HOURS
     personality = get_full_prompt("system_chat", "Chat")
     core_memory = get_core_memory(user_id)
@@ -54,6 +60,9 @@ def _build_system_prompt(user_id: int) -> str:
     if core_memory:
         parts.append(f"## What you know about the user\n{core_memory}")
 
+    if usage_rules:
+        parts.append(f"## Tool usage rules\n{usage_rules}")
+
     return "\n\n".join(parts) if parts else "You are a friendly AI companion."
 
 
@@ -61,36 +70,70 @@ async def chat(message: IncomingMessage) -> str:
     """Process an incoming message and return the bot's response.
 
     Flow:
-    1. Build system prompt (personality + core memory)
-    2. Load recent conversation history
-    3. Call LLM with tools
-    4. If tool_calls: execute tools → feed results back → call LLM again
-    5. Save messages to DB
-    6. Return final response
+    1. Route: classify skills needed (if TOOL_ROUTER_ENABLED)
+    2. Build system prompt (personality + core memory + usage rules)
+    3. Load recent conversation history
+    4. Call LLM with filtered tools
+    5. Tool loop: execute tools, handle escalation, feed results back
+    6. Save messages to DB
+    7. Return final response
     """
+    from mochi.config import (
+        TOOL_LOOP_MAX_ROUNDS, AI_CHAT_MAX_COMPLETION_TOKENS,
+        TOOL_ROUTER_ENABLED, TOOL_ESCALATION_ENABLED,
+        TOOL_ESCALATION_MAX_PER_TURN,
+    )
+
     user_id = message.user_id
     text = message.text
 
     # Save user message
     save_message(user_id, "user", text)
 
+    # ── Route: determine which tools to inject ──
+    usage_rules = ""
+    if TOOL_ROUTER_ENABLED:
+        from mochi.tool_router import (
+            classify_skills, REQUEST_TOOLS_DEF, validate_escalation,
+        )
+        skill_names = await classify_skills(text)
+        if skill_names:
+            tools = skill_registry.get_tools_by_names(skill_names)
+            # Collect usage rules for selected tools only
+            tool_names_list = [
+                t["function"]["name"] for t in tools if "function" in t
+            ]
+            usage_rules = skill_registry.get_usage_rules_for_tools(tool_names_list)
+        else:
+            tools = []
+
+        # Inject escalation virtual tool when router is active
+        if TOOL_ESCALATION_ENABLED:
+            tools.append(REQUEST_TOOLS_DEF)
+    else:
+        tools = skill_registry.get_tools()
+
+    # ── Policy: filter denied tools before LLM sees them ──
+    from mochi.tool_policy import filter_tools, check as policy_check
+    tools = filter_tools(tools)
+
     # Build context
-    system_prompt = _build_system_prompt(user_id)
+    system_prompt = _build_system_prompt(user_id, usage_rules=usage_rules)
     history = get_recent_messages(user_id, limit=20)
-    tools = skill_registry.get_tools()
 
     # Build messages array
     messages = [{"role": "system", "content": system_prompt}]
     for msg in history:
         messages.append({"role": msg["role"], "content": msg["content"]})
 
-    # LLM call (with tool loop)
-    from mochi.config import TOOL_LOOP_MAX_ROUNDS, AI_CHAT_MAX_COMPLETION_TOKENS
+    # ── LLM call with tool loop ──
     max_tool_rounds = TOOL_LOOP_MAX_ROUNDS
     client = get_client()
+    escalation_count = 0
 
     for round_num in range(max_tool_rounds):
-        response = client.chat(
+        response = await asyncio.to_thread(
+            client.chat,
             messages=messages,
             tools=tools if tools else None,
             temperature=0.7,
@@ -111,7 +154,6 @@ async def chat(message: IncomingMessage) -> str:
             save_message(user_id, "assistant", reply)
             return reply
 
-        # Execute tool calls
         # Add assistant message with tool_calls to context
         assistant_msg = {"role": "assistant", "content": response.content or ""}
         if response.tool_calls:
@@ -129,9 +171,49 @@ async def chat(message: IncomingMessage) -> str:
         messages.append(assistant_msg)
 
         for tc in response.tool_calls:
-            # Log tool name only — arguments may contain personal data
+            # ── Handle tool escalation ──
+            if tc["name"] == "request_tools" and TOOL_ROUTER_ENABLED:
+                if escalation_count >= TOOL_ESCALATION_MAX_PER_TURN:
+                    result_text = "Escalation limit reached for this turn."
+                else:
+                    new_skills = validate_escalation(tc["arguments"])
+                    if new_skills:
+                        new_tool_defs = filter_tools(
+                            skill_registry.get_tools_by_names(new_skills)
+                        )
+                        # Rebind tools — add new tools not already present
+                        existing_names = {
+                            t.get("function", {}).get("name")
+                            for t in tools
+                        }
+                        for td in new_tool_defs:
+                            if td.get("function", {}).get("name") not in existing_names:
+                                tools.append(td)
+                        escalation_count += 1
+                        result_text = f"Tools added for: {', '.join(new_skills)}. You can now use them."
+                    else:
+                        result_text = "No valid skills found for that request."
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "content": result_text,
+                })
+                continue
+
+            # ── Normal tool execution ──
             log.info("Tool call: %s", tc["name"])
             log.debug("Tool args: %s(%s)", tc["name"], tc["arguments"])
+
+            # Policy check before execution
+            decision = policy_check(tc["name"], user_id)
+            if not decision.allowed:
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "content": decision.reason,
+                })
+                continue
+
             result = await skill_registry.dispatch(
                 tc["name"], tc["arguments"],
                 user_id=user_id, channel_id=message.channel_id,

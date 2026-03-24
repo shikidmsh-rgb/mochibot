@@ -1,8 +1,11 @@
 """Prompt loader — hot-reload prompt templates from prompts/ directory.
 
-Supports personality.md with ## sections (Chat, Think) that get
-auto-prepended to task prompts. Edit prompt files directly —
-changes take effect immediately.
+Supports two modes:
+  - Legacy (default): personality.md + task prompts (single-file)
+  - Modular (SYSTEM_PROMPT_MODULAR_ENABLED=true): assembly from
+    prompts/system_chat/ directory with fixed module order
+
+Edit prompt files directly — changes take effect immediately.
 """
 
 import logging
@@ -16,6 +19,9 @@ _cache: dict[str, str] = {}
 
 # Prompts that are pure functional — never prepend personality
 _NO_PERSONALITY = {"memory_extract", "personality"}
+
+# Modular assembly: fixed order, immutable
+_SYSTEM_CHAT_MODULE_ORDER = ("soul", "user", "tools", "runtime_context")
 
 
 def _extract_section(text: str, heading: str) -> str:
@@ -76,6 +82,62 @@ def get_full_prompt(name: str, section: str = "Chat") -> str:
     return f"{personality}\n\n---\n\n{task}"
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Modular Prompt Assembly
+# ═══════════════════════════════════════════════════════════════════════════
+
+def get_system_chat_modules(modular: bool | None = None) -> tuple[str, dict[str, str], str | None]:
+    """Assemble system_chat prompt from modular fragments.
+
+    Args:
+        modular: Force modular mode. None = read from config.
+
+    Returns:
+        (assembled_prompt, {module_name: content}, fallback_reason or None)
+          - fallback_reason is set when modular was requested but failed
+    """
+    if modular is None:
+        from mochi.config import SYSTEM_PROMPT_MODULAR_ENABLED
+        modular = SYSTEM_PROMPT_MODULAR_ENABLED
+
+    if not modular:
+        # Legacy mode: single file
+        content = get_full_prompt("system_chat", "Chat")
+        return content, {"system_chat": content}, None
+
+    # Modular mode: load from prompts/system_chat/*.md
+    module_dir = _PROMPTS_DIR / "system_chat"
+    if not module_dir.exists():
+        log.warning("Modular prompt dir not found: %s — falling back to legacy", module_dir)
+        content = get_full_prompt("system_chat", "Chat")
+        return content, {"system_chat": content}, "directory not found"
+
+    modules: dict[str, str] = {}
+    for module_name in _SYSTEM_CHAT_MODULE_ORDER:
+        path = module_dir / f"{module_name}.md"
+        if path.exists():
+            try:
+                modules[module_name] = path.read_text(encoding="utf-8").strip()
+            except Exception as e:
+                log.warning("Failed to read module %s: %s", module_name, e)
+        else:
+            log.debug("Module %s not found, skipping", module_name)
+
+    if not modules:
+        log.warning("No modules loaded — falling back to legacy")
+        content = get_full_prompt("system_chat", "Chat")
+        return content, {"system_chat": content}, "no modules loaded"
+
+    assembled = "\n\n---\n\n".join(modules.values())
+    return assembled, modules, None
+
+
+def get_system_chat_prompt(modular: bool | None = None) -> str:
+    """Convenience: get assembled system_chat prompt (modular or legacy)."""
+    assembled, _, _ = get_system_chat_modules(modular)
+    return assembled
+
+
 def reload_all() -> dict[str, int]:
     """Reload all prompts from disk. Returns {name: char_count}."""
     result = {}
@@ -86,6 +148,16 @@ def reload_all() -> dict[str, int]:
         content = f.read_text(encoding="utf-8").strip()
         _cache[name] = content
         result[name] = len(content)
+
+    # Also include modular files
+    module_dir = _PROMPTS_DIR / "system_chat"
+    if module_dir.exists():
+        for f in module_dir.glob("*.md"):
+            name = f"system_chat/{f.stem}"
+            content = f.read_text(encoding="utf-8").strip()
+            _cache[name] = content
+            result[name] = len(content)
+
     log.info("Reloaded %d prompts", len(result))
     return result
 
@@ -94,4 +166,11 @@ def list_prompts() -> list[str]:
     """List available prompt template names."""
     if not _PROMPTS_DIR.exists():
         return []
-    return sorted(f.stem for f in _PROMPTS_DIR.glob("*.md"))
+    names = sorted(f.stem for f in _PROMPTS_DIR.glob("*.md"))
+
+    # Include modular files
+    module_dir = _PROMPTS_DIR / "system_chat"
+    if module_dir.exists():
+        names.extend(sorted(f"system_chat/{f.stem}" for f in module_dir.glob("*.md")))
+
+    return names

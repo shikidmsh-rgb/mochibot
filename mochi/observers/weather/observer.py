@@ -39,6 +39,10 @@ _CONDITION_MAP: dict[str, str] = {
 class WeatherObserver(Observer):
     """Fetches current weather from OpenWeatherMap every 30 minutes."""
 
+    def has_delta(self, prev: dict, curr: dict) -> bool:
+        """Weather changes alone don't justify a Think call."""
+        return False
+
     async def observe(self) -> dict:
         api_key = os.getenv("OPENWEATHER_API_KEY", "")
         lat = os.getenv("WEATHER_LAT", "")

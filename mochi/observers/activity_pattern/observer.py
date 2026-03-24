@@ -31,6 +31,12 @@ _QUIET_RATIO = 0.3  # today's count < 30% of average → quiet signal
 class ActivityPatternObserver(Observer):
     """Detects conversation patterns over the last 7 days. No external API."""
 
+    def has_delta(self, prev: dict, curr: dict) -> bool:
+        """Only trigger Think when new anomaly signals appear."""
+        prev_signals = set(prev.get("signals", []))
+        curr_signals = set(curr.get("signals", []))
+        return bool(curr_signals - prev_signals)
+
     async def observe(self) -> dict:
         from mochi.config import OWNER_USER_ID
         from mochi.db import get_daily_message_counts

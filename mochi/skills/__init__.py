@@ -119,6 +119,22 @@ def get_tools() -> list[dict]:
     return tools
 
 
+def get_tools_by_names(skill_names: list[str]) -> list[dict]:
+    """Get tool definitions for tools belonging to named skills.
+
+    Invalid names are silently skipped (logged at debug level).
+    """
+    tools = []
+    for name in skill_names:
+        skill = _skills.get(name)
+        if not skill:
+            log.debug("get_tools_by_names: unknown skill %s, skipped", name)
+            continue
+        if skill.expose_as_tool:
+            tools.extend(skill.get_tools())
+    return tools
+
+
 def get_tool_skill(tool_name: str) -> str | None:
     """Get the skill name that owns a tool."""
     return _tool_map.get(tool_name)

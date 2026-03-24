@@ -179,6 +179,14 @@ TRASH_PURGE_DAYS = _env_int("TRASH_PURGE_DAYS", 30)
 # ═══════════════════════════════════════════════════════════════════════════
 
 MAINTENANCE_HOUR = _env_int("MAINTENANCE_HOUR", 3)
+MAINTENANCE_ENABLED = _env_bool("MAINTENANCE_ENABLED", True)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Diary
+# ═══════════════════════════════════════════════════════════════════════════
+
+DIARY_MAX_LINES = _env_int("DIARY_MAX_LINES", 30)
+DIARY_TRIM_TO = _env_int("DIARY_TRIM_TO", 25)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Optional Integrations
@@ -255,12 +263,42 @@ LIFE_LOG_WEEKLY_AFTER_DAYS = _env_int("LIFE_LOG_WEEKLY_AFTER_DAYS", 7)
 LIFE_LOG_MONTHLY_AFTER_DAYS = _env_int("LIFE_LOG_MONTHLY_AFTER_DAYS", 30)
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Tool Router
+# ═══════════════════════════════════════════════════════════════════════════
+
+TOOL_ROUTER_ENABLED = _env_bool("TOOL_ROUTER_ENABLED", False)
+TOOL_ROUTER_MAX_TOKENS = _env_int("TOOL_ROUTER_MAX_TOKENS", 100)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Tool Escalation
+# ═══════════════════════════════════════════════════════════════════════════
+
+TOOL_ESCALATION_ENABLED = _env_bool("TOOL_ESCALATION_ENABLED", True)
+TOOL_ESCALATION_MAX_PER_TURN = _env_int("TOOL_ESCALATION_MAX_PER_TURN", 2)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Prompt Assembly
+# ═══════════════════════════════════════════════════════════════════════════
+
+SYSTEM_PROMPT_MODULAR_ENABLED = _env_bool("SYSTEM_PROMPT_MODULAR_ENABLED", False)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Tool Governance
+# ═══════════════════════════════════════════════════════════════════════════
+
+TOOL_DENY_NAMES = _env("TOOL_DENY_NAMES", "")           # comma-separated denylist
+TOOL_REQUIRE_CONFIRM = _env("TOOL_REQUIRE_CONFIRM", "")  # comma-separated, needs user confirmation
+TOOL_RATE_LIMIT_PER_MIN = _env_int("TOOL_RATE_LIMIT_PER_MIN", 10)
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Chatty Rhythm
 # ═══════════════════════════════════════════════════════════════════════════
 
 TG_INTERIM_ENABLED = _env_bool("TG_INTERIM_ENABLED", False)
 TG_BUBBLE_DELAY_S = _env_float("TG_BUBBLE_DELAY_S", 1.0)
 TG_BUBBLE_MAX = _env_int("TG_BUBBLE_MAX", 4)
+TG_BUBBLE_DELIMITER = _env("TG_BUBBLE_DELIMITER", "|||")
+TG_BUBBLE_MIN_CHARS = _env_int("TG_BUBBLE_MIN_CHARS", 8)
 TG_AGGREGATE_ENABLED = _env_bool("TG_AGGREGATE_ENABLED", False)
 
 

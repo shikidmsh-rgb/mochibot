@@ -4,8 +4,7 @@ Starts all subsystems:
 1. Database initialization
 2. Skill discovery
 3. Transport (Telegram by default)
-4. Heartbeat loop
-5. Maintenance scheduler
+4. Heartbeat loop (includes maintenance scheduling)
 """
 
 import asyncio
@@ -14,7 +13,6 @@ from datetime import datetime, timezone, timedelta
 
 from mochi.config import (
     TELEGRAM_BOT_TOKEN,
-    MAINTENANCE_HOUR,
     TIMEZONE_OFFSET_HOURS,
     OWNER_USER_ID,
 )
@@ -24,7 +22,6 @@ from mochi.ai_client import chat
 from mochi.transport import IncomingMessage
 from mochi.transport.telegram import TelegramTransport, set_message_handler
 from mochi.heartbeat import heartbeat_loop, set_send_callback
-from mochi.memory_engine import smart_maintenance
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,26 +36,6 @@ TZ = timezone(timedelta(hours=TIMEZONE_OFFSET_HOURS))
 async def handle_message(msg: IncomingMessage) -> str:
     """Central message handler — called by all transports."""
     return await chat(msg)
-
-
-async def maintenance_scheduler():
-    """Run smart maintenance at the configured hour daily."""
-    while True:
-        now = datetime.now(TZ)
-        # Calculate seconds until next maintenance hour
-        target = now.replace(hour=MAINTENANCE_HOUR, minute=0, second=0, microsecond=0)
-        if now >= target:
-            target += timedelta(days=1)
-        wait_seconds = (target - now).total_seconds()
-        log.info("Next maintenance in %.0f minutes", wait_seconds / 60)
-        await asyncio.sleep(wait_seconds)
-
-        log.info("Running scheduled maintenance...")
-        try:
-            results = smart_maintenance()
-            log.info("Maintenance results: %s", results)
-        except Exception as e:
-            log.error("Maintenance failed: %s", e, exc_info=True)
 
 
 async def reminder_checker(transport):
@@ -116,9 +93,8 @@ async def main():
 
     # 6. Start background tasks
     asyncio.create_task(heartbeat_loop())
-    asyncio.create_task(maintenance_scheduler())
     asyncio.create_task(reminder_checker(transport))
-    log.info("Heartbeat, maintenance, and reminder checker started")
+    log.info("Heartbeat and reminder checker started")
 
     log.info("=" * 50)
     log.info("MochiBot is alive! 🍡")
