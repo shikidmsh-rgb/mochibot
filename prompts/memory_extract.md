@@ -23,7 +23,7 @@ Return a JSON array of extracted memories:
 ```
 
 Categories: preference, fact, event, emotion, goal, habit, general
-Importance: 1 (normal) or 2 (high — core identity, recurring patterns)
+Importance: 1 (routine), 2 (important — recurring patterns, significant facts), 3 (critical — core identity, deeply personal)
 
 Return `[]` if nothing worth extracting.
 

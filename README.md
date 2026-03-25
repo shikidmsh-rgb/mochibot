@@ -28,13 +28,15 @@
 
 ```
 Layer 1: Core Memory    — compact summary, always in system prompt (~800 tokens)
-    ↑ rebuilt nightly from Layer 2
-Layer 2: Memory Items   — extracted facts, preferences, events (searchable)
+    ↑ owned by chat model (add/delete lines via tool)
+Layer 2: Memory Items   — extracted facts, preferences, events (searchable, ★1/★2/★3 importance)
     ↑ extracted from Layer 3 by LLM
 Layer 3: Conversations  — raw messages, compressed over time
 ```
 
-Every night: extract → deduplicate → rebuild core summary → compress old conversations.
+8 memory tools: save, recall, list, delete (soft-delete → 30-day trash), update core memory (add/delete lines), view core, stats, trash bin.
+
+Every night: extract → deduplicate → outdated removal (LLM) → salience rebalance (promote/demote) → core audit → trash purge.
 
 ### Heartbeat (Observe → Think → Act)
 
@@ -201,7 +203,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md).
 - [x] Pre-router — automatic skill selection
 - [x] Tool governance — policy check, filter, rate limiter
 - [x] Diary system — daily working memory + nightly archive
-- [x] Nightly maintenance — dedup, stale demotion, core memory audit
+- [x] Nightly maintenance — dedup, LLM-based outdated removal, salience rebalance, core memory audit, trash purge
 - [x] Modular prompt assembly
 - [x] Chatty rhythm — multi-bubble + typing indicators
 - [x] Morning / evening reports

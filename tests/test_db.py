@@ -26,6 +26,14 @@ from mochi.db import (
     get_upcoming_reminders,
     save_memory_item,
     recall_memory,
+    list_all_memories,
+    delete_memory_items,
+    get_memory_stats,
+    list_memory_trash,
+    restore_memory_from_trash,
+    cleanup_old_trash,
+    update_memory_importance,
+    merge_memory_items,
 )
 
 
@@ -252,3 +260,136 @@ class TestMigrations:
         row = conn.execute("SELECT content FROM memory_items WHERE user_id=1").fetchone()
         assert row[0] == "test memory"
         conn.close()
+
+
+class TestListAllMemories:
+    def test_list_all(self):
+        save_memory_item(1, "preference", "Likes coffee")
+        save_memory_item(1, "fact", "Lives in Tokyo")
+        items = list_all_memories(1)
+        assert len(items) == 2
+
+    def test_filter_by_category(self):
+        save_memory_item(1, "preference", "Likes coffee")
+        save_memory_item(1, "fact", "Lives in Tokyo")
+        items = list_all_memories(1, category="fact")
+        assert len(items) == 1
+        assert items[0]["category"] == "fact"
+
+    def test_limit(self):
+        for i in range(10):
+            save_memory_item(1, "fact", f"Fact {i}")
+        items = list_all_memories(1, limit=3)
+        assert len(items) == 3
+
+
+class TestSoftDeleteMemory:
+    def test_delete_moves_to_trash(self):
+        mid = save_memory_item(1, "fact", "To be deleted")
+        count = delete_memory_items([mid], deleted_by="user")
+        assert count == 1
+        # Verify gone from memory_items
+        items = recall_memory(1, query="deleted")
+        assert len(items) == 0
+        # Verify in trash
+        trash = list_memory_trash(1)
+        assert len(trash) == 1
+        assert trash[0]["content"] == "To be deleted"
+        assert trash[0]["deleted_by"] == "user"
+
+    def test_delete_nonexistent(self):
+        count = delete_memory_items([99999])
+        assert count == 0
+
+
+class TestRestoreFromTrash:
+    def test_delete_and_restore(self):
+        mid = save_memory_item(1, "preference", "Likes tea")
+        delete_memory_items([mid], deleted_by="user")
+        # Verify deleted
+        assert len(recall_memory(1, query="tea")) == 0
+        # Restore
+        trash = list_memory_trash(1)
+        new_id = restore_memory_from_trash(trash[0]["id"], 1)
+        assert new_id is not None
+        # Verify restored
+        items = recall_memory(1, query="tea")
+        assert len(items) == 1
+        # Verify trash is empty
+        assert len(list_memory_trash(1)) == 0
+
+    def test_restore_nonexistent(self):
+        result = restore_memory_from_trash(99999, 1)
+        assert result is None
+
+
+class TestMemoryStats:
+    def test_stats(self):
+        save_memory_item(1, "preference", "Likes coffee", importance=1)
+        save_memory_item(1, "preference", "Likes tea", importance=2)
+        save_memory_item(1, "fact", "Has a cat", importance=3)
+        stats = get_memory_stats(1)
+        assert stats["total"] == 3
+        assert stats["high_importance"] == 1  # only ★3
+        assert stats["categories"]["preference"] == 2
+        assert stats["categories"]["fact"] == 1
+
+
+class TestCleanupOldTrash:
+    def test_purge_old_trash(self):
+        mid = save_memory_item(1, "fact", "Old item")
+        delete_memory_items([mid], deleted_by="test")
+        # Manually backdate the trash entry
+        import mochi.db as db_module
+        conn = db_module._connect()
+        conn.execute(
+            "UPDATE memory_trash SET deleted_at = '2020-01-01T00:00:00'"
+        )
+        conn.commit()
+        conn.close()
+        # Purge
+        purged = cleanup_old_trash(days=30)
+        assert purged == 1
+        assert len(list_memory_trash(1)) == 0
+
+    def test_no_purge_on_recent(self):
+        mid = save_memory_item(1, "fact", "Recent item")
+        delete_memory_items([mid], deleted_by="test")
+        purged = cleanup_old_trash(days=30)
+        assert purged == 0
+        assert len(list_memory_trash(1)) == 1
+
+
+class TestUpdateMemoryImportance:
+    def test_update_importance(self):
+        mid = save_memory_item(1, "fact", "Test item", importance=1)
+        update_memory_importance(mid, 2)
+        items = recall_memory(1, query="Test item")
+        assert items[0]["importance"] == 2
+
+    def test_update_to_critical(self):
+        mid = save_memory_item(1, "fact", "Critical item", importance=1)
+        update_memory_importance(mid, 3)
+        items = recall_memory(1, query="Critical item")
+        assert items[0]["importance"] == 3
+
+
+class TestMergeMemoryItems:
+    def test_merge_basic(self):
+        m1 = save_memory_item(1, "fact", "Has a cat named Luna")
+        m2 = save_memory_item(1, "fact", "Has a cat, Luna")
+        merge_memory_items(m1, [m2], "Has a cat named Luna")
+        items = list_all_memories(1, category="fact")
+        assert len(items) == 1
+        assert items[0]["content"] == "Has a cat named Luna"
+        # Merged item should be in trash
+        trash = list_memory_trash(1)
+        assert len(trash) == 1
+
+    def test_merge_with_importance(self):
+        m1 = save_memory_item(1, "fact", "Cat owner", importance=1)
+        m2 = save_memory_item(1, "fact", "Has a cat", importance=2)
+        merge_memory_items(m1, [m2], "Has a cat named Luna", new_importance=2)
+        items = list_all_memories(1, category="fact")
+        assert len(items) == 1
+        assert items[0]["importance"] == 2

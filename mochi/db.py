@@ -367,6 +367,11 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
     _add_col("habit_logs", "note", "TEXT NOT NULL DEFAULT ''")
     _add_col("habit_logs", "period", "TEXT NOT NULL DEFAULT ''")
 
+    # sticker_registry index
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sticker_tags ON sticker_registry(tags)"
+    )
+
     conn.commit()
 
 
@@ -599,37 +604,82 @@ def recall_memory(user_id: int, query: str = "", category: str = "",
 def get_all_memory_items(user_id: int) -> list[dict]:
     conn = _connect()
     rows = conn.execute(
-        "SELECT id, category, content, importance, source, created_at FROM memory_items WHERE user_id = ?",
+        "SELECT id, category, content, importance, source, "
+        "access_count, last_accessed, created_at, updated_at "
+        "FROM memory_items WHERE user_id = ?",
         (user_id,),
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
 
-def delete_memory_items(ids: list[int]) -> int:
+def delete_memory_items(ids: list[int], deleted_by: str = "system") -> int:
+    """Soft-delete memory items: copy to trash, clean indexes, then delete."""
     if not ids:
         return 0
+    now = datetime.now(TZ).isoformat()
     conn = _connect()
     placeholders = ",".join("?" * len(ids))
+    # Copy to trash before deleting
+    items = conn.execute(
+        f"SELECT id, user_id, category, content, importance, source, created_at "
+        f"FROM memory_items WHERE id IN ({placeholders})",
+        ids,
+    ).fetchall()
+    for item in items:
+        conn.execute(
+            "INSERT INTO memory_trash (original_id, user_id, category, content, importance, "
+            "source, deleted_by, original_created, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (item["id"], item["user_id"], item["category"], item["content"],
+             item["importance"], item["source"], deleted_by, item["created_at"], now),
+        )
     cur = conn.execute(f"DELETE FROM memory_items WHERE id IN ({placeholders})", ids)
-    conn.commit()
     count = cur.rowcount
+    conn.commit()
     conn.close()
+    # Clean FTS/vec indexes
+    fts_delete(ids)
+    vec_delete(ids)
     return count
 
 
-def merge_memory_items(keep_id: int, delete_ids: list[int], merged_content: str) -> None:
+def merge_memory_items(keep_id: int, delete_ids: list[int],
+                       merged_content: str, new_importance: int | None = None) -> None:
     now = datetime.now(TZ).isoformat()
     conn = _connect()
-    conn.execute(
-        "UPDATE memory_items SET content = ?, updated_at = ? WHERE id = ?",
-        (merged_content, now, keep_id),
-    )
+    if new_importance is not None:
+        conn.execute(
+            "UPDATE memory_items SET content = ?, importance = ?, updated_at = ? WHERE id = ?",
+            (merged_content, new_importance, now, keep_id),
+        )
+    else:
+        conn.execute(
+            "UPDATE memory_items SET content = ?, updated_at = ? WHERE id = ?",
+            (merged_content, now, keep_id),
+        )
     if delete_ids:
         placeholders = ",".join("?" * len(delete_ids))
+        # Copy merged-away items to trash
+        items = conn.execute(
+            f"SELECT id, user_id, category, content, importance, source, created_at "
+            f"FROM memory_items WHERE id IN ({placeholders})",
+            delete_ids,
+        ).fetchall()
+        for item in items:
+            conn.execute(
+                "INSERT INTO memory_trash (original_id, user_id, category, content, importance, "
+                "source, deleted_by, original_created, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (item["id"], item["user_id"], item["category"], item["content"],
+                 item["importance"], item["source"], "dedup", item["created_at"], now),
+            )
         conn.execute(f"DELETE FROM memory_items WHERE id IN ({placeholders})", delete_ids)
     conn.commit()
     conn.close()
+    # Re-sync FTS for kept item; clean indexes for deleted
+    fts_upsert(keep_id, merged_content)
+    if delete_ids:
+        fts_delete(delete_ids)
+        vec_delete(delete_ids)
 
 
 def get_stale_memory_items(user_id: int) -> list[dict]:
@@ -661,6 +711,114 @@ def demote_memory_item(item_id: int) -> None:
     conn.execute(
         "UPDATE memory_items SET importance = 0, updated_at = ? WHERE id = ?",
         (now, item_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def list_all_memories(user_id: int, category: str = "", limit: int = 50) -> list[dict]:
+    """List all memory items, optionally filtered by category."""
+    conn = _connect()
+    if category:
+        rows = conn.execute(
+            "SELECT id, category, content, importance, source, created_at, updated_at "
+            "FROM memory_items WHERE user_id = ? AND category = ? "
+            "ORDER BY updated_at DESC LIMIT ?",
+            (user_id, category, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT id, category, content, importance, source, created_at, updated_at "
+            "FROM memory_items WHERE user_id = ? "
+            "ORDER BY updated_at DESC LIMIT ?",
+            (user_id, limit),
+        ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_memory_stats(user_id: int) -> dict:
+    """Get memory system statistics."""
+    conn = _connect()
+    total = conn.execute(
+        "SELECT COUNT(*) as cnt FROM memory_items WHERE user_id = ?", (user_id,)
+    ).fetchone()["cnt"]
+    by_cat = conn.execute(
+        "SELECT category, COUNT(*) as cnt FROM memory_items "
+        "WHERE user_id = ? GROUP BY category ORDER BY cnt DESC",
+        (user_id,),
+    ).fetchall()
+    high_imp = conn.execute(
+        "SELECT COUNT(*) as cnt FROM memory_items "
+        "WHERE user_id = ? AND importance >= 3", (user_id,)
+    ).fetchone()["cnt"]
+    conn.close()
+    return {
+        "total": total,
+        "high_importance": high_imp,
+        "categories": {r["category"]: r["cnt"] for r in by_cat},
+    }
+
+
+def list_memory_trash(user_id: int, limit: int = 20) -> list[dict]:
+    """List recently deleted memories (trash bin)."""
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT id, original_id, category, content, importance, deleted_by, deleted_at "
+        "FROM memory_trash WHERE user_id = ? ORDER BY deleted_at DESC LIMIT ?",
+        (user_id, limit),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def restore_memory_from_trash(trash_id: int, user_id: int) -> int | None:
+    """Restore a memory from trash back to memory_items. Returns new item id or None."""
+    now = datetime.now(TZ).isoformat()
+    conn = _connect()
+    item = conn.execute(
+        "SELECT original_id, user_id, category, content, importance, source, original_created "
+        "FROM memory_trash WHERE id = ? AND user_id = ?",
+        (trash_id, user_id),
+    ).fetchone()
+    if not item:
+        conn.close()
+        return None
+    cursor = conn.execute(
+        "INSERT INTO memory_items (user_id, category, content, importance, access_count, "
+        "source, created_at, updated_at, last_accessed) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?)",
+        (item["user_id"], item["category"], item["content"], item["importance"],
+         item["source"], item["original_created"], now, now),
+    )
+    new_id = cursor.lastrowid
+    conn.execute("DELETE FROM memory_trash WHERE id = ?", (trash_id,))
+    conn.commit()
+    conn.close()
+    # Re-sync FTS index for restored item
+    fts_upsert(new_id, item["content"])
+    return new_id
+
+
+def cleanup_old_trash(days: int = 30) -> int:
+    """Permanently delete trash items older than N days. Returns count purged."""
+    cutoff = (datetime.now(TZ) - timedelta(days=days)).isoformat()
+    conn = _connect()
+    cursor = conn.execute(
+        "DELETE FROM memory_trash WHERE deleted_at < ?", (cutoff,)
+    )
+    count = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return count
+
+
+def update_memory_importance(item_id: int, new_importance: int) -> None:
+    """Update importance level of a memory item."""
+    now = datetime.now(TZ).isoformat()
+    conn = _connect()
+    conn.execute(
+        "UPDATE memory_items SET importance = ?, updated_at = ? WHERE id = ?",
+        (new_importance, now, item_id),
     )
     conn.commit()
     conn.close()
@@ -1108,3 +1266,61 @@ def set_skill_enabled(skill_name: str, enabled: bool) -> None:
         )
     conn.commit()
     conn.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Sticker Registry
+# ═══════════════════════════════════════════════════════════════════════════
+
+def save_sticker(user_id: int, file_id: str, set_name: str = "",
+                 emoji: str = "", tags: str = "") -> int | None:
+    """Save a learned sticker. Returns rowid on success, None if duplicate."""
+    conn = _connect()
+    try:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO sticker_registry "
+            "(user_id, file_id, set_name, emoji, tags, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (user_id, file_id, set_name, emoji, tags,
+             datetime.now(TZ).isoformat()),
+        )
+        conn.commit()
+        return cur.lastrowid if cur.rowcount > 0 else None
+    finally:
+        conn.close()
+
+
+def get_stickers_by_tag(tag: str, user_id: int = 0) -> list[dict]:
+    """Find stickers whose tags contain the given keyword."""
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT id, user_id, file_id, set_name, emoji, tags, created_at "
+        "FROM sticker_registry WHERE tags LIKE ? "
+        "AND (user_id = ? OR user_id = 0)",
+        (f"%{tag}%", user_id),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_sticker_count(user_id: int = 0) -> int:
+    """Count learned stickers for a user."""
+    conn = _connect()
+    row = conn.execute(
+        "SELECT COUNT(*) FROM sticker_registry "
+        "WHERE user_id = ? OR user_id = 0",
+        (user_id,),
+    ).fetchone()
+    conn.close()
+    return row[0] if row else 0
+
+
+def delete_sticker(file_id: str) -> bool:
+    """Delete a sticker by file_id. Returns True if deleted."""
+    conn = _connect()
+    cur = conn.execute(
+        "DELETE FROM sticker_registry WHERE file_id = ?", (file_id,)
+    )
+    conn.commit()
+    conn.close()
+    return cur.rowcount > 0

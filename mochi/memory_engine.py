@@ -8,11 +8,12 @@ Three-layer memory architecture:
 Core memory is owned by the chat model — it updates core memory during
 conversation via the memory skill. Maintenance only audits token budget.
 
-Nightly cycle: extract → deduplicate → audit core token count.
+Nightly cycle: extract → deduplicate → outdated → salience → audit core → trash purge.
 """
 
 import json
 import logging
+import re
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 
@@ -23,6 +24,8 @@ from mochi.config import (
     TRASH_PURGE_DAYS,
     TIMEZONE_OFFSET_HOURS,
     OWNER_USER_ID,
+    MEMORY_DEMOTE_AFTER_DAYS,
+    MEMORY_DEMOTE_MIN_ACCESS,
 )
 from mochi.llm import get_client
 from mochi.prompt_loader import get_prompt
@@ -31,12 +34,60 @@ from mochi.db import (
     save_memory_item, recall_memory,
     get_unprocessed_conversations, mark_messages_processed,
     get_all_memory_items, delete_memory_items, merge_memory_items,
+    update_memory_importance, cleanup_old_trash,
     log_usage,
 )
 
 log = logging.getLogger(__name__)
 
 TZ = timezone(timedelta(hours=TIMEZONE_OFFSET_HOURS))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# JSON Parsing Helper
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _parse_gpt_json(raw: str) -> dict | list:
+    """Robustly parse JSON from LLM output.
+
+    Handles markdown fences, trailing commas, and stray text around JSON.
+    """
+    if not raw:
+        return {}
+
+    # Strip markdown code fences
+    cleaned = re.sub(r"^```(?:json)?\s*\n?", "", raw.strip(), flags=re.MULTILINE)
+    cleaned = re.sub(r"\n?```\s*$", "", cleaned.strip(), flags=re.MULTILINE)
+
+    # Try direct parse first
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+
+    # Remove trailing commas before } or ]
+    no_trailing = re.sub(r",\s*([}\]])", r"\1", cleaned)
+    try:
+        return json.loads(no_trailing)
+    except json.JSONDecodeError:
+        pass
+
+    # Try to extract JSON object or array from surrounding text
+    for pattern in [r"\{[\s\S]*\}", r"\[[\s\S]*\]"]:
+        match = re.search(pattern, cleaned)
+        if match:
+            try:
+                return json.loads(match.group())
+            except json.JSONDecodeError:
+                # Try with trailing comma fix
+                candidate = re.sub(r",\s*([}\]])", r"\1", match.group())
+                try:
+                    return json.loads(candidate)
+                except json.JSONDecodeError:
+                    pass
+
+    log.warning("Failed to parse JSON from LLM output: %s", raw[:200])
+    return {}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -82,21 +133,18 @@ def extract_memories(user_id: int = 0) -> int:
 
     # Parse extracted memories (expects JSON array)
     count = 0
-    try:
-        memories = json.loads(response.content)
-        if isinstance(memories, list):
-            for mem in memories:
-                if isinstance(mem, dict) and "content" in mem:
-                    save_memory_item(
-                        uid,
-                        category=mem.get("category", "general"),
-                        content=mem["content"],
-                        importance=mem.get("importance", 1),
-                        source="extracted",
-                    )
-                    count += 1
-    except json.JSONDecodeError:
-        log.warning("Failed to parse memory extraction result")
+    parsed = _parse_gpt_json(response.content)
+    memories = parsed if isinstance(parsed, list) else parsed.get("memories", [])
+    for mem in memories:
+        if isinstance(mem, dict) and "content" in mem:
+            save_memory_item(
+                uid,
+                category=mem.get("category", "general"),
+                content=mem["content"],
+                importance=mem.get("importance", 1),
+                source="extracted",
+            )
+            count += 1
 
     # Mark conversations as processed
     if conversations:
@@ -119,10 +167,10 @@ DEDUP_PROMPT = """You are a memory maintenance system. Analyze the memory items 
 - Be conservative: when in doubt, DON'T merge
 
 ## Output Format
-Return a JSON array of merge operations:
-[{"keep": <id_to_keep>, "delete": [<ids_to_delete>], "merged_content": "combined text"}]
+Return a JSON object:
+{"operations": [{"keep": <id_to_keep>, "delete": [<ids_to_delete>], "merged_content": "combined text", "importance": <highest_importance>}]}
 
-Return empty array [] if no merges needed.
+Return {"operations": []} if no merges needed.
 
 ## Memory Items
 """
@@ -166,22 +214,281 @@ def deduplicate_memories(user_id: int = 0) -> int:
             response.total_tokens, model=response.model, purpose="memory_dedup",
         )
 
-        try:
-            merges = json.loads(response.content)
-            if isinstance(merges, list):
-                for op in merges:
-                    if "keep" in op and "delete" in op and "merged_content" in op:
-                        merge_memory_items(op["keep"], op["delete"], op["merged_content"])
-                        total_merged += len(op["delete"])
-        except json.JSONDecodeError:
-            log.warning("Failed to parse dedup result for category: %s", cat)
+        parsed = _parse_gpt_json(response.content)
+        operations = parsed.get("operations", []) if isinstance(parsed, dict) else parsed
+        if isinstance(operations, list):
+            for op in operations:
+                if "keep" in op and "delete" in op and "merged_content" in op:
+                    merge_memory_items(
+                        op["keep"], op["delete"], op["merged_content"],
+                        new_importance=op.get("importance"),
+                    )
+                    total_merged += len(op["delete"])
 
     log.info("Deduplicated %d memory items", total_merged)
     return total_merged
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Core Memory Rebuild (Layer 2 → Layer 1)
+# Outdated Memory Removal
+# ═══════════════════════════════════════════════════════════════════════════
+
+MEMORY_OUTDATED_PROMPT = """You are a memory maintenance system. Analyze the memory items below and identify outdated items that should be deleted.
+
+## Current Date
+{current_date}
+
+## Rules for outdated detection
+- **Events with deadlines passed**: "meeting next week" but it's now weeks later → delete
+- **Resolved issues**: "has a cold" but that was 3 months ago and no follow-up → delete
+- **Temporary moods**: "feeling down today" from 2 months ago → delete (unless it's a pattern)
+- **DO NOT touch**: Chronic conditions, preferences, long-term facts, recurring patterns
+- Be conservative: when in doubt, keep it
+
+## Response format
+Return a JSON object:
+{{"operations": [
+  {{
+    "item_id": 123,
+    "action": "delete",
+    "reason": "brief reason for deletion"
+  }}
+]}}
+
+If nothing is outdated, return: {{"operations": []}}
+"""
+
+
+def remove_outdated_memories(user_id: int = 0) -> dict:
+    """Use LLM to identify outdated memories and soft-delete them.
+
+    Batches items into LLM calls (200 per batch) to minimize API usage.
+    Returns {deleted, errors}.
+    """
+    uid = user_id or OWNER_USER_ID
+    items = get_all_memory_items(uid)
+    if not items:
+        return {"deleted": 0, "errors": 0}
+
+    current_date = datetime.now(TZ).strftime("%Y-%m-%d %A")
+    all_delete_ids = []
+    errors = 0
+    BATCH_SIZE = 200
+
+    client = get_client(purpose="think")
+
+    for i in range(0, len(items), BATCH_SIZE):
+        batch = items[i:i + BATCH_SIZE]
+        items_text = "\n".join(
+            f"ID:{item['id']} | [{item['category']}] ★{item['importance']} | {item['content']} "
+            f"(created: {item['created_at'][:10]}, updated: {item['updated_at'][:10]})"
+            for item in batch
+        )
+
+        try:
+            response = client.chat(
+                messages=[
+                    {"role": "system", "content": MEMORY_OUTDATED_PROMPT.format(current_date=current_date)},
+                    {"role": "user", "content": f"## Memory Items (batch {i // BATCH_SIZE + 1}):\n{items_text}"},
+                ],
+                temperature=0.2,
+                max_tokens=1024,
+            )
+
+            log_usage(
+                response.prompt_tokens, response.completion_tokens,
+                response.total_tokens, model=response.model, purpose="memory_outdated",
+            )
+
+            parsed = _parse_gpt_json(response.content)
+            operations = parsed.get("operations", []) if isinstance(parsed, dict) else parsed
+            if isinstance(operations, list):
+                for op in operations:
+                    if isinstance(op, dict) and op.get("action") == "delete" and "item_id" in op:
+                        all_delete_ids.append(op["item_id"])
+
+        except Exception as e:
+            log.warning("Outdated memory detection failed for batch %d: %s",
+                        i // BATCH_SIZE + 1, e)
+            errors += 1
+
+    # Batch delete all identified items
+    deleted = 0
+    if all_delete_ids:
+        deleted = delete_memory_items(all_delete_ids, deleted_by="maintenance")
+
+    log.info("Outdated removal: deleted %d, errors %d", deleted, errors)
+    return {"deleted": deleted, "errors": errors}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Salience Rebalancing
+# ═══════════════════════════════════════════════════════════════════════════
+
+SALIENCE_PROMPT = """You are a memory salience evaluator. Review candidate memories whose importance may need adjustment based on how frequently they appear in conversations.
+
+## Current Date
+{current_date}
+
+## Rules
+- You receive CANDIDATE memories that were pre-filtered by access frequency
+- For PROMOTE candidates (importance 1→2): these are frequently accessed memories currently rated as routine (★1). Promote if the topic genuinely matters to the user (repeated mentions = real interest), NOT if it's just background noise (e.g. weather queries, routine greetings)
+- For DEMOTE candidates (importance 2→1): these are memories rated as important (★2) but not accessed for a long time. Demote only if the topic seems truly abandoned, NOT if it's a stable long-term fact (health conditions, preferences, etc.)
+- NEVER touch importance=3 items (critical, human-designated)
+- Be conservative: when in doubt, do NOT change
+- Consider the content semantics, not just the numbers
+
+## Output Format (JSON)
+{{"operations": [
+  {{
+    "item_id": 123,
+    "action": "promote",
+    "new_importance": 2,
+    "reason": "brief reason"
+  }}
+]}}
+
+If no changes needed, return: {{"operations": []}}
+"""
+
+
+def _find_promote_candidates(user_id: int) -> list[dict]:
+    """Find memories with importance=1 but high access_count (frequently mentioned)."""
+    items = get_all_memory_items(user_id)
+    return [
+        item for item in items
+        if item["importance"] == 1
+        and item.get("access_count", 0) >= MEMORY_DEMOTE_MIN_ACCESS
+    ]
+
+
+def _find_demote_candidates(user_id: int) -> list[dict]:
+    """Find memories with importance=2 but not accessed for a long time.
+
+    Never touches importance=3 (critical).
+    """
+    items = get_all_memory_items(user_id)
+    cutoff = datetime.now(TZ) - timedelta(days=MEMORY_DEMOTE_AFTER_DAYS)
+    candidates = []
+    for item in items:
+        if item["importance"] != 2:
+            continue
+        if item.get("access_count", 0) >= MEMORY_DEMOTE_MIN_ACCESS:
+            continue
+        try:
+            last_acc = datetime.fromisoformat(item["last_accessed"])
+            if last_acc.tzinfo is None:
+                last_acc = last_acc.replace(tzinfo=TZ)
+            if last_acc > cutoff:
+                continue
+        except (ValueError, TypeError, KeyError):
+            # No valid last_accessed → treat as ancient, include as candidate
+            pass
+        candidates.append(item)
+    return candidates
+
+
+def rebalance_salience(user_id: int = 0) -> dict:
+    """Rebalance memory importance based on access patterns.
+
+    Uses rule-based pre-filtering + LLM confirmation.
+    - Promote: importance 1→2 for frequently accessed memories
+    - Demote: importance 2→1 for abandoned memories
+    - Never touches importance=3
+
+    Returns {promoted, demoted}.
+    """
+    uid = user_id or OWNER_USER_ID
+    promote_candidates = _find_promote_candidates(uid)
+    demote_candidates = _find_demote_candidates(uid)
+
+    all_candidates = promote_candidates + demote_candidates
+    if not all_candidates:
+        return {"promoted": 0, "demoted": 0}
+
+    # Format candidates for LLM
+    candidate_lines = []
+    for item in promote_candidates:
+        candidate_lines.append(
+            f"PROMOTE? ID:{item['id']} | ★{item['importance']} | "
+            f"access:{item.get('access_count', 0)} | [{item['category']}] "
+            f"{item['content'][:120]} "
+            f"(created: {item['created_at'][:10]}, updated: {item['updated_at'][:10]})"
+        )
+    for item in demote_candidates:
+        last_acc = item.get("last_accessed", "N/A")
+        if last_acc:
+            last_acc = last_acc[:10]
+        else:
+            last_acc = "N/A"
+        candidate_lines.append(
+            f"DEMOTE? ID:{item['id']} | ★{item['importance']} | "
+            f"access:{item.get('access_count', 0)} | [{item['category']}] "
+            f"{item['content'][:120]} "
+            f"(created: {item['created_at'][:10]}, last_accessed: {last_acc})"
+        )
+
+    current_date = datetime.now(TZ).strftime("%Y-%m-%d %A")
+
+    try:
+        client = get_client(purpose="think")
+        response = client.chat(
+            messages=[
+                {"role": "system", "content": SALIENCE_PROMPT.format(current_date=current_date)},
+                {"role": "user", "content": "## Candidates:\n" + "\n".join(candidate_lines)},
+            ],
+            temperature=0.2,
+            max_tokens=512,
+        )
+
+        log_usage(
+            response.prompt_tokens, response.completion_tokens,
+            response.total_tokens, model=response.model, purpose="salience_rebalance",
+        )
+
+        parsed = _parse_gpt_json(response.content)
+        operations = parsed.get("operations", []) if isinstance(parsed, dict) else parsed
+        if not isinstance(operations, list):
+            operations = []
+
+    except Exception as e:
+        log.warning("Salience rebalance LLM call failed: %s", e)
+        return {"promoted": 0, "demoted": 0}
+
+    promoted = 0
+    demoted = 0
+
+    for op in operations:
+        try:
+            item_id = op["item_id"]
+            new_imp = op["new_importance"]
+            action = op.get("action", "")
+
+            # Safety: never set importance to 3 via salience
+            if new_imp >= 3:
+                continue
+            # Safety: only allow 1→2 (promote) or 2→1 (demote)
+            if new_imp not in (1, 2):
+                continue
+
+            update_memory_importance(item_id, new_imp)
+
+            if action == "promote":
+                promoted += 1
+                log.info("Salience promote: ID %d → ★%d (%s)", item_id, new_imp, op.get("reason", ""))
+            elif action == "demote":
+                demoted += 1
+                log.info("Salience demote: ID %d → ★%d (%s)", item_id, new_imp, op.get("reason", ""))
+        except Exception as e:
+            log.warning("Salience rebalance failed for op %s: %s", op, e)
+
+    log.info("Salience rebalance: promoted %d, demoted %d (from %d candidates)",
+             promoted, demoted, len(all_candidates))
+    return {"promoted": promoted, "demoted": demoted}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Core Memory Audit (Layer 2 → Layer 1)
 # ═══════════════════════════════════════════════════════════════════════════
 
 def audit_core_memory_tokens(user_id: int = 0) -> dict:
@@ -205,7 +512,7 @@ def audit_core_memory_tokens(user_id: int = 0) -> dict:
         log.warning("Core memory for user %d is %d tokens (budget %d) — needs trimming",
                     uid, token_count, CORE_MEMORY_MAX_TOKENS)
     else:
-        log.info("Core memory for user %d: %d tokens (budget %d) ✓",
+        log.info("Core memory for user %d: %d tokens (budget %d) OK",
                  uid, token_count, CORE_MEMORY_MAX_TOKENS)
 
     return {"status": "over_budget" if over else "ok", "tokens": token_count, "over_budget": over}
@@ -216,11 +523,10 @@ def audit_core_memory_tokens(user_id: int = 0) -> dict:
 # ═══════════════════════════════════════════════════════════════════════════
 
 def smart_maintenance(user_id: int = 0) -> dict:
-    """Run full memory maintenance cycle: extract → dedup → audit core.
+    """Run full memory maintenance cycle.
 
     Called nightly by the maintenance scheduler.
-    Core memory is NOT rebuilt here — chat model owns that content.
-    We only audit the token budget.
+    Order: extract → dedup → outdated → salience → core audit → trash purge.
     """
     uid = user_id or OWNER_USER_ID
     log.info("Starting smart maintenance for user %d", uid)
@@ -228,7 +534,10 @@ def smart_maintenance(user_id: int = 0) -> dict:
     results = {
         "extracted": 0,
         "deduplicated": 0,
+        "outdated": {},
+        "salience": {},
         "core_audit": {},
+        "trash_purged": 0,
     }
 
     try:
@@ -242,9 +551,24 @@ def smart_maintenance(user_id: int = 0) -> dict:
         log.error("Memory dedup failed: %s", e)
 
     try:
+        results["outdated"] = remove_outdated_memories(uid)
+    except Exception as e:
+        log.error("Outdated removal failed: %s", e)
+
+    try:
+        results["salience"] = rebalance_salience(uid)
+    except Exception as e:
+        log.error("Salience rebalance failed: %s", e)
+
+    try:
         results["core_audit"] = audit_core_memory_tokens(uid)
     except Exception as e:
         log.error("Core memory audit failed: %s", e)
+
+    try:
+        results["trash_purged"] = cleanup_old_trash(TRASH_PURGE_DAYS)
+    except Exception as e:
+        log.error("Trash purge failed: %s", e)
 
     log.info("Maintenance complete: %s", results)
     return results

@@ -3,9 +3,11 @@
 Runs at MAINTENANCE_HOUR (default 3 AM). Steps:
   1. Diary archive — snapshot + clear
   2. Dedup — merge near-duplicate memory items (uses LLM)
-  3. Outdated removal — demote stale low-importance items
-  4. Core audit — check core_memory under token budget
-  5. Summary — store for morning report
+  3. Outdated removal — LLM-based detection of stale memories
+  4. Salience rebalance — promote/demote importance levels (uses LLM)
+  5. Core audit — check core_memory under token budget
+  6. Trash purge — hard-delete old trash items
+  7. Summary — store for morning report
 
 Triggered by heartbeat as a cron skill.
 """
@@ -46,20 +48,28 @@ async def run_maintenance(user_id: int = 0) -> dict:
         log.error("Maintenance dedup failed: %s", e)
         results["dedup"] = f"Error: {e}"
 
-    # 3. Outdated removal
+    # 3. Outdated removal (LLM-based)
     try:
-        from mochi.db import get_stale_memory_items, demote_memory_item
-        stale = get_stale_memory_items(uid)
-        demoted = 0
-        for item in stale:
-            demote_memory_item(item["id"])
-            demoted += 1
-        results["outdated"] = f"Demoted {demoted} stale item(s)"
+        from mochi.memory_engine import remove_outdated_memories
+        outdated = remove_outdated_memories(uid)
+        results["outdated"] = f"Deleted {outdated.get('deleted', 0)} outdated item(s)"
     except Exception as e:
         log.error("Maintenance outdated removal failed: %s", e)
         results["outdated"] = f"Error: {e}"
 
-    # 4. Core audit
+    # 4. Salience rebalance (LLM-based promote/demote)
+    try:
+        from mochi.memory_engine import rebalance_salience
+        salience = rebalance_salience(uid)
+        results["salience"] = (
+            f"Promoted {salience.get('promoted', 0)}, "
+            f"demoted {salience.get('demoted', 0)}"
+        )
+    except Exception as e:
+        log.error("Maintenance salience rebalance failed: %s", e)
+        results["salience"] = f"Error: {e}"
+
+    # 5. Core audit
     try:
         from mochi.db import get_core_memory
         core = get_core_memory(uid)
@@ -76,7 +86,17 @@ async def run_maintenance(user_id: int = 0) -> dict:
         log.error("Maintenance core audit failed: %s", e)
         results["core_audit"] = f"Error: {e}"
 
-    # 5. Store summary for morning report
+    # 6. Trash purge
+    try:
+        from mochi.db import cleanup_old_trash
+        from mochi.config import TRASH_PURGE_DAYS
+        purged = cleanup_old_trash(TRASH_PURGE_DAYS)
+        results["trash_purge"] = f"Purged {purged} old trash item(s)"
+    except Exception as e:
+        log.error("Maintenance trash purge failed: %s", e)
+        results["trash_purge"] = f"Error: {e}"
+
+    # 7. Store summary for morning report
     try:
         from mochi.runtime_state import set_maintenance_summary
         parts = [f"- {k}: {v}" for k, v in results.items()]
