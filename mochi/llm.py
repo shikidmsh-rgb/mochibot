@@ -14,6 +14,7 @@ import json
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from typing import Any, TypedDict
 
 from mochi.config import (
     CHAT_PROVIDER, CHAT_API_KEY, CHAT_MODEL, CHAT_BASE_URL,
@@ -24,11 +25,18 @@ from mochi.config import (
 log = logging.getLogger(__name__)
 
 
+class ToolCallDict(TypedDict):
+    """Typed structure for a single tool call in LLMResponse."""
+    id: str
+    name: str
+    arguments: dict[str, Any]
+
+
 @dataclass
 class LLMResponse:
     """Unified response from any LLM provider."""
     content: str = ""
-    tool_calls: list[dict] = field(default_factory=list)
+    tool_calls: list[ToolCallDict] = field(default_factory=list)
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
@@ -100,10 +108,16 @@ class OpenAIProvider(LLMProvider):
         tool_calls = []
         if choice.message.tool_calls:
             for tc in choice.message.tool_calls:
+                try:
+                    parsed_args = json.loads(tc.function.arguments)
+                except (json.JSONDecodeError, TypeError):
+                    log.warning("Malformed tool_call arguments for %s",
+                                tc.function.name)
+                    parsed_args = {}
                 tool_calls.append({
                     "id": tc.id,
                     "name": tc.function.name,
-                    "arguments": json.loads(tc.function.arguments),
+                    "arguments": parsed_args,
                 })
 
         return LLMResponse(
@@ -146,10 +160,16 @@ class AzureOpenAIProvider(LLMProvider):
         tool_calls = []
         if choice.message.tool_calls:
             for tc in choice.message.tool_calls:
+                try:
+                    parsed_args = json.loads(tc.function.arguments)
+                except (json.JSONDecodeError, TypeError):
+                    log.warning("Malformed tool_call arguments for %s",
+                                tc.function.name)
+                    parsed_args = {}
                 tool_calls.append({
                     "id": tc.id,
                     "name": tc.function.name,
-                    "arguments": json.loads(tc.function.arguments),
+                    "arguments": parsed_args,
                 })
 
         return LLMResponse(

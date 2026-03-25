@@ -4,26 +4,21 @@
 
 # 🍡 MochiBot
 
-**An open-source AI companion that remembers you, checks in on you, and grows with you.**
-
-*Not just a chatbot — a companion that cares.*
-
-**For people who want an AI that feels like a friend, not a search bar.**<br>
-Emotional support. Daily check-ins. Gentle reminders. Always-on memory. Fully private.
+**Open-source AI companion bot with persistent memory and proactive check-ins.**
 
 </div>
 
 ---
 
-## Why MochiBot
+## Features
 
 - **Lightweight** — single process, SQLite, no Docker/Redis/Postgres. `pip install` and go
-- **Persistent memory** — 3-layer memory that survives restarts and self-organizes nightly, with full-text search and optional vector search
-- **Proactive** — a heartbeat loop that checks in on you, not just waits for input
-- **Private** — fully self-hosted, your data never leaves your machine
-- **Extensible** — drop-in skills & observers, auto-discovered at startup. Skills support rich metadata, usage rules, and flexible triggers
-- **Cost-efficient** — 5-tier model routing: use cheap models for simple tasks, powerful models only when needed
-- **Body-aware** — built-in [Oura Ring](https://ouraring.com) integration: sleep, readiness, activity, stress — your bot notices what your words don't say
+- **Persistent memory** — 3-layer memory that survives restarts and self-organizes nightly (full-text search + optional vector search)
+- **Proactive** — heartbeat loop that checks in on you, not just waits for input
+- **Self-hosted** — your data stays on your machine
+- **Extensible** — drop-in skills & observers, auto-discovered at startup
+- **Cost-efficient** — 5-tier model routing: cheap models for simple tasks, powerful models only when needed
+- **Body-aware** — [Oura Ring](https://ouraring.com) integration for sleep, readiness, activity, stress
 
 ---
 
@@ -43,38 +38,50 @@ Every night: extract → deduplicate → rebuild core summary → compress old c
 
 ### Heartbeat (Observe → Think → Act)
 
-An autonomous background loop, not a cron job:
+Background loop:
 
 | Phase | What happens | LLM calls |
 |-------|-------------|-----------|
-| **Observe** | Collect world context from all observers (time, weather, activity, wearables) | 0 |
-| **Think** | LLM evaluates: should I reach out? (delta detection — only fires when something changed) | 0–1 |
-| **Act** | Send a proactive message, save an observation, or — most often — do nothing | 0 |
+| **Observe** | Collect context from observers (time, weather, activity, wearables) | 0 |
+| **Think** | LLM evaluates: should I reach out? (delta detection — only on change) | 0–1 |
+| **Act** | Send a proactive message, save an observation, or do nothing | 0 |
 
-Rate-limited and conservative. A companion, not a spammer.
+Rate-limited and conservative.
 
 ### 5-Tier Model Routing
 
-Route different tasks to the right model — cheap/fast for simple tool calls, powerful for deep analysis:
-
-| Tier | Purpose | Example use |
-|------|---------|-------------|
-| **LITE** | Cheap/fast | Simple tool tasks (check-ins, reminders) |
-| **CHAT** | Balanced (default) | Daily conversations, proactive messages |
+| Tier | Purpose | Example |
+|------|---------|---------|
+| **LITE** | Cheap/fast | Tool tasks (check-ins, reminders) |
+| **CHAT** | Balanced (default) | Conversations, proactive messages |
 | **DEEP** | Powerful | Code analysis, complex reasoning |
 | **BG_FAST** | Cheap background | Classification, tagging, summarization |
-| **BG_DEEP** | Strong background | Heartbeat reasoning, memory operations |
+| **BG_DEEP** | Strong background | Heartbeat reasoning, memory ops |
 
-Unconfigured tiers fall back to `CHAT_*`. Set `TIER_ROUTING_ENABLED=false` (default) to use the original 2-model setup (Chat + Think).
+Unconfigured tiers fall back to `CHAT_*`. Set `TIER_ROUTING_ENABLED=false` (default) to use the 2-model setup (Chat + Think).
+
+### Pre-Router & Tool Governance
+
+Selectively injects skills per message to keep token costs low:
+
+1. **Pre-Router** — LLM classifies the message and selects which skills to load
+2. **Keyword Fallback** — catches obvious cases if the pre-router misses
+3. **Tool Escalation** — LLM can request missing skills mid-turn via `request_tools`
+
+Tool policy layer gates every call with check/filter/rate-limit.
+
+### Diary (Working Memory)
+
+Daily scratchpad shared between Chat and Think — observations, notes, context that don't fit into long-term memory. Auto-archived nightly.
 
 ### Observers & Skills
 
 | Concept | Role | Examples |
 |---------|------|---------|
-| **Observers** | Passive sensors that feed context into Think — zero LLM calls, interval-throttled | `time_context`, `weather`, `activity_pattern`, `oura` (sleep/readiness/stress) |
-| **Skills** | Active capabilities the Chat model can invoke via tool calls — auto-discovered from `SKILL.md` + `handler.py` | `memory`, `reminder`, `todo`, `oura` |
+| **Observers** | Passive sensors feeding context into Think — zero LLM calls, interval-throttled | `time_context`, `weather`, `activity_pattern`, `oura` |
+| **Skills** | Active capabilities invoked via tool calls — auto-discovered from `SKILL.md` + `handler.py` | `memory`, `reminder`, `todo`, `diary`, `oura` |
 
-Both are **auto-discovered at startup** — drop a folder, restart, done. Skills support two SKILL.md formats (v1 and v2) with rich metadata: type, multi-turn, usage rules, and flexible trigger configuration. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to create your own.
+Both are auto-discovered at startup — drop a folder, restart, done. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
@@ -84,14 +91,14 @@ Both are **auto-discovered at startup** — drop a folder, restart, done. Skills
 
 ```bash
 git clone https://github.com/mochi-bot/mochibot.git && cd mochibot
-cp .env.example .env        # then fill in CHAT_API_KEY, CHAT_MODEL, TELEGRAM_BOT_TOKEN
+cp .env.example .env        # fill in CHAT_API_KEY, CHAT_MODEL, TELEGRAM_BOT_TOKEN
 pip install -r requirements.txt
 python -m mochi.main
 ```
 
 Open Telegram → find your bot → send any message. The first person to message becomes the owner.
 
-Two built-in debug commands: `/cost` shows LLM token usage for today and this month, `/heartbeat` shows the last heartbeat timestamp and what the bot decided to do.
+Debug commands: `/cost` (token usage), `/heartbeat` (last heartbeat status).
 
 > **Any OpenAI-compatible API works.** Set `CHAT_BASE_URL` to point at your provider:
 >
@@ -106,7 +113,7 @@ Two built-in debug commands: `/cost` shows LLM token usage for today and this mo
 
 ## Deployment
 
-The heartbeat runs continuously. **If you run on a laptop, the bot goes offline when you close the lid.**
+The heartbeat runs continuously — if you run on a laptop, the bot goes offline when you close the lid.
 
 | Option | Uptime | Cost |
 |--------|--------|------|
@@ -114,7 +121,7 @@ The heartbeat runs continuously. **If you run on a laptop, the bot goes offline 
 | **Raspberry Pi / Mini PC** | 24/7 (home network) | One-time |
 | **Laptop** | When open | Free |
 
-> A small VM (1 vCPU, 1 GB RAM) is more than enough — single process, SQLite, minimal resources.
+> A small VM (1 vCPU, 1 GB RAM) is enough — single process, SQLite, minimal resources.
 
 ---
 
@@ -124,7 +131,7 @@ All config lives in `.env`. Key variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CHAT_PROVIDER` | `openai` | SDK: `openai` (+ any compatible), `azure_openai`, `anthropic` |
+| `CHAT_PROVIDER` | `openai` | SDK: `openai` (+ compatible), `azure_openai`, `anthropic` |
 | `CHAT_API_KEY` | — | Your API key |
 | `CHAT_MODEL` | — | Model for conversations (required) |
 | `CHAT_BASE_URL` | — | Custom endpoint for OpenAI-compatible APIs |
@@ -136,7 +143,7 @@ All config lives in `.env`. Key variables:
 | `TIMEZONE_OFFSET_HOURS` | `0` | Your UTC offset |
 
 <details>
-<summary>Advanced: 5-tier routing, embeddings, integrations</summary>
+<summary>Advanced: 5-tier routing, pre-router, embeddings, integrations</summary>
 
 **5-tier routing** — set `TIER_ROUTING_ENABLED=true`, then configure each tier:
 
@@ -144,19 +151,21 @@ All config lives in `.env`. Key variables:
 TIER_{LITE,CHAT,DEEP,BG_FAST,BG_DEEP}_{PROVIDER,API_KEY,MODEL,BASE_URL}
 ```
 
+**Pre-Router** — `TOOL_ROUTER_ENABLED=true` enables LLM-based skill selection per message. `TOOL_ESCALATION_ENABLED=true` (default) allows mid-turn skill requests.
+
 **Embeddings** — `AZURE_EMBEDDING_ENDPOINT`, `AZURE_EMBEDDING_API_KEY`, `AZURE_EMBEDDING_DEPLOYMENT`
 
 **Oura Ring** — `OURA_CLIENT_ID`, `OURA_CLIENT_SECRET` (run `python oura_auth.py` to set up)
 
-See [.env.example](.env.example) for the full list (~80 tunables).
+See [.env.example](.env.example) for key tunables; see `mochi/config.py` for the full list of ~70 tunables.
 
 </details>
 
-**Example** — dual-model setup to save tokens:
+**Example** — dual-model setup:
 
 ```dotenv
-CHAT_MODEL=gpt-4o            # smart model for conversations
-THINK_MODEL=gpt-4o-mini      # fast model for heartbeat + maintenance
+CHAT_MODEL=gpt-4o            # conversations
+THINK_MODEL=gpt-4o-mini      # heartbeat + maintenance
 ```
 
 ---
@@ -168,48 +177,42 @@ THINK_MODEL=gpt-4o-mini      # fast model for heartbeat + maintenance
 | Personality, tone, name | `prompts/personality.md` |
 | What gets remembered | `prompts/memory_extract.md` |
 | When to proactively message | `prompts/think_system.md` |
-| Morning / evening reports | `prompts/report_morning.md` / `report_evening.md` (disabled by default — enable via `MORNING_REPORT_HOUR` / `EVENING_REPORT_HOUR` in `.env`) |
+| Morning / evening reports | `prompts/report_morning.md` / `report_evening.md` (off by default — set `MORNING_REPORT_HOUR` / `EVENING_REPORT_HOUR`) |
 | Observer intervals | `OBSERVATION.md` in each observer directory |
-| Add a new skill or observer | See [CONTRIBUTING.md](CONTRIBUTING.md) |
+| Add a skill or observer | See [CONTRIBUTING.md](CONTRIBUTING.md) |
 
-> **Tip**: `prompts/personality.md` is the single most impactful file — it defines how Mochi talks (`## Chat`) and what the heartbeat pays attention to (`## Think`). Start here before tuning any config variable.
+> `prompts/personality.md` is the most impactful file — it defines how the bot talks and what the heartbeat pays attention to.
 
 ---
 
 ## Architecture
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design.
+See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Roadmap
 
 - [x] Any OpenAI-compatible API (DeepSeek, Ollama, Groq, etc.)
 - [x] Dual-model architecture (Chat + Think)
-- [x] 5-tier model routing (lite / chat / deep / bg_fast / bg_deep)
-- [x] Skill v2 system — rich metadata, usage rules, multi-turn, flexible triggers
-- [x] Expanded DB schema — 22+ tables, FTS5 full-text search, optional sqlite-vec vector search
-- [x] Embedding support — Azure OpenAI embeddings with TTL cache
-- [ ] Morning / evening reports (scaffolded, enable via `MORNING_REPORT_HOUR` / `EVENING_REPORT_HOUR`)
-- [x] Oura Ring integration — sleep, readiness, activity, stress (observer + skill)
-- [ ] Pre-router — automatic skill selection before LLM call
-- [ ] Tool governance — per-skill approval policies, audit logging
-- [ ] Admin portal — web UI for memory inspection, config, and diagnostics
+- [x] 5-tier model routing
+- [x] Skill v2 — rich metadata, usage rules, multi-turn, flexible triggers
+- [x] Expanded DB — 22+ tables, FTS5, optional sqlite-vec
+- [x] Embedding support (Azure OpenAI + TTL cache)
+- [x] Oura Ring integration (observer + skill)
+- [x] Pre-router — automatic skill selection
+- [x] Tool governance — policy check, filter, rate limiter
+- [x] Diary system — daily working memory + nightly archive
+- [x] Nightly maintenance — dedup, stale demotion, core memory audit
+- [x] Modular prompt assembly
+- [x] Chatty rhythm — multi-bubble + typing indicators
+- [x] Morning / evening reports
+- [ ] Admin portal (web UI)
 - [ ] Voice message support
 - [ ] Multi-user support
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for how to add skills, observers, and contribute to the framework.
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
 MIT — see [LICENSE](LICENSE)
-
----
-
-<div align="center">
-
-*Built with the belief that AI should be warm, not just smart.*
-
-🍡
-
-</div>

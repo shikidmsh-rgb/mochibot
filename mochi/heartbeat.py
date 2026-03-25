@@ -24,7 +24,7 @@ from mochi.config import (
     AWAKE_HOUR_START, AWAKE_HOUR_END,
     FORCE_SLEEP_HOUR, FORCE_WAKE_HOUR,
     MAX_DAILY_PROACTIVE, PROACTIVE_COOLDOWN_SECONDS,
-    THINK_FALLBACK_MINUTES,
+    THINK_FALLBACK_MINUTES, LLM_HEARTBEAT_TIMEOUT_SECONDS,
     MORNING_REPORT_HOUR, EVENING_REPORT_HOUR,
     MAINTENANCE_HOUR, MAINTENANCE_ENABLED,
     TIMEZONE_OFFSET_HOURS,
@@ -52,6 +52,18 @@ from mochi.runtime_state import (
 log = logging.getLogger(__name__)
 
 TZ = timezone(timedelta(hours=TIMEZONE_OFFSET_HOURS))
+
+
+async def _llm_with_timeout(coro, label: str):
+    """Run a coroutine with a timeout guard. Returns None on timeout."""
+    try:
+        return await asyncio.wait_for(coro, timeout=LLM_HEARTBEAT_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        log.error("Heartbeat LLM timeout in %s after %ds",
+                  label, LLM_HEARTBEAT_TIMEOUT_SECONDS)
+        log_heartbeat(_state, f"{label}_timeout")
+        return None
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # State Machine
@@ -258,7 +270,8 @@ async def _send_report(report_type: str, user_id: int, observation: dict) -> Non
 
     obs_text = json.dumps(observation, ensure_ascii=False, indent=2)
     client = get_client(purpose="think")
-    response = client.chat(
+    response = await asyncio.to_thread(
+        client.chat,
         messages=[
             {"role": "system", "content": prompt},
             {"role": "user", "content": f"Current context:\n{obs_text}"},
@@ -377,7 +390,8 @@ async def _think(observation: dict, user_id: int) -> dict | None:
     obs_text = json.dumps(observation, ensure_ascii=False, indent=2)
 
     client = get_client(purpose="think")
-    response = client.chat(
+    response = await asyncio.to_thread(
+        client.chat,
         messages=[
             {"role": "system", "content": prompt},
             {"role": "user", "content": f"Current observation:\n{obs_text}"},
@@ -536,7 +550,7 @@ async def heartbeat_loop() -> None:
                 continue
 
             # Nightly maintenance (runs once per day at MAINTENANCE_HOUR)
-            await _run_maintenance_if_due(user_id)
+            await _llm_with_timeout(_run_maintenance_if_due(user_id), "maintenance")
 
             # Observe (cheap: no LLM — needed for both reports and think)
             observation = await _observe(user_id)
@@ -544,11 +558,13 @@ async def heartbeat_loop() -> None:
             # Scheduled daily reports take priority
             report_type = _report_due()
             if report_type:
-                await _send_report(report_type, user_id, observation)
+                await _llm_with_timeout(
+                    _send_report(report_type, user_id, observation), "report")
 
             # Think (only if delta or fallback)
             if _should_think(observation):
-                action = await _think(observation, user_id)
+                action = await _llm_with_timeout(
+                    _think(observation, user_id), "think")
                 if action:
                     await _act(action, user_id)
                 else:

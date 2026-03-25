@@ -20,7 +20,6 @@ from mochi.db import init_db, get_pending_reminders, mark_reminder_fired
 import mochi.skills as skill_registry
 from mochi.ai_client import chat
 from mochi.transport import IncomingMessage
-from mochi.transport.telegram import TelegramTransport, set_message_handler
 from mochi.heartbeat import heartbeat_loop, set_send_callback
 
 logging.basicConfig(
@@ -38,21 +37,32 @@ async def handle_message(msg: IncomingMessage) -> str:
     return await chat(msg)
 
 
+async def check_and_fire_reminders(transport) -> int:
+    """Check for due reminders and deliver them (single pass).
+
+    Returns the number of reminders fired.
+    """
+    fired = 0
+    reminders = get_pending_reminders()
+    for r in reminders:
+        try:
+            await transport.send_message(
+                r["channel_id"],
+                f"⏰ Reminder: {r['message']}",
+            )
+            mark_reminder_fired(r["id"])
+            log.info("Reminder #%d fired", r["id"])
+            fired += 1
+        except Exception as e:
+            log.error("Failed to fire reminder #%d: %s", r["id"], e)
+    return fired
+
+
 async def reminder_checker(transport):
     """Check for due reminders every 60 seconds and deliver them."""
     while True:
         try:
-            reminders = get_pending_reminders()
-            for r in reminders:
-                try:
-                    await transport.send_message(
-                        r["channel_id"],
-                        f"⏰ Reminder: {r['message']}",
-                    )
-                    mark_reminder_fired(r["id"])
-                    log.info("Reminder #%d fired", r["id"])
-                except Exception as e:
-                    log.error("Failed to fire reminder #%d: %s", r["id"], e)
+            await check_and_fire_reminders(transport)
         except Exception as e:
             log.error("Reminder checker error: %s", e, exc_info=True)
         await asyncio.sleep(60)
@@ -78,6 +88,7 @@ async def main():
     log.info("Observers loaded: %s", observers)
 
     # 3. Transport
+    from mochi.transport.telegram import TelegramTransport, set_message_handler
     transport = TelegramTransport()
     set_message_handler(handle_message)
 

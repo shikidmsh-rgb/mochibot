@@ -31,7 +31,10 @@ class ReminderSkill(Skill):
             rid = args.get("reminder_id")
             if not rid:
                 return SkillResult(output="Need reminder_id to delete.", success=False)
-            mark_reminder_fired(int(rid))
+            try:
+                mark_reminder_fired(int(rid))
+            except (ValueError, TypeError):
+                return SkillResult(output=f"Invalid reminder_id: {rid}", success=False)
             return SkillResult(output=f"Reminder #{rid} deleted.")
 
         return SkillResult(output=f"Unknown action: {action}", success=False)

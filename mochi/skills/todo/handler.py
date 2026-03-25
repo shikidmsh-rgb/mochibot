@@ -31,14 +31,20 @@ class TodoSkill(Skill):
             tid = args.get("todo_id")
             if not tid:
                 return SkillResult(output="Need todo_id.", success=False)
-            complete_todo(int(tid))
+            try:
+                complete_todo(int(tid))
+            except (ValueError, TypeError):
+                return SkillResult(output=f"Invalid todo_id: {tid}", success=False)
             return SkillResult(output=f"Todo #{tid} completed!")
 
         elif action == "delete":
             tid = args.get("todo_id")
             if not tid:
                 return SkillResult(output="Need todo_id.", success=False)
-            delete_todo(int(tid))
+            try:
+                delete_todo(int(tid))
+            except (ValueError, TypeError):
+                return SkillResult(output=f"Invalid todo_id: {tid}", success=False)
             return SkillResult(output=f"Todo #{tid} deleted.")
 
         return SkillResult(output=f"Unknown action: {action}", success=False)

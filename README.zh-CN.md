@@ -4,30 +4,25 @@
 
 # 🍡 MochiBot
 
-**一个开源的 AI 陪伴 bot——记得你、关心你、和你一起成长。**
-
-*不只是聊天机器人，是一个有温度的伙伴。*
-
-**给那些想要一个像朋友一样的 AI，而不只是搜索框的人。**<br>
-情绪支持。每日问候。温柔提醒。永久记忆。完全私有。
+**开源 AI 陪伴 bot，带持久记忆和主动问候。**
 
 </div>
 
 ---
 
-## 为什么选 MochiBot
+## 特性
 
-- **轻量级** — 单进程、SQLite，不需要 Docker/Redis/Postgres。`pip install` 就能跑
-- **持久记忆** — 三层记忆系统，重启不丢失，每晚自动整理。支持全文搜索和可选的向量搜索
-- **主动关心** — 心跳循环主动找你聊，而不是干等你输入
-- **完全私有** — 自托管，数据永远不离开你的机器
-- **易扩展** — 即插即用的 Skills 和 Observers，启动时自动发现。支持丰富的元数据、使用规则和灵活的触发配置
+- **轻量** — 单进程、SQLite，不需要 Docker/Redis/Postgres。`pip install` 就能跑
+- **持久记忆** — 三层记忆，重启不丢失，每晚自动整理（全文搜索 + 可选向量搜索）
+- **主动** — 心跳循环主动找你，而不是干等输入
+- **自托管** — 数据留在你自己的机器上
+- **易扩展** — 即插即用的 Skills 和 Observers，启动时自动发现
 - **省钱** — 5 级模型路由：简单任务用便宜模型，复杂任务才上强模型
-- **感知身体** — 内置 [Oura Ring](https://ouraring.com) 集成：睡眠、准备度、活动、压力——你说不出口的，身体数据替你开口
+- **感知身体** — [Oura Ring](https://ouraring.com) 集成：睡眠、准备度、活动、压力
 
 ---
 
-## 设计理念
+## 设计
 
 ### 三层记忆
 
@@ -43,38 +38,50 @@ Layer 3: 对话记录    — 原始消息，随时间压缩
 
 ### 心跳循环（Observe → Think → Act）
 
-一个自主后台循环，不是定时任务：
+后台循环：
 
-| 阶段 | 做什么 | LLM 调用次数 |
-|------|--------|-------------|
-| **Observe** | 从所有 Observer 收集环境信息（时间、天气、活动、穿戴设备） | 0 |
+| 阶段 | 做什么 | LLM 调用 |
+|------|--------|----------|
+| **Observe** | 从 Observer 收集环境信息（时间、天气、活动、穿戴设备） | 0 |
 | **Think** | LLM 判断：要不要主动联系？（变化检测——只在有变化时触发） | 0–1 |
-| **Act** | 发送主动消息、保存观察结果，或者——大多数时候——什么都不做 | 0 |
+| **Act** | 发送主动消息、保存观察结果，或什么都不做 | 0 |
 
-有限速、很克制。是陪伴，不是骚扰。
+有限速，很克制。
 
 ### 5 级模型路由
 
-把不同任务路由到最合适的模型——简单任务用便宜/快的，复杂分析才上强模型：
-
 | 层 | 用途 | 举例 |
 |----|------|------|
-| **LITE** | 便宜/快 | 简单工具任务（打卡、提醒） |
-| **CHAT** | 均衡（默认） | 日常对话、主动问候 |
+| **LITE** | 便宜/快 | 工具任务（打卡、提醒） |
+| **CHAT** | 均衡（默认） | 对话、主动消息 |
 | **DEEP** | 强力 | 代码分析、复杂推理 |
 | **BG_FAST** | 便宜后台 | 分类、打标、摘要 |
 | **BG_DEEP** | 强力后台 | 心跳推理、记忆操作 |
 
-未配置的层自动回退到 `CHAT_*`。`TIER_ROUTING_ENABLED=false`（默认）时使用原来的双模型（Chat + Think）。
+未配置的层自动回退到 `CHAT_*`。`TIER_ROUTING_ENABLED=false`（默认）时使用双模型（Chat + Think）。
+
+### Pre-Router 与工具治理
+
+按消息动态注入 skill，降低 token 成本：
+
+1. **Pre-Router** — LLM 分类消息并选择要加载的 skill
+2. **关键词兜底** — Pre-Router 遗漏时捕获明显需求
+3. **工具升级** — LLM 对话中途可通过 `request_tools` 请求缺少的 skill
+
+工具策略层对每次调用做 check / filter / 限速。
+
+### 日记（工作记忆）
+
+Chat 和 Think 共享的每日便签——观察、笔记和不适合写入长期记忆的上下文。每晚自动归档。
 
 ### Observers 与 Skills
 
 | 概念 | 角色 | 举例 |
 |------|------|------|
-| **Observers** | 被动传感器，为 Think 提供上下文——零 LLM 调用，按间隔节流 | `time_context`、`weather`、`activity_pattern`、`oura`（睡眠/准备度/压力） |
-| **Skills** | Chat 模型通过 tool call 调用的主动能力——由 `SKILL.md` + `handler.py` 自动发现 | `memory`、`reminder`、`todo`、`oura` |
+| **Observers** | 被动传感器，为 Think 提供上下文——零 LLM 调用，按间隔节流 | `time_context`、`weather`、`activity_pattern`、`oura` |
+| **Skills** | Chat 模型通过 tool call 调用的能力——由 `SKILL.md` + `handler.py` 自动发现 | `memory`、`reminder`、`todo`、`diary`、`oura` |
 
-两者都**启动时自动发现**——放个文件夹，重启即可。Skills 支持两种 SKILL.md 格式（v1 和 v2），具有丰富的元数据：类型、多轮对话、使用规则和灵活的触发配置。详见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+两者启动时自动发现——放个文件夹，重启即可。详见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ---
 
@@ -91,7 +98,7 @@ python -m mochi.main
 
 打开 Telegram → 找到你的 bot → 发任意消息。第一个发消息的人自动成为 owner。
 
-两个内置调试命令：`/cost` 查看今日和本月 token 用量，`/heartbeat` 查看最近一次心跳时间和 bot 的决策。
+调试命令：`/cost`（token 用量）、`/heartbeat`（最近心跳状态）。
 
 > **任何 OpenAI 兼容 API 都可以。** 设置 `CHAT_BASE_URL` 指向你的服务商：
 >
@@ -106,7 +113,7 @@ python -m mochi.main
 
 ## 部署
 
-心跳持续运行。**如果在笔记本上跑，合盖就离线了。**
+心跳持续运行——笔记本合盖就离线。
 
 | 方案 | 在线时间 | 费用 |
 |------|---------|------|
@@ -114,7 +121,7 @@ python -m mochi.main
 | **树莓派 / 迷你主机** | 7×24（家庭网络） | 一次性 |
 | **笔记本** | 开盖时 | 免费 |
 
-> 一台小 VM（1 vCPU、1 GB RAM）绰绰有余——单进程、SQLite、资源占用极低。
+> 一台小 VM（1 vCPU、1 GB RAM）足够——单进程、SQLite、资源占用极低。
 
 ---
 
@@ -136,7 +143,7 @@ python -m mochi.main
 | `TIMEZONE_OFFSET_HOURS` | `0` | 你的 UTC 偏移 |
 
 <details>
-<summary>进阶：5 级路由、向量嵌入、集成</summary>
+<summary>进阶：5 级路由、Pre-Router、向量嵌入、集成</summary>
 
 **5 级路由** — 设 `TIER_ROUTING_ENABLED=true`，然后配置每层：
 
@@ -144,19 +151,21 @@ python -m mochi.main
 TIER_{LITE,CHAT,DEEP,BG_FAST,BG_DEEP}_{PROVIDER,API_KEY,MODEL,BASE_URL}
 ```
 
+**Pre-Router** — `TOOL_ROUTER_ENABLED=true` 启用基于 LLM 的 skill 自动选择。`TOOL_ESCALATION_ENABLED=true`（默认）允许对话中途请求新 skill。
+
 **向量嵌入** — `AZURE_EMBEDDING_ENDPOINT`、`AZURE_EMBEDDING_API_KEY`、`AZURE_EMBEDDING_DEPLOYMENT`
 
 **Oura Ring** — `OURA_CLIENT_ID`、`OURA_CLIENT_SECRET`（运行 `python oura_auth.py` 设置）
 
-完整列表见 [.env.example](.env.example)（~80 个可调参数）。
+完整列表见 [.env.example](.env.example)（关键参数）；详见 `mochi/config.py`（~70 个可调参数）。
 
 </details>
 
-**示例** — 双模型省 token：
+**示例** — 双模型配置：
 
 ```dotenv
-CHAT_MODEL=gpt-4o            # 聪明模型处理对话
-THINK_MODEL=gpt-4o-mini      # 快速模型处理心跳 + 维护
+CHAT_MODEL=gpt-4o            # 对话
+THINK_MODEL=gpt-4o-mini      # 心跳 + 维护
 ```
 
 ---
@@ -168,11 +177,11 @@ THINK_MODEL=gpt-4o-mini      # 快速模型处理心跳 + 维护
 | 性格、语气、名字 | `prompts/personality.md` |
 | 记住哪些内容 | `prompts/memory_extract.md` |
 | 什么时候主动联系 | `prompts/think_system.md` |
-| 早晚报告 | `prompts/report_morning.md` / `report_evening.md`（默认关闭——在 `.env` 里设 `MORNING_REPORT_HOUR` / `EVENING_REPORT_HOUR` 开启） |
+| 早晚报告 | `prompts/report_morning.md` / `report_evening.md`（默认关闭——设 `MORNING_REPORT_HOUR` / `EVENING_REPORT_HOUR` 开启） |
 | Observer 间隔 | 各 observer 目录下的 `OBSERVATION.md` |
-| 添加新 skill 或 observer | 详见 [CONTRIBUTING.md](CONTRIBUTING.md) |
+| 添加 skill 或 observer | 详见 [CONTRIBUTING.md](CONTRIBUTING.md) |
 
-> **提示**：`prompts/personality.md` 是影响最大的那个文件——它定义了 Mochi 怎么说话（`## Chat`）以及心跳关注什么（`## Think`）。比调任何配置项都重要，先从这里开始。
+> `prompts/personality.md` 是影响最大的文件——定义 bot 的说话方式和心跳关注点。
 
 ---
 
@@ -182,34 +191,28 @@ THINK_MODEL=gpt-4o-mini      # 快速模型处理心跳 + 维护
 
 ## 路线图
 
-- [x] 支持任意 OpenAI 兼容 API（DeepSeek、Ollama、Groq 等）
+- [x] 任意 OpenAI 兼容 API（DeepSeek、Ollama、Groq 等）
 - [x] 双模型架构（Chat + Think）
-- [x] 5 级模型路由（lite / chat / deep / bg_fast / bg_deep）
-- [x] Skill v2 系统 — 丰富的元数据、使用规则、多轮对话、灵活触发
-- [x] 扩展 DB schema — 22+ 表、FTS5 全文搜索、可选 sqlite-vec 向量搜索
-- [x] 向量嵌入支持 — Azure OpenAI 嵌入 + TTL 缓存
-- [ ] 早晚报告（已预埋，在 `.env` 里设 `MORNING_REPORT_HOUR` / `EVENING_REPORT_HOUR` 开启）
-- [x] Oura Ring 集成 — 睡眠、准备度、活动、压力（observer + skill）
-- [ ] Pre-router — LLM 调用前自动选择 skill
-- [ ] 工具治理 — 按 skill 的审批策略、审计日志
-- [ ] 管理后台 — 记忆查看、配置、诊断的 Web UI
-- [ ] 语音消息支持
+- [x] 5 级模型路由
+- [x] Skill v2 — 丰富元数据、使用规则、多轮、灵活触发
+- [x] 扩展 DB — 22+ 表、FTS5、可选 sqlite-vec
+- [x] 向量嵌入（Azure OpenAI + TTL 缓存）
+- [x] Oura Ring 集成（observer + skill）
+- [x] Pre-router — 自动选择 skill
+- [x] 工具治理 — 策略检查、过滤、限速
+- [x] 日记系统 — 每日工作记忆 + 夜间归档
+- [x] 夜间维护 — 去重、过期降权、核心记忆审计
+- [x] 模块化 Prompt 组装
+- [x] 打字节奏 — 多气泡 + 打字指示器
+- [x] 早晚报告
+- [ ] 管理后台（Web UI）
+- [ ] 语音消息
 - [ ] 多用户支持
 
 ## 贡献
 
-详见 [CONTRIBUTING.md](CONTRIBUTING.md)，了解如何添加 skills、observers 和参与框架开发。
+详见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## 许可证
 
 MIT — 详见 [LICENSE](LICENSE)
-
----
-
-<div align="center">
-
-*AI 应该有温度，不只是聪明。*
-
-🍡
-
-</div>

@@ -19,6 +19,10 @@ data/*.db
 data/*.db-wal
 data/*.db-shm
 
+# Claude Code
+CLAUDE.md
+.claude/
+
 # IDE
 .vscode/
 .idea/
