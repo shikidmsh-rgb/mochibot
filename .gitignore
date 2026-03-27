@@ -36,3 +36,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Temp scripts
+run_admin.py

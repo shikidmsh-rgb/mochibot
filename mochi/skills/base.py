@@ -71,6 +71,7 @@ def _parse_skill_md(md_path: str) -> dict:
         "usage_rules": "",
         "type": "tool",
         "multi_turn": False,
+        "requires_config": [],
     }
 
     if not os.path.exists(md_path):
@@ -97,6 +98,9 @@ def _parse_skill_md(md_path: str) -> dict:
                 result["type"] = val
             elif key == "multi_turn":
                 result["multi_turn"] = val.lower() in ("true", "yes", "1")
+            elif key == "requires_config":
+                keys = re.findall(r"[A-Z_][A-Z0-9_]+", val)
+                result["requires_config"] = keys
             else:
                 result["meta"][key] = val
 
@@ -228,6 +232,7 @@ class Skill(ABC):
         self.skill_type: str = "tool"
         self.multi_turn: bool = False
         self.usage_rules: str = ""
+        self.requires_config: list[str] = []
 
     @property
     def name(self) -> str:
@@ -266,6 +271,7 @@ class Skill(ABC):
         self.skill_type = parsed.get("type", "tool")
         self.multi_turn = parsed.get("multi_turn", False)
         self.usage_rules = parsed.get("usage_rules", "")
+        self.requires_config = parsed.get("requires_config", [])
 
     def get_tools(self) -> list[dict]:
         """Return OpenAI-compatible tool definitions.

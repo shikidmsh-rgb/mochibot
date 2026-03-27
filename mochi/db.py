@@ -284,6 +284,24 @@ def init_db() -> None:
             tags       TEXT    DEFAULT '',
             created_at TEXT    NOT NULL
         );
+
+        -- Model registry (admin portal)
+        CREATE TABLE IF NOT EXISTS model_registry (
+            name       TEXT PRIMARY KEY,
+            provider   TEXT NOT NULL,
+            model      TEXT NOT NULL,
+            api_key    TEXT NOT NULL DEFAULT '',
+            base_url   TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        -- Tier-to-model assignments (admin portal)
+        CREATE TABLE IF NOT EXISTS tier_assignments (
+            tier       TEXT PRIMARY KEY,
+            model_name TEXT NOT NULL REFERENCES model_registry(name) ON DELETE CASCADE,
+            updated_at TEXT NOT NULL
+        );
     """)
 
     # ── Migrations (safe column additions for existing databases) ──────

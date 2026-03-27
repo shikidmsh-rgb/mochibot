@@ -91,6 +91,7 @@ class ModelPool:
     def __init__(self):
         self._tiers: dict[str, LLMProvider] = {}
         self._tier_models: dict[str, str] = {}
+        self._lock = threading.Lock()
 
         for tier_name, (provider, api_key, model, base_url) in _TIER_CONFIGS.items():
             # Fallback: if tier config empty, use CHAT_* config
@@ -109,6 +110,9 @@ class ModelPool:
                 self._tier_models[tier_name] = eff_model
             except Exception as e:
                 log.error("Failed to init tier '%s': %s", tier_name, e)
+
+        # Apply DB tier overrides (admin portal)
+        self._apply_db_overrides()
 
         log.info("Tier pool: %s", {t: m for t, m in self._tier_models.items()})
 
@@ -139,6 +143,48 @@ class ModelPool:
     def get_tier_model(self, tier: str) -> str:
         """Get model name for a tier (for logging/admin display)."""
         return self._tier_models.get(tier, self._tier_models.get("chat", "unknown"))
+
+    def reload_tier(self, tier: str, provider: str, api_key: str,
+                    model: str, base_url: str) -> None:
+        """Hot-swap a tier's LLM client at runtime.
+
+        Called by admin portal after model registry/tier assignment changes.
+        Thread-safe via lock.
+        """
+        if tier not in VALID_TIERS:
+            raise ValueError(f"Invalid tier: {tier}")
+        client = _make_client(provider, api_key, model, base_url)
+        with self._lock:
+            self._tiers[tier] = client
+            self._tier_models[tier] = model
+        log.info("Hot-reloaded tier '%s': provider=%s model=%s", tier, provider, model)
+
+    def get_tier_env_config(self, tier: str) -> tuple[str, str, str, str]:
+        """Get the original .env config for a tier (for revert)."""
+        provider, api_key, model, base_url = _TIER_CONFIGS.get(tier, ("", "", "", ""))
+        return (
+            provider or CHAT_PROVIDER,
+            api_key or CHAT_API_KEY,
+            model or CHAT_MODEL,
+            base_url or CHAT_BASE_URL,
+        )
+
+    def _apply_db_overrides(self) -> None:
+        """Load tier assignments from DB and override env-based clients."""
+        try:
+            from mochi.admin.admin_db import get_tier_effective_config
+            effective = get_tier_effective_config()
+            for tier, cfg in effective.items():
+                if cfg.get("source", "").startswith("db:"):
+                    try:
+                        self.reload_tier(
+                            tier, cfg["provider"], cfg.get("api_key", ""),
+                            cfg["model"], cfg.get("base_url", ""),
+                        )
+                    except Exception as e:
+                        log.warning("DB override for tier '%s' failed: %s", tier, e)
+        except Exception:
+            pass  # admin module not available or DB not ready
 
     # -------------------------------------------------------------------
     # Embedding

@@ -102,6 +102,18 @@ async def main():
     await transport.start()
     log.info("Transport started: %s", transport.name)
 
+    # 5b. Admin portal
+    from mochi.config import ADMIN_ENABLED, ADMIN_PORT, ADMIN_BIND
+    if ADMIN_ENABLED:
+        try:
+            from mochi.admin.admin_server import start_admin_server
+            asyncio.create_task(start_admin_server(ADMIN_PORT, ADMIN_BIND))
+            log.info("Admin portal: http://%s:%d", ADMIN_BIND, ADMIN_PORT)
+        except ImportError:
+            log.warning("Admin portal disabled: pip install fastapi uvicorn")
+        except Exception as e:
+            log.warning("Admin portal failed to start: %s", e)
+
     # 6. Start background tasks
     asyncio.create_task(heartbeat_loop())
     asyncio.create_task(reminder_checker(transport))

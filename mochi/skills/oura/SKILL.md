@@ -2,6 +2,7 @@
 name: oura
 expose: true
 triggers: [tool_call]
+requires_config: [OURA_CLIENT_ID, OURA_CLIENT_SECRET, OURA_REFRESH_TOKEN]
 ---
 
 ## Tool: get_oura_data

@@ -54,13 +54,49 @@ log = logging.getLogger(__name__)
 TZ = timezone(timedelta(hours=TIMEZONE_OFFSET_HOURS))
 
 
+# ── Runtime config override support (admin portal) ────────────────────────
+
+_system_overrides_cache: dict[str, str] = {}
+_system_overrides_cache_time: float = 0.0
+
+
+def _effective(key: str):
+    """Get effective config value: DB override (skill_config._system) > module import.
+
+    Cached for 60s to avoid hitting the DB every heartbeat access.
+    """
+    global _system_overrides_cache, _system_overrides_cache_time
+    import time as _time
+    now = _time.monotonic()
+    if now - _system_overrides_cache_time > 60:
+        try:
+            from mochi.admin.admin_db import get_system_overrides
+            _system_overrides_cache = get_system_overrides()
+        except Exception:
+            _system_overrides_cache = {}
+        _system_overrides_cache_time = now
+
+    if key in _system_overrides_cache:
+        raw = _system_overrides_cache[key]
+        original = globals().get(key)
+        if isinstance(original, bool):
+            return raw.lower() in ("true", "1", "yes")
+        if isinstance(original, int):
+            try:
+                return int(raw)
+            except (ValueError, TypeError):
+                return original
+        return raw
+    return globals().get(key)
+
+
 async def _llm_with_timeout(coro, label: str):
     """Run a coroutine with a timeout guard. Returns None on timeout."""
     try:
-        return await asyncio.wait_for(coro, timeout=LLM_HEARTBEAT_TIMEOUT_SECONDS)
+        return await asyncio.wait_for(coro, timeout=_effective('LLM_HEARTBEAT_TIMEOUT_SECONDS'))
     except asyncio.TimeoutError:
         log.error("Heartbeat LLM timeout in %s after %ds",
-                  label, LLM_HEARTBEAT_TIMEOUT_SECONDS)
+                  label, _effective('LLM_HEARTBEAT_TIMEOUT_SECONDS'))
         log_heartbeat(_state, f"{label}_timeout")
         return None
 
@@ -252,9 +288,11 @@ def _report_due() -> str | None:
     now = datetime.now(TZ)
     today = now.strftime("%Y-%m-%d")
     hour = now.hour
-    if MORNING_REPORT_HOUR >= 0 and hour == MORNING_REPORT_HOUR and today != _last_morning_report_date:
+    morning_hour = _effective('MORNING_REPORT_HOUR')
+    evening_hour = _effective('EVENING_REPORT_HOUR')
+    if morning_hour >= 0 and hour == morning_hour and today != _last_morning_report_date:
         return "morning"
-    if EVENING_REPORT_HOUR >= 0 and hour == EVENING_REPORT_HOUR and today != _last_evening_report_date:
+    if evening_hour >= 0 and hour == evening_hour and today != _last_evening_report_date:
         return "evening"
     return None
 
@@ -308,12 +346,12 @@ async def _run_maintenance_if_due(user_id: int) -> bool:
     """Run nightly maintenance if MAINTENANCE_HOUR and not yet run today."""
     global _last_maintenance_date
 
-    if not MAINTENANCE_ENABLED:
+    if not _effective('MAINTENANCE_ENABLED'):
         return False
 
     now = datetime.now(TZ)
     today = now.strftime("%Y-%m-%d")
-    if now.hour != MAINTENANCE_HOUR or today == _last_maintenance_date:
+    if now.hour != _effective('MAINTENANCE_HOUR') or today == _last_maintenance_date:
         return False
 
     _last_maintenance_date = today
@@ -355,7 +393,7 @@ def _should_think(observation: dict) -> bool:
     minutes_since = (now - _last_think_at).total_seconds() / 60
 
     # Fallback: think at least every N minutes
-    if minutes_since >= THINK_FALLBACK_MINUTES:
+    if minutes_since >= _effective('THINK_FALLBACK_MINUTES'):
         return True
 
     # Delta: maintenance summary arrived
@@ -445,16 +483,17 @@ async def _act(action: dict, user_id: int) -> None:
             _proactive_count_today = 0
             _last_proactive_date = today
 
-        if _proactive_count_today >= MAX_DAILY_PROACTIVE:
-            log.info("Daily proactive limit reached (%d)", MAX_DAILY_PROACTIVE)
+        if _proactive_count_today >= _effective('MAX_DAILY_PROACTIVE'):
+            log.info("Daily proactive limit reached (%d)", _effective('MAX_DAILY_PROACTIVE'))
             log_heartbeat(_state, "rate_limited")
             return
 
         if _last_proactive_at:
             elapsed = (now - _last_proactive_at).total_seconds()
-            if elapsed < PROACTIVE_COOLDOWN_SECONDS:
+            cooldown = _effective('PROACTIVE_COOLDOWN_SECONDS')
+            if elapsed < cooldown:
                 log.info("Proactive cooldown active (%ds remaining)",
-                         PROACTIVE_COOLDOWN_SECONDS - elapsed)
+                         cooldown - elapsed)
                 log_heartbeat(_state, "cooldown")
                 return
 
@@ -466,7 +505,7 @@ async def _act(action: dict, user_id: int) -> None:
             save_message(user_id, "assistant", content)
             log_heartbeat(_state, "notify", content[:100])
             log.info("Proactive message sent (%d/%d today)",
-                     _proactive_count_today, MAX_DAILY_PROACTIVE)
+                     _proactive_count_today, _effective('MAX_DAILY_PROACTIVE'))
 
             # Clear maintenance summary after delivering
             if "maintenance" in content.lower():
@@ -509,11 +548,16 @@ def _update_state() -> None:
     hour = datetime.now(TZ).hour
     new_state = _state
 
+    awake_start = _effective('AWAKE_HOUR_START')
+    awake_end = _effective('AWAKE_HOUR_END')
+    force_sleep = _effective('FORCE_SLEEP_HOUR')
+    force_wake = _effective('FORCE_WAKE_HOUR')
+
     if _state == SLEEPING:
-        if hour == FORCE_WAKE_HOUR or (AWAKE_HOUR_START <= hour < AWAKE_HOUR_END):
+        if hour == force_wake or (awake_start <= hour < awake_end):
             new_state = AWAKE
     elif _state == AWAKE:
-        if hour == FORCE_SLEEP_HOUR or hour < AWAKE_HOUR_START:
+        if hour == force_sleep or hour < awake_start:
             new_state = SLEEPING
 
     if new_state != _state:
@@ -528,13 +572,13 @@ def _update_state() -> None:
 
 async def heartbeat_loop() -> None:
     """Main heartbeat loop. Run as asyncio task."""
-    interval = HEARTBEAT_INTERVAL_MINUTES * 60
-
     log.info("Heartbeat started: interval=%dm, awake=%d-%d, state=%s",
              HEARTBEAT_INTERVAL_MINUTES, AWAKE_HOUR_START, AWAKE_HOUR_END, _state)
 
     while True:
         try:
+            interval = _effective('HEARTBEAT_INTERVAL_MINUTES') * 60
+
             # Re-read OWNER_USER_ID each cycle (may be auto-detected later)
             from mochi.config import OWNER_USER_ID as user_id
             if not user_id:
@@ -600,5 +644,5 @@ def get_stats() -> dict:
         "state_changed_at": _state_changed_at.isoformat(),
         "last_think_at": _last_think_at.isoformat() if _last_think_at else None,
         "proactive_today": _proactive_count_today,
-        "proactive_limit": MAX_DAILY_PROACTIVE,
+        "proactive_limit": _effective('MAX_DAILY_PROACTIVE'),
     }

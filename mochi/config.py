@@ -304,6 +304,16 @@ TG_AGGREGATE_ENABLED = _env_bool("TG_AGGREGATE_ENABLED", False)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Admin Portal
+# ═══════════════════════════════════════════════════════════════════════════
+
+ADMIN_ENABLED = _env_bool("ADMIN_ENABLED", True)
+ADMIN_PORT = _env_int("ADMIN_PORT", 8080)
+ADMIN_BIND = _env("ADMIN_BIND", "127.0.0.1")   # default localhost-only; set 0.0.0.0 for remote access
+ADMIN_TOKEN = _env("ADMIN_TOKEN")               # optional; if set, all requests must include this token
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Startup Validation
 # ═══════════════════════════════════════════════════════════════════════════
 

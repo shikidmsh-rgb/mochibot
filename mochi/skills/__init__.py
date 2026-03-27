@@ -23,6 +23,7 @@ import os
 from pathlib import Path
 
 from mochi.skills.base import Skill, SkillContext, SkillResult
+from mochi.db import get_disabled_skills
 
 log = logging.getLogger(__name__)
 
@@ -111,9 +112,15 @@ def get_skill(name: str) -> Skill | None:
 
 
 def get_tools() -> list[dict]:
-    """Get all exposed tool definitions (for LLM tools array)."""
+    """Get all exposed tool definitions (for LLM tools array).
+
+    Excludes tools from admin-disabled skills.
+    """
+    disabled = get_disabled_skills()
     tools = []
     for skill in _skills.values():
+        if skill.name in disabled:
+            continue
         if skill.expose_as_tool:
             tools.extend(skill.get_tools())
     return tools
@@ -150,6 +157,9 @@ async def dispatch(tool_name: str, args: dict, user_id: int = 0,
     skill_name = _tool_map.get(tool_name)
     if not skill_name:
         return SkillResult(output=f"Unknown tool: {tool_name}", success=False)
+
+    if skill_name in get_disabled_skills():
+        return SkillResult(output=f"Skill '{skill_name}' is currently disabled.", success=False)
 
     skill = _skills.get(skill_name)
     if not skill:
@@ -215,6 +225,7 @@ def get_cron_skills() -> list[tuple[Skill, str]]:
 
 def get_skill_info_all() -> list[dict]:
     """Return metadata for all registered skills (for admin display)."""
+    disabled = get_disabled_skills()
     return [
         {
             "name": s.name,
@@ -225,6 +236,12 @@ def get_skill_info_all() -> list[dict]:
             "triggers": s.triggers,
             "tools": [t["function"]["name"] for t in s.get_tools()] if s.get_tools() else [],
             "has_usage_rules": bool(s.usage_rules),
+            "requires_config": getattr(s, "requires_config", []),
+            "enabled": s.name not in disabled,
+            "config_status": {
+                key: bool(os.getenv(key))
+                for key in getattr(s, "requires_config", [])
+            },
         }
         for s in _skills.values()
     ]
