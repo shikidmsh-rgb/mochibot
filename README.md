@@ -84,14 +84,7 @@ cd mochibot
 - **macOS / Linux**：`bash setup.sh`
 
 脚本会自动创建虚拟环境、安装依赖，然后打开管理后台（http://127.0.0.1:8080）。
-在浏览器里配好 API key、模型、Telegram token 后，回到终端按 `Ctrl+C`，然后启动 bot：
-
-```bash
-.venv\Scripts\activate        # Windows
-source .venv/bin/activate     # macOS / Linux
-
-python -m mochi.main
-```
+在浏览器里配好 API key、模型、Telegram token 后，点击页面上的 **「启动 Bot」** 按钮即可。
 
 打开 Telegram → 找到你的 bot → 发任意消息。第一个发消息的人自动成为 owner。
 

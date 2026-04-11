@@ -54,10 +54,7 @@ echo "    http://127.0.0.1:8080"
 echo "  =========================================="
 echo ""
 echo "  Configure your API keys and bot token in the browser."
-echo "  When done, press Ctrl+C here, then run:"
-echo ""
-echo "    source .venv/bin/activate"
-echo "    python -m mochi.main"
+echo "  When done, click \"启动 Bot\" in the admin portal to start the bot."
 echo ""
 
 # Open browser (best-effort)

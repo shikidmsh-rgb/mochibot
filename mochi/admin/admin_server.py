@@ -5,8 +5,14 @@ All endpoints are under /api, with optional token auth via ADMIN_TOKEN.
 """
 
 import asyncio
+import atexit
+import collections
 import logging
 import os
+import signal
+import subprocess
+import sys
+import threading
 import time
 from pathlib import Path, PurePosixPath
 
@@ -22,16 +28,81 @@ except ImportError:
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 _PROMPTS_DIR = _PROJECT_ROOT / "prompts"
 
-_ALLOWED_PROMPTS: frozenset[str] = frozenset({
-    "think_system.md",
-    "report_morning.md",
-    "report_evening.md",
-    "memory_extract.md",
-    "system_chat/soul.md",
-    "system_chat/agent.md",
-    "system_chat/user.md",
-    "system_chat/runtime_context.md",
-})
+# ── Bot subprocess management ────────────────────────────────────────────
+_bot_process: subprocess.Popen | None = None
+_bot_log_lines: collections.deque = collections.deque(maxlen=500)
+_bot_lock = threading.Lock()
+
+
+def _bot_reader_thread(proc: subprocess.Popen):
+    """Read bot subprocess stdout line by line into the log buffer."""
+    try:
+        for raw in proc.stdout:
+            line = raw.decode("utf-8", errors="replace").rstrip("\n\r")
+            _bot_log_lines.append(line)
+    except Exception:
+        pass
+
+
+def _kill_bot():
+    """Terminate the bot subprocess if running."""
+    global _bot_process
+    with _bot_lock:
+        if _bot_process and _bot_process.poll() is None:
+            _bot_process.terminate()
+            try:
+                _bot_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                _bot_process.kill()
+            _bot_process = None
+
+
+atexit.register(_kill_bot)
+
+# Windows uses SIGBREAK for Ctrl+C in console; Unix uses SIGTERM
+for _sig in (signal.SIGINT, getattr(signal, "SIGBREAK", None)):
+    if _sig is not None:
+        try:
+            signal.signal(_sig, lambda s, f: (_kill_bot(), sys.exit(0)))
+        except (OSError, ValueError):
+            pass  # can't set handler in non-main thread
+
+_PROMPT_META: dict[str, dict[str, str]] = {
+    "system_chat/soul.md": {
+        "label": "灵魂 Soul",
+        "desc": "Agent 的核心人格：说话风格、语气、性格特点",
+    },
+    "system_chat/agent.md": {
+        "label": "能力 Agent",
+        "desc": "Agent 能做什么、怎么做：技能、工具、行为规则",
+    },
+    "system_chat/user.md": {
+        "label": "用户画像 User",
+        "desc": "主人的信息：称呼、喜好，让 Agent 更了解你",
+    },
+    "system_chat/runtime_context.md": {
+        "label": "运行时上下文 Runtime",
+        "desc": "每次对话自动注入的动态信息（时间、状态等）",
+    },
+    "think_system.md": {
+        "label": "思考框架 Think",
+        "desc": "Agent 内部思考时使用的 system prompt",
+    },
+    "report_morning.md": {
+        "label": "早安报告 Morning",
+        "desc": "每日早安消息的生成模板",
+    },
+    "report_evening.md": {
+        "label": "晚安报告 Evening",
+        "desc": "每日晚安消息的生成模板",
+    },
+    "memory_extract.md": {
+        "label": "记忆提取 Memory",
+        "desc": "从对话中提取长期记忆的指令模板",
+    },
+}
+
+_ALLOWED_PROMPTS: frozenset[str] = frozenset(_PROMPT_META.keys())
 
 _MAX_PROMPT_SIZE = 50 * 1024  # 50 KB
 
@@ -173,6 +244,62 @@ if HAS_FASTAPI:
             "heartbeat_state": hb.get("state", "UNKNOWN"),
             "db_path": str(DB_PATH),
         }
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # Bot process management
+    # ═══════════════════════════════════════════════════════════════════════
+
+    @app.post("/api/bot/start", dependencies=[Depends(_verify_token)])
+    async def api_bot_start():
+        global _bot_process
+        with _bot_lock:
+            if _bot_process and _bot_process.poll() is None:
+                raise HTTPException(409, "Bot is already running")
+            env = {**os.environ, "ADMIN_ENABLED": "false"}
+            _bot_log_lines.clear()
+            _bot_process = subprocess.Popen(
+                [sys.executable, "-u", "-m", "mochi.main"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                env=env,
+                cwd=str(_PROJECT_ROOT),
+            )
+            t = threading.Thread(
+                target=_bot_reader_thread, args=(_bot_process,), daemon=True,
+            )
+            t.start()
+        return {"ok": True, "pid": _bot_process.pid}
+
+    @app.post("/api/bot/stop", dependencies=[Depends(_verify_token)])
+    async def api_bot_stop():
+        global _bot_process
+        with _bot_lock:
+            if not _bot_process or _bot_process.poll() is not None:
+                _bot_process = None
+                raise HTTPException(409, "Bot is not running")
+            _bot_process.terminate()
+            try:
+                _bot_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                _bot_process.kill()
+            _bot_process = None
+        return {"ok": True}
+
+    @app.get("/api/bot/status", dependencies=[Depends(_verify_token)])
+    async def api_bot_status():
+        with _bot_lock:
+            if _bot_process is None:
+                return {"running": False, "pid": None, "lines": list(_bot_log_lines)}
+            rc = _bot_process.poll()
+            if rc is not None:
+                return {
+                    "running": False, "pid": None,
+                    "exit_code": rc, "lines": list(_bot_log_lines),
+                }
+            return {
+                "running": True, "pid": _bot_process.pid,
+                "lines": list(_bot_log_lines),
+            }
 
     # ═══════════════════════════════════════════════════════════════════════
     # Page 1: Models
@@ -552,12 +679,15 @@ if HAS_FASTAPI:
         """List all editable prompt files with char counts."""
         prompts = []
         for fname in sorted(_ALLOWED_PROMPTS):
+            meta = _PROMPT_META.get(fname, {})
             p = _prompt_path(fname)
             if p.exists():
                 content = p.read_text(encoding="utf-8")
-                prompts.append({"name": fname, "chars": len(content), "exists": True})
+                prompts.append({"name": fname, "label": meta.get("label", fname),
+                                "desc": meta.get("desc", ""), "chars": len(content), "exists": True})
             else:
-                prompts.append({"name": fname, "chars": 0, "exists": False})
+                prompts.append({"name": fname, "label": meta.get("label", fname),
+                                "desc": meta.get("desc", ""), "chars": 0, "exists": False})
         return {"prompts": prompts}
 
     @app.get("/api/prompts/{name:path}", dependencies=[Depends(_verify_token)])

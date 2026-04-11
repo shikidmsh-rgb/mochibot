@@ -114,6 +114,10 @@ select.form-input { cursor:pointer; }
 .prompt-meta { display:flex; align-items:center; justify-content:space-between; margin-top:8px; font-size:12px; color:var(--text-soft); }
 .spinner { display:inline-block; width:24px; height:24px; border:3px solid var(--border); border-top-color:var(--primary); border-radius:50%; animation:spin .6s linear infinite; }
 @keyframes spin { to { transform:rotate(360deg); } }
+/* ── Bot log panel ───────────────────── */
+.bot-log { max-height:260px; overflow-y:auto; background:#1e1e1e; color:#d4d4d4; font-family:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace; font-size:12px; line-height:1.5; padding:10px 12px; border-radius:8px; margin-top:10px; white-space:pre-wrap; word-break:break-all; }
+.bot-log::-webkit-scrollbar { width:6px; }
+.bot-log::-webkit-scrollbar-thumb { background:#555; border-radius:3px; }
 /* ── Mobile ───────────────────────────── */
 .mobile-toggle { display:none; position:fixed; top:12px; left:12px; z-index:20; background:var(--card); border:1px solid var(--border); border-radius:8px; padding:8px 10px; cursor:pointer; font-size:18px; }
 .sidebar-backdrop { display:none; position:fixed; inset:0; background:rgba(0,0,0,.3); z-index:9; }
@@ -138,9 +142,9 @@ select.form-input { cursor:pointer; }
   <nav class="sidebar-nav" id="sidebar-nav">
     <button class="nav-item active" data-page="welcome"><span class="nav-icon">🏠</span> 设置</button>
     <button class="nav-item" data-page="models"><span class="nav-icon">🤖</span> 模型</button>
-    <button class="nav-item" data-page="heartbeat"><span class="nav-icon">💓</span> 心跳</button>
+    <button class="nav-item" data-page="heartbeat"><span class="nav-icon">💓</span> Heartbeat</button>
     <button class="nav-item" data-page="skills"><span class="nav-icon">⚡</span> 技能</button>
-    <button class="nav-item" data-page="prompts"><span class="nav-icon">📝</span> 人格</button>
+    <button class="nav-item" data-page="prompts"><span class="nav-icon">📝</span> 人格 & Prompts</button>
   </nav>
 </aside>
 
@@ -159,7 +163,7 @@ select.form-input { cursor:pointer; }
 
 <!-- ═══════ Page 2: Heartbeat ═══════ -->
 <section id="page-heartbeat" class="page">
-  <h2 class="page-title">心跳配置</h2>
+  <h2 class="page-title">Heartbeat 配置</h2>
   <div id="heartbeat-content"><div class="loading"><div class="spinner"></div> 加载中...</div></div>
 </section>
 
@@ -171,7 +175,7 @@ select.form-input { cursor:pointer; }
 
 <!-- ═══════ Page 4: Prompts ═══════ -->
 <section id="page-prompts" class="page">
-  <h2 class="page-title">人格编辑</h2>
+  <h2 class="page-title">人格 & Prompts</h2>
   <div id="prompts-content"><div class="loading"><div class="spinner"></div> 加载中...</div></div>
 </section>
 </main>
@@ -246,7 +250,7 @@ function toggleTransportConfig() {
 }
 
 async function saveTransportConfig() {
-  const keys = ['TELEGRAM_BOT_TOKEN'];
+  const keys = ['TELEGRAM_BOT_TOKEN', 'OWNER_USER_ID'];
   const body = {};
   let hasValue = false;
   for (const key of keys) {
@@ -258,7 +262,6 @@ async function saveTransportConfig() {
   }
   if (!hasValue) return showToast('没有要保存的值');
   try {
-    // Reuse the skill config endpoint — it writes to .env via the same whitelist
     const r = await api('PUT', '/env', body);
     if (r.errors && r.errors.length) showToast('部分保存失败: ' + r.errors.map(e=>e.key).join(', '));
     else showToast('已保存到 .env（重启生效）');
@@ -276,27 +279,77 @@ async function loadWelcome() {
     const s = await api('GET', '/status');
     let html = '';
 
-    // Setup Checklist
-    html += '<div class="card"><div class="card-title">配置检查</div>';
-    const checks = [
-      ['对话模型', s.config_status.chat_model.set, s.config_status.chat_model.value],
-      ['API Key', s.config_status.chat_api_key.set, ''],
-      ['消息通道', s.config_status.telegram_bot_token.set, s.config_status.telegram_bot_token.set ? 'Telegram' : ''],
-      ['Owner ID', s.config_status.owner_user_id.set, s.config_status.owner_user_id.value],
-    ];
-    for (const [label, ok, val] of checks) {
-      html += `<div class="check-row"><span class="check-icon">${ok?'✅':'❌'}</span><strong>${esc(label)}</strong>${val?` <span style="color:var(--text-soft);margin-left:6px">${esc(val)}</span>`:''}</div>`;
+    const hasModel = s.config_status.chat_model.set && s.config_status.chat_api_key.set;
+    const hasTelegram = s.config_status.telegram_bot_token.set;
+    const hasOwner = s.config_status.owner_user_id.set;
+    const allDone = hasModel && hasTelegram && hasOwner;
+
+    // ── Setup Guide (always show, highlights incomplete steps) ──
+    html += '<div class="card">';
+    html += '<div class="card-title">Setup Guide</div>';
+    if (!allDone) {
+      html += '<p style="font-size:13px;color:var(--text-soft);margin-bottom:12px">按顺序完成以下步骤，让 MochiBot 跑起来 🍡</p>';
+    } else {
+      html += '<p style="font-size:13px;color:var(--success);margin-bottom:12px">✅ 基础配置已完成！可以启动 bot 了。</p>';
     }
+
+    // Step 1: Model
+    html += `<div class="check-row" style="padding:10px 0;border-bottom:1px solid var(--border)">
+      <span class="check-icon" style="font-size:20px">${hasModel?'✅':'<span style=\"display:inline-block;width:22px;height:22px;border-radius:50%;border:2px solid var(--primary);text-align:center;line-height:20px;font-size:12px;color:var(--primary);font-weight:700\">1</span>'}</span>
+      <div style="flex:1">
+        <strong>配置模型</strong>
+        <div style="font-size:12px;color:var(--text-soft)">添加 LLM 模型和 API Key</div>
+      </div>
+      ${!hasModel?'<button class=\"btn btn-primary btn-sm\" onclick=\"document.querySelector(\'[data-page=models]\').click()\">去配置 →</button>':'<span class=\"badge badge-ok\">'+esc(s.config_status.chat_model.value)+'</span>'}
+    </div>`;
+
+    // Step 2: Telegram
+    html += `<div class="check-row" style="padding:10px 0;border-bottom:1px solid var(--border)">
+      <span class="check-icon" style="font-size:20px">${hasTelegram?'✅':'<span style=\"display:inline-block;width:22px;height:22px;border-radius:50%;border:2px solid '+(hasModel?'var(--primary)':'var(--border)')+';text-align:center;line-height:20px;font-size:12px;color:'+(hasModel?'var(--primary)':'var(--text-soft)')+';font-weight:700\">2</span>'}</span>
+      <div style="flex:1">
+        <strong>配置 Telegram</strong>
+        <div style="font-size:12px;color:var(--text-soft)">设置 Bot Token 和 Owner ID</div>
+      </div>
+      ${!hasTelegram?'<button class=\"btn btn-ghost btn-sm\" onclick=\"toggleTransportConfig()\">配置</button>':'<span class=\"badge badge-ok\">已配置</span>'}
+    </div>`;
+
+    // Step 3: Prompts (optional)
+    html += `<div class="check-row" style="padding:10px 0">
+      <span class="check-icon" style="font-size:20px"><span style="display:inline-block;width:22px;height:22px;border-radius:50%;border:2px solid var(--border);text-align:center;line-height:20px;font-size:12px;color:var(--text-soft);font-weight:700">3</span></span>
+      <div style="flex:1">
+        <strong>自定义人格 & Prompts</strong> <span class="badge badge-gray">可选</span>
+        <div style="font-size:12px;color:var(--text-soft)">定义 bot 的灵魂、能力、说话风格</div>
+      </div>
+      <button class="btn btn-ghost btn-sm" onclick="document.querySelector('[data-page=prompts]').click()">去编辑 →</button>
+    </div>`;
+
     html += '</div>';
 
-    // Stats
+    // ── Telegram inline config (expandable) ──
+    if (!hasTelegram) {
+      html += '<div id="transport-cfg" style="display:none">';
+      html += '<div class="card">';
+      html += '<div class="card-title">Telegram 配置</div>';
+      html += '<div class="form-group"><label class="form-label">Bot Token</label><input class="form-input" id="cfg-TELEGRAM_BOT_TOKEN" type="password" placeholder="123456:ABC-DEF..."></div>';
+      html += '<div class="form-group"><label class="form-label">Owner User ID</label><input class="form-input" id="cfg-OWNER_USER_ID" placeholder="你的 Telegram 数字 ID"></div>';
+      html += '<div style="display:flex;align-items:center;gap:8px;margin-top:4px"><button class="btn btn-primary btn-sm" onclick="saveTransportConfig()">保存到 .env</button>';
+      html += '<span style="font-size:11px;color:var(--text-soft)">重启生效</span></div>';
+      html += '</div></div>';
+    }
+
+    // ── Bot Control ──
+    html += '<div class="card" id="bot-control-card"><div class="card-title">Bot 状态</div>';
+    html += '<div id="bot-status-area"><div class="loading"><div class="spinner"></div> 检查中...</div></div>';
+    html += '</div>';
+
+    // ── Stats ──
     html += '<div class="stat-grid">';
     html += `<div class="stat-card"><div class="stat-number">${s.skills_count}</div><div class="stat-label">技能</div></div>`;
     html += `<div class="stat-card"><div class="stat-number">${s.skills_disabled}</div><div class="stat-label">已禁用</div></div>`;
-    html += `<div class="stat-card"><div class="stat-number" style="font-size:18px">${esc(s.heartbeat_state)}</div><div class="stat-label">心跳</div></div>`;
+    html += `<div class="stat-card"><div class="stat-number" style="font-size:18px">${esc(s.heartbeat_state)}</div><div class="stat-label">Heartbeat</div></div>`;
     html += '</div>';
 
-    // Integrations
+    // ── Integrations ──
     html += '<div class="card"><div class="card-title">集成</div>';
     for (const [name, info] of Object.entries(s.integrations)) {
       const ok = info.configured;
@@ -306,26 +359,71 @@ async function loadWelcome() {
     }
     html += '</div>';
 
-    if (s.first_run) {
-      html = `<div class="card" style="background:var(--primary-bg);border-color:var(--primary)"><strong>👋 欢迎！</strong> 先到 <a href="#" onclick="event.preventDefault();document.querySelector('[data-page=models]').click()">模型</a> 页面配置你的 LLM 模型。</div>` + html;
-    }
-
-    // Transport config (bot token)
-    const hasTelegram = s.config_status.telegram_bot_token.set;
-    html += '<div class="card"><div class="card-title">消息通道</div>';
-    html += `<div class="check-row"><span class="check-icon">${hasTelegram?'✅':'⬜'}</span><strong>Telegram</strong>${hasTelegram?' <span class="badge badge-ok">已配置</span>':''}</div>`;
-    if (!hasTelegram) {
-      html += `<button class="btn btn-ghost btn-sm" style="margin-top:8px" onclick="toggleTransportConfig()">配置</button>`;
-      html += '<div id="transport-cfg" style="display:none;margin-top:12px">';
-      html += '<div class="form-group"><label class="form-label">Telegram Bot Token</label><input class="form-input" id="cfg-TELEGRAM_BOT_TOKEN" type="password" placeholder="123456:ABC-DEF..."></div>';
-      html += '<button class="btn btn-primary btn-sm" onclick="saveTransportConfig()">保存到 .env</button>';
-      html += '<span style="font-size:11px;color:var(--text-soft);margin-left:8px">（重启生效）</span>';
-      html += '</div>';
-    }
-    html += '</div>';
-
     el.innerHTML = html;
+    // Load bot status after DOM is ready
+    loadBotStatus();
   } catch(e) { el.innerHTML = `<div class="card" style="color:var(--danger)">❌ ${esc(e.message)}</div>`; }
+}
+
+// ── Bot Control ──────────────────────────
+let _botPollTimer = null;
+
+async function loadBotStatus() {
+  const el = document.getElementById('bot-status-area');
+  if (!el) return;
+  try {
+    const s = await api('GET', '/bot/status');
+    let html = '';
+    if (s.running) {
+      html += `<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">`;
+      html += `<span class="badge badge-ok" style="font-size:13px">运行中</span>`;
+      html += `<span style="font-size:12px;color:var(--text-soft)">PID: ${s.pid}</span>`;
+      html += `<button class="btn btn-danger btn-sm" onclick="stopBot()">停止</button>`;
+      html += `</div>`;
+      if (s.lines && s.lines.length) {
+        const tail = s.lines.slice(-50);
+        html += `<div class="bot-log" id="bot-log">${tail.map(esc).join('\n')}</div>`;
+      }
+    } else {
+      if (s.exit_code !== undefined && s.exit_code !== null) {
+        html += `<div style="margin-bottom:10px"><span class="badge badge-err">已停止</span> <span style="font-size:12px;color:var(--text-soft)">退出码: ${s.exit_code}</span></div>`;
+        if (s.lines && s.lines.length) {
+          const tail = s.lines.slice(-30);
+          html += `<div class="bot-log" id="bot-log" style="max-height:150px">${tail.map(esc).join('\n')}</div>`;
+        }
+      }
+      html += `<button class="btn btn-primary" onclick="startBot()">启动 Bot</button>`;
+    }
+    el.innerHTML = html;
+    // Auto-scroll log
+    const logEl = document.getElementById('bot-log');
+    if (logEl) logEl.scrollTop = logEl.scrollHeight;
+    // Poll while running
+    clearTimeout(_botPollTimer);
+    if (s.running) {
+      _botPollTimer = setTimeout(loadBotStatus, 3000);
+    }
+  } catch(e) { el.innerHTML = `<span style="color:var(--text-soft)">无法获取 bot 状态</span>`; }
+}
+
+async function startBot() {
+  const el = document.getElementById('bot-status-area');
+  if (el) el.innerHTML = '<div style="display:flex;align-items:center;gap:8px"><div class="spinner"></div> 启动中...</div>';
+  try {
+    await api('POST', '/bot/start');
+    showToast('Bot 启动中...');
+    // Start polling immediately
+    setTimeout(loadBotStatus, 1000);
+  } catch(e) { showToast('启动失败: ' + e.message); loadBotStatus(); }
+}
+
+async function stopBot() {
+  try {
+    await api('POST', '/bot/stop');
+    showToast('Bot 已停止');
+    clearTimeout(_botPollTimer);
+    loadBotStatus();
+  } catch(e) { showToast('停止失败: ' + e.message); }
 }
 
 // ═══════════════════════════════════════════
@@ -492,11 +590,32 @@ async function loadHeartbeat() {
     html += `<div class="stat-card"><div class="stat-number">${state.proactive_limit||'—'}</div><div class="stat-label">每日上限</div></div>`;
     html += '</div>';
 
+    // Human-readable labels & descriptions for heartbeat params
+    const hbLabels = {
+      HEARTBEAT_INTERVAL_MINUTES:    ['心跳间隔（分钟）',    '每隔多久执行一次心跳循环'],
+      AWAKE_HOUR_START:              ['活跃开始（时）',      'Bot 开始活跃的小时，如 8 = 早上8点'],
+      AWAKE_HOUR_END:                ['活跃结束（时）',      'Bot 停止活跃的小时，如 23 = 晚上11点'],
+      FORCE_SLEEP_HOUR:              ['强制休眠（时）',      '到这个时间强制进入休眠，不再发消息'],
+      FORCE_WAKE_HOUR:               ['强制唤醒（时）',      '到这个时间强制唤醒，开始新一天'],
+      MAX_DAILY_PROACTIVE:           ['每日上限',            'Bot 每天最多主动发多少条消息'],
+      PROACTIVE_COOLDOWN_SECONDS:    ['冷却时间（秒）',      '两条主动消息之间至少间隔多少秒'],
+      THINK_FALLBACK_MINUTES:        ['思考回退（分钟）',    'Think 模型超时后回退到 Chat 模型的等待时间'],
+      LLM_HEARTBEAT_TIMEOUT_SECONDS: ['LLM 超时（秒）',      '心跳中调用 LLM 的最大等待时间'],
+      MORNING_REPORT_HOUR:           ['早报时间（时）',      '每天几点发送早间报告'],
+      EVENING_REPORT_HOUR:           ['晚报时间（时）',      '每天几点发送晚间报告'],
+      MAINTENANCE_HOUR:              ['维护时间（时）',      '每天几点执行维护任务（清理、优化）'],
+      MAINTENANCE_ENABLED:           ['启用维护',            '是否启用每日自动维护'],
+      AI_CHAT_MAX_COMPLETION_TOKENS: ['对话最大 tokens',     '单次对话回复的 token 上限'],
+      REPORT_MAX_TOKENS:             ['报告最大 tokens',     '早晚报告的 token 上限'],
+      TOOL_LOOP_MAX_ROUNDS:          ['工具循环上限',        '单次对话中工具调用的最大轮数'],
+      TOOL_LOOP_PER_TOOL_LIMIT:      ['单工具调用上限',      '单次对话中同一个工具的最大调用次数'],
+    };
+
     // Config groups
     const groups = [
-      { title:'时间', keys:['HEARTBEAT_INTERVAL_MINUTES','AWAKE_HOUR_START','AWAKE_HOUR_END','FORCE_SLEEP_HOUR','FORCE_WAKE_HOUR'] },
-      { title:'主动消息限制', keys:['MAX_DAILY_PROACTIVE','PROACTIVE_COOLDOWN_SECONDS','THINK_FALLBACK_MINUTES','LLM_HEARTBEAT_TIMEOUT_SECONDS'] },
-      { title:'报告', keys:['MORNING_REPORT_HOUR','EVENING_REPORT_HOUR'] },
+      { title:'时间调度', keys:['HEARTBEAT_INTERVAL_MINUTES','AWAKE_HOUR_START','AWAKE_HOUR_END','FORCE_SLEEP_HOUR','FORCE_WAKE_HOUR'] },
+      { title:'主动消息', keys:['MAX_DAILY_PROACTIVE','PROACTIVE_COOLDOWN_SECONDS','THINK_FALLBACK_MINUTES','LLM_HEARTBEAT_TIMEOUT_SECONDS'] },
+      { title:'定时报告', keys:['MORNING_REPORT_HOUR','EVENING_REPORT_HOUR'] },
       { title:'维护', keys:['MAINTENANCE_HOUR','MAINTENANCE_ENABLED'] },
       { title:'Token 限制', keys:['AI_CHAT_MAX_COMPLETION_TOKENS','REPORT_MAX_TOKENS','TOOL_LOOP_MAX_ROUNDS','TOOL_LOOP_PER_TOOL_LIMIT'] },
     ];
@@ -508,16 +627,17 @@ async function loadHeartbeat() {
         if (!c) continue;
         const val = c.override !== null && c.override !== undefined ? c.override : c.env_default;
         const hasOverride = c.override !== null && c.override !== undefined;
-        const label = key.replace(/^(HEARTBEAT_|LLM_HEARTBEAT_)/, '').replace(/_/g,' ');
+        const [label, tip] = hbLabels[key] || [key, ''];
+        const tipHtml = tip ? ` <span style="cursor:help;color:var(--text-soft)" title="${esc(tip)}">ⓘ</span>` : '';
         if (c.type === 'bool') {
           html += `<div style="display:flex;align-items:center;gap:10px;padding:6px 0">
             <label class="toggle"><input type="checkbox" ${val==='true'||val===true?'checked':''} onchange="setHBParam('${key}',this.checked)"><span class="slider"></span></label>
-            <span style="font-size:14px">${esc(label)}</span>
+            <span style="font-size:14px">${esc(label)}${tipHtml}</span>
             ${hasOverride?`<button class="btn btn-ghost btn-sm" onclick="resetHBParam('${key}')">重置</button>`:''}
           </div>`;
         } else {
           html += `<div class="form-group" style="display:flex;align-items:center;gap:10px">
-            <label style="min-width:200px;font-size:13px">${esc(label)}</label>
+            <label style="min-width:220px;font-size:13px">${esc(label)}${tipHtml}</label>
             <input class="form-input" style="width:100px" type="number" value="${esc(val)}" onchange="setHBParam('${key}',this.value)" data-key="${key}">
             <span style="font-size:11px;color:var(--text-soft)">默认: ${c.env_default}</span>
             ${hasOverride?`<button class="btn btn-ghost btn-sm" onclick="resetHBParam('${key}')">重置</button>`:''}
@@ -530,8 +650,8 @@ async function loadHeartbeat() {
     // ── Observers ──
     try {
       const observers = await api('GET','/observers');
-      html += '<div class="card"><div class="card-title">观察器</div>';
-      html += '<table class="tbl"><tr><th>观察器</th><th>间隔（分钟）</th><th>状态</th><th>关联技能</th><th></th></tr>';
+      html += '<div class="card"><div class="card-title">观察器 Observers</div>';
+      html += '<table class="tbl"><tr><th>名称</th><th>间隔（分钟）</th><th>状态</th><th>关联技能</th><th></th></tr>';
       for (const o of observers) {
         const statusBadge = !o.enabled
           ? '<span class="badge badge-err">已禁用</span>'
@@ -694,9 +814,10 @@ async function saveSkillConfig(name) {
 }
 
 // ═══════════════════════════════════════════
-// Page 4: Persona
+// Page 4: Prompts
 // ═══════════════════════════════════════════
 let _currentPrompt = null;
+let _promptMeta = {};  // name -> {label, desc}
 
 function encodePromptPath(name) {
   // Encode each segment but preserve '/' for FastAPI {name:path}
@@ -708,14 +829,17 @@ async function loadPrompts() {
   try {
     const data = await api('GET','/prompts');
     const prompts = data.prompts;
+    _promptMeta = {};
+    for (const p of prompts) _promptMeta[p.name] = {label: p.label, desc: p.desc};
     let html = '';
 
     // Prompt list
-    html += '<div class="card"><div class="card-title">人格文件</div>';
-    html += '<table class="tbl"><tr><th>文件</th><th>大小</th><th>状态</th><th></th></tr>';
+    html += '<div class="card"><div class="card-title">Prompt 文件</div>';
+    html += '<table class="tbl"><tr><th>名称</th><th>说明</th><th>大小</th><th>状态</th><th></th></tr>';
     for (const p of prompts) {
       html += `<tr>
-        <td><strong>${esc(p.name)}</strong></td>
+        <td><strong>${esc(p.label)}</strong><div style="font-size:11px;color:var(--text-soft)">${esc(p.name)}</div></td>
+        <td style="font-size:12px;color:var(--text-soft)">${esc(p.desc)}</td>
         <td>${p.chars} 字符</td>
         <td>${p.exists?'<span class="badge badge-ok">存在</span>':'<span class="badge badge-warn">缺失</span>'}</td>
         <td style="text-align:right"><button class="btn btn-ghost btn-sm" onclick="openPromptEditor('${esc(p.name)}')">${p.exists?'编辑':'创建'}</button></td>
@@ -742,7 +866,8 @@ async function openPromptEditor(name) {
   const area = document.getElementById('prompt-editor-area');
   const textarea = document.getElementById('prompt-textarea');
   const title = document.getElementById('prompt-editor-title');
-  title.textContent = '编辑中: ' + name;
+  const meta = _promptMeta[name] || {};
+  title.textContent = '编辑中: ' + (meta.label || name);
   textarea.value = '';
   area.style.display = 'block';
   try {
@@ -780,7 +905,8 @@ async function savePrompt() {
   const content = textarea.value;
   try {
     const r = await api('POST','/prompts/'+encodePromptPath(_currentPrompt), {content});
-    showToast('✅ 已保存 ' + _currentPrompt + '（' + r.chars + ' 字符）');
+    const label = (_promptMeta[_currentPrompt] || {}).label || _currentPrompt;
+    showToast('✅ 已保存 ' + label + '（' + r.chars + ' 字符）');
     loaded.prompts = false;
     loadPrompts();
   } catch(e) { showToast('错误: ' + e.message); }

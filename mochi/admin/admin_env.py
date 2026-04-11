@@ -14,7 +14,7 @@ log = logging.getLogger(__name__)
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 # Keys that the admin portal is allowed to write via the API.
-# Security-sensitive keys (ADMIN_TOKEN, OWNER_USER_ID) are excluded.
+# Security-sensitive keys (ADMIN_TOKEN) are excluded.
 _WRITABLE_KEYS: frozenset[str] = frozenset({
     # LLM — Chat
     "CHAT_PROVIDER", "CHAT_API_KEY", "CHAT_MODEL", "CHAT_BASE_URL",
@@ -47,6 +47,8 @@ _WRITABLE_KEYS: frozenset[str] = frozenset({
     "EMBEDDING_CACHE_MAX_SIZE", "EMBEDDING_CACHE_TTL_S",
     # Transport
     "TELEGRAM_BOT_TOKEN",
+    # Owner (needed for first-time setup)
+    "OWNER_USER_ID",
 })
 
 
