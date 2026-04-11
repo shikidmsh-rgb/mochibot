@@ -69,7 +69,7 @@
 
 **前置条件**：Python 3.11+、一个 LLM API key、一个 [Telegram bot token](https://core.telegram.org/bots#how-do-i-create-a-bot)
 
-**1. 下载项目**
+### 一键安装（推荐）
 
 打开终端，cd 到你想放项目的目录（例如 `cd C:\Projects`），然后：
 
@@ -78,21 +78,45 @@ git clone https://github.com/shikidmsh-rgb/mochibot.git
 cd mochibot
 ```
 
-**2. 创建并激活虚拟环境**
+运行安装脚本：
+
+- **Windows**：双击 `setup.bat`，或在终端运行 `.\setup.bat`
+- **macOS / Linux**：`bash setup.sh`
+
+脚本会自动创建虚拟环境、安装依赖，然后打开管理后台（http://127.0.0.1:8080）。
+在浏览器里配好 API key、模型、Telegram token 后，回到终端按 `Ctrl+C`，然后启动 bot：
+
+```bash
+.venv\Scripts\activate        # Windows
+source .venv/bin/activate     # macOS / Linux
+
+python -m mochi.main
+```
+
+打开 Telegram → 找到你的 bot → 发任意消息。第一个发消息的人自动成为 owner。
+
+<details>
+<summary>手动安装（适合 VPS / 想了解每一步的用户）</summary>
+
+**1. 下载项目**
+
+```bash
+git clone https://github.com/shikidmsh-rgb/mochibot.git
+cd mochibot
+```
+
+**2. 创建虚拟环境**
 
 ```bash
 python -m venv .venv
 ```
 
-激活（选你的终端）：
+激活：
 
-| 终端 | 命令 |
-|------|------|
-| Windows PowerShell | `.venv\Scripts\Activate.ps1` |
-| Windows CMD | `.venv\Scripts\activate.bat` |
-| macOS / Linux | `source .venv/bin/activate` |
+- **Windows**：`.venv\Scripts\activate`
+- **macOS / Linux**：`source .venv/bin/activate`
 
-激活成功后命令行前面会出现 `(.venv)` 标志。
+激活成功后命令行前面会出现 `(.venv)` 标志。如果 Windows 上报权限错误，先运行 `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`，再重试。
 
 **3. 安装依赖**
 
@@ -100,24 +124,24 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-### **4. 配置** — 选一种方式：
+**4. 配置** — 选一种方式：
 
-#### 方式一：通过管理后台（推荐）
+通过管理后台（推荐）：
 
 ```bash
-pip install fastapi uvicorn   # 安装管理后台依赖（只需一次）
-python -m mochi.admin         # 启动管理后台
+pip install fastapi uvicorn
+python -m mochi.admin
 ```
 
 打开浏览器访问 http://127.0.0.1:8080 → 在 Web UI 中填写 API key、模型、Telegram token 等配置。
 
-#### 方式二：手动编辑 .env
+或手动编辑 .env：
 
 ```bash
 cp .env.example .env        # 用文本编辑器打开 .env，填入 CHAT_API_KEY、CHAT_MODEL、TELEGRAM_BOT_TOKEN
 ```
 
-### **5. 启动**
+**5. 启动**
 
 如果用了管理后台，先回到终端按 `Ctrl+C` 关掉 admin，然后：
 
@@ -126,6 +150,8 @@ python -m mochi.main
 ```
 
 打开 Telegram → 找到你的 bot → 发任意消息。第一个发消息的人自动成为 owner。
+
+</details>
 
 调试命令：`/cost`（token 用量）、`/heartbeat`（最近心跳状态）。
 
