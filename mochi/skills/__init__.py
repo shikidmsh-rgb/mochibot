@@ -76,8 +76,30 @@ def discover() -> list[str]:
 
             skill = skill_cls()
 
-            # Force SKILL.md loading to populate v2 attributes
+            # Force SKILL.md loading to populate v2/v3 attributes
             _ = skill.skill_md
+
+            # Resolve config from priority chain (DB > env > schema default)
+            if skill._config_schema_typed:
+                try:
+                    from mochi.skill_config_resolver import resolve_skill_config
+                    skill.config = resolve_skill_config(skill.name, skill._config_schema_typed)
+                except Exception as e:
+                    log.warning("Skill %s config resolution failed: %s", skill.name, e)
+
+            # Check required config vars (parity with observer auto-disable)
+            missing_config = [
+                key for key in skill.requires_config
+                if not os.getenv(key)
+            ]
+            if missing_config:
+                log.info(
+                    "Skill %s config incomplete — missing: %s",
+                    skill.name, missing_config,
+                )
+                skill._config_missing = missing_config
+            else:
+                skill._config_missing = []
 
             _skills[skill.name] = skill
 
@@ -114,12 +136,14 @@ def get_skill(name: str) -> Skill | None:
 def get_tools() -> list[dict]:
     """Get all exposed tool definitions (for LLM tools array).
 
-    Excludes tools from admin-disabled skills.
+    Excludes tools from admin-disabled or config-missing skills.
     """
     disabled = get_disabled_skills()
     tools = []
     for skill in _skills.values():
         if skill.name in disabled:
+            continue
+        if getattr(skill, "_config_missing", None):
             continue
         if skill.expose_as_tool:
             tools.extend(skill.get_tools())
@@ -231,6 +255,7 @@ def get_skill_info_all() -> list[dict]:
             "name": s.name,
             "description": s.description,
             "type": s.skill_type,
+            "tier": s.tier,
             "expose_as_tool": s.expose_as_tool,
             "multi_turn": s.multi_turn,
             "triggers": s.triggers,
@@ -242,6 +267,11 @@ def get_skill_info_all() -> list[dict]:
                 key: bool(os.getenv(key))
                 for key in getattr(s, "requires_config", [])
             },
+            "has_observer": s.has_observer,
+            "diary_tags": s.diary_tags,
+            "config_missing": getattr(s, "_config_missing", []),
+            "config_schema": s.config_schema,
+            "sub_skills": s.sub_skills,
         }
         for s in _skills.values()
     ]

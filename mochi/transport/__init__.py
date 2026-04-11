@@ -1,7 +1,6 @@
 """Transport abstraction — base class for message transports.
 
-A transport handles sending and receiving messages. MochiBot supports
-multiple transports (Telegram, Discord, etc.) via this abstraction.
+A transport handles sending and receiving messages via this abstraction.
 """
 
 import logging
@@ -17,7 +16,7 @@ class IncomingMessage:
     user_id: int
     channel_id: int
     text: str
-    transport: str  # "telegram" | "discord" | etc.
+    transport: str  # "telegram"
     raw: dict | None = None  # transport-specific raw data
 
 

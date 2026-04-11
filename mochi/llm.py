@@ -385,13 +385,13 @@ def get_client_for_tier(tier: str = "chat") -> LLMProvider:
     """Get an LLM client via the model pool tier routing.
 
     If TIER_ROUTING_ENABLED=false, maps tiers to existing chat/think purposes:
-        bg_deep, deep → get_client("think")
-        lite, chat, bg_fast, everything else → get_client("chat")
+        deep → get_client("think")
+        lite, chat, everything else → get_client("chat")
     If TIER_ROUTING_ENABLED=true, delegates to ModelPool.get_tier().
     """
     from mochi.config import TIER_ROUTING_ENABLED
     if not TIER_ROUTING_ENABLED:
-        purpose = "think" if tier in ("bg_deep", "deep") else "chat"
+        purpose = "think" if tier == "deep" else "chat"
         return get_client(purpose)
     from mochi.model_pool import get_pool
     return get_pool().get_tier(tier)

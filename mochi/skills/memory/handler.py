@@ -38,8 +38,17 @@ class MemorySkill(Skill):
         elif tool == "recall_memory":
             query = args.get("query", "")
             category = args.get("category", "")
+            # Generate embedding for hybrid vector search
+            query_embedding = None
+            if query:
+                try:
+                    from mochi.model_pool import get_pool
+                    query_embedding = get_pool().embed(query)
+                except Exception:
+                    pass  # fall back to keyword-only search
             try:
-                items = db_recall(uid, query=query, category=category)
+                items = db_recall(uid, query=query, category=category,
+                                  query_embedding=query_embedding)
             except Exception as e:
                 log.error("recall_memory failed: %s", e, exc_info=True)
                 return SkillResult(output=f"Failed to recall memories: {e}", success=False)

@@ -2,7 +2,8 @@
 name: oura
 interval: 30
 enabled: true
-requires_config: []
+requires_config: [OURA_CLIENT_ID, OURA_CLIENT_SECRET, OURA_REFRESH_TOKEN]
+skill_name: oura
 ---
 
 Provides Oura Ring health data: sleep, activity, readiness, and stress.

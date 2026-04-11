@@ -1,220 +1,220 @@
 <div align="center">
 
-[English](README.md) | [中文](README.zh-CN.md)
-
 # 🍡 MochiBot
 
-**Open-source AI companion bot with persistent memory and proactive check-ins.**
+**一个有记忆、会主动找你、能催你吃药的 AI 陪伴 bot。**
+
+轻量自托管 · SQLite · 任意 OpenAI 兼容 API
 
 </div>
 
 ---
 
-## Features
+## 它能做什么
 
-- **Lightweight** — single process, SQLite, no Docker/Redis/Postgres. `pip install` and go
-- **Persistent memory** — 3-layer memory that survives restarts and self-organizes nightly (full-text search + optional vector search)
-- **Proactive** — heartbeat loop that checks in on you, not just waits for input
-- **Self-hosted** — your data stays on your machine
-- **Extensible** — drop-in skills & observers, auto-discovered at startup
-- **Cost-efficient** — 5-tier model routing: cheap models for simple tasks, powerful models only when needed
-- **Body-aware** — [Oura Ring](https://ouraring.com) integration for sleep, readiness, activity, stress
+### 🧠 长期记忆
 
----
+- **核心记忆**——你的偏好、你们的关系，每次对话都在
+- **记忆项**——自动从对话中提取，按重要度分级，全文搜索 + 向量搜索
+- **每天一本 diary**——习惯进度、待办、提醒汇总成当日状态面板
+- **夜间自动整理**——去重、清过时的、调重要度，不会越存越乱
 
-## Design
 
-### Three-Layer Memory
+### 💬 活人感
 
-```
-Layer 1: Core Memory    — compact summary, always in system prompt (~800 tokens)
-    ↑ owned by chat model (add/delete lines via tool)
-Layer 2: Memory Items   — extracted facts, preferences, events (searchable, ★1/★2/★3 importance)
-    ↑ extracted from Layer 3 by LLM
-Layer 3: Conversations  — raw messages, compressed over time
-```
+- **自定义性格**——性格、语气、关注点都写在一个 prompt 文件里，你定义它是谁
+- **表情包**——转发 Telegram 表情包给ta，自动学习。之后聊天会自己发
+- **后台心跳**——不等你发消息。ta在后台定期看你的习惯、待办、提醒，该催的时候主动找你
+- **跟你一起作息**——你睡ta也睡，你醒ta也醒
+- **打字节奏**——消息拆成多条气泡 + 打字指示器
+- **早安晚安**——早上告诉你今天有什么，晚上复盘今天怎么样（可选）
 
-8 memory tools: save, recall, list, delete (soft-delete → 30-day trash), update core memory (add/delete lines), view core, stats, trash bin.
+### ✅ ADHD 友好
 
-Every night: extract → deduplicate → outdated removal (LLM) → salience rebalance (promote/demote) → core audit → trash purge.
+- **习惯追踪**——频率（每天两次、周一三五……）、时间上下文（早晚、饭后）、重要度（⚡ = 健康/用药类）。打卡、暂停、延后都行
+- **到点就催**——⚡重要习惯过时了必催，不是看心情。晚上药没吃？它不会放过你
+- **Snooze 不丢**——延后催促会自动补一个精确提醒，不会就此遗忘
+- **精确提醒**——到点即响，支持循环（每天/工作日/每周/每月）
+- **待办清单**——随口说"我要买菜"就记下来，快到期的会推给你
+- **打卡历史**——`✅ ✅ ❌ ✅ ✅ ✅ ✅`
 
-### Heartbeat (Observe → Think → Act)
+### 🍱 健康追踪
 
-Background loop:
+- **饮食记录**——"午饭吃了米饭炒青菜鸡腿" → `~520kcal（蛋白质 35g / 碳水 45g / 脂肪 12g）`。按天/周查历史
+- **Oura Ring**——睡眠、准备度、活动、压力数据接入，纳入心跳上下文
 
-| Phase | What happens | LLM calls |
-|-------|-------------|-----------|
-| **Observe** | Collect context from observers (time, weather, activity, wearables) | 0 |
-| **Think** | LLM evaluates: should I reach out? (delta detection — only on change) | 0–1 |
-| **Act** | Send a proactive message, save an observation, or do nothing | 0 |
+### 🔍 信息搜索
 
-Rate-limited and conservative.
+- **联网搜索**——问当前事件、新闻、价格，自动用 DuckDuckGo 搜索并总结（无需 API key）
 
-### 5-Tier Model Routing
+### 💰 省钱
 
-| Tier | Purpose | Example |
-|------|---------|---------|
-| **LITE** | Cheap/fast | Tool tasks (check-ins, reminders) |
-| **CHAT** | Balanced (default) | Conversations, proactive messages |
-| **DEEP** | Powerful | Code analysis, complex reasoning |
-| **BG_FAST** | Cheap background | Classification, tagging, summarization |
-| **BG_DEEP** | Strong background | Heartbeat reasoning, memory ops |
-
-Unconfigured tiers fall back to `CHAT_*`. Set `TIER_ROUTING_ENABLED=false` (default) to use the 2-model setup (Chat + Think).
-
-### Pre-Router & Tool Governance
-
-Selectively injects skills per message to keep token costs low:
-
-1. **Pre-Router** — LLM classifies the message and selects which skills to load
-2. **Keyword Fallback** — catches obvious cases if the pre-router misses
-3. **Tool Escalation** — LLM can request missing skills mid-turn via `request_tools`
-
-Tool policy layer gates every call with check/filter/rate-limit.
-
-### Diary (Working Memory)
-
-Daily scratchpad shared between Chat and Think — observations, notes, context that don't fit into long-term memory. Auto-archived nightly.
-
-### Observers & Skills
-
-| Concept | Role | Examples |
-|---------|------|---------|
-| **Observers** | Passive sensors feeding context into Think — zero LLM calls, interval-throttled | `time_context`, `weather`, `activity_pattern`, `oura` |
-| **Skills** | Active capabilities invoked via tool calls — auto-discovered from `SKILL.md` + `handler.py` | `memory`, `reminder`, `todo`, `diary`, `oura` |
-
-Both are auto-discovered at startup — drop a folder, restart, done. See [CONTRIBUTING.md](CONTRIBUTING.md).
+- **Pre-Router**——按消息动态选择需要的能力，不带用不上的工具，省 token
+- **3 级模型路由**——发表情用便宜模型，复杂分析才上强模型
+- 整套路由默认关闭，零配置就是一个 chat + 一个 think 模型，够用就行
 
 ---
 
-## Quick Start
+## 还有
 
-**Prerequisites**: Python 3.11+, an LLM API key, a [Telegram bot token](https://core.telegram.org/bots#how-do-i-create-a-bot)
+- **轻量**——单进程、SQLite，不需要 Docker/Redis/Postgres，`pip install` 就能跑
+- **自托管**——数据留在你自己的机器上
+- **易扩展**——Skill 和 Observer 即插即用，放个文件夹重启就行
+- **管理后台**——Web UI 配置模型、调心跳参数、开关 skill、编辑人设 prompt
+- **目前只支持 Telegram**——Transport 层是抽象接口，可以自己扩展其他平台
+
+---
+
+## 快速开始
+
+**前置条件**：Python 3.11+、一个 LLM API key、一个 [Telegram bot token](https://core.telegram.org/bots#how-do-i-create-a-bot)
 
 ```bash
-git clone https://github.com/mochi-bot/mochibot.git && cd mochibot
-cp .env.example .env        # fill in CHAT_API_KEY, CHAT_MODEL, TELEGRAM_BOT_TOKEN
+git clone https://github.com/shikidmsh-rgb/mochibot.git
+cd mochibot
+python -m venv .venv
+
+# 激活虚拟环境：
+# Windows PowerShell:  .venv\Scripts\Activate.ps1
+# Windows CMD:         .venv\Scripts\activate.bat
+# macOS / Linux:       source .venv/bin/activate
+
 pip install -r requirements.txt
+```
+
+### 方式一：通过管理后台配置（推荐）
+
+```bash
+pip install fastapi uvicorn   # 安装管理后台依赖（只需一次）
+python -m mochi.admin         # 启动管理后台
+```
+
+打开浏览器访问 http://127.0.0.1:8080 → 在 Web UI 中填写 API key、模型、Telegram token 等配置。
+配好后回到终端按 `Ctrl+C` 关掉 admin，然后启动 bot：
+
+```bash
 python -m mochi.main
 ```
 
-Open Telegram → find your bot → send any message. The first person to message becomes the owner.
+### 方式二：手动编辑 .env
 
-Debug commands: `/cost` (token usage), `/heartbeat` (last heartbeat status).
+```bash
+cp .env.example .env        # 用文本编辑器打开 .env，填入 CHAT_API_KEY、CHAT_MODEL、TELEGRAM_BOT_TOKEN
+python -m mochi.main
+```
 
-> **Any OpenAI-compatible API works.** Set `CHAT_BASE_URL` to point at your provider:
+---
+
+打开 Telegram → 找到你的 bot → 发任意消息。第一个发消息的人自动成为 owner。
+
+调试命令：`/cost`（token 用量）、`/heartbeat`（最近心跳状态）。
+
+> **任何 OpenAI 兼容 API 都可以。** 设置 `CHAT_BASE_URL` 指向你的服务商：
 >
-> | Provider | `CHAT_BASE_URL` | Example `CHAT_MODEL` |
-> |----------|-----------------|----------------------|
-> | OpenAI (default) | *(not needed)* | `gpt-4o` |
+> | 服务商 | `CHAT_BASE_URL` | `CHAT_MODEL` 示例 |
+> |--------|-----------------|-------------------|
+> | OpenAI（默认） | *（不需要）* | `gpt-4o` |
 > | DeepSeek | `https://api.deepseek.com/v1` | `deepseek-chat` |
 > | Groq | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile` |
-> | Ollama (local) | `http://localhost:11434/v1` | `llama3` |
+> | Ollama（本地） | `http://localhost:11434/v1` | `llama3` |
 
 ---
 
-## Deployment
+## 部署
 
-The heartbeat runs continuously — if you run on a laptop, the bot goes offline when you close the lid.
+心跳持续运行——笔记本合盖就离线。
 
-| Option | Uptime | Cost |
-|--------|--------|------|
-| **Cloud VM** (Azure, AWS, etc.) | 24/7 | ~$4–10/mo |
-| **Raspberry Pi / Mini PC** | 24/7 (home network) | One-time |
-| **Laptop** | When open | Free |
+| 方案 | 在线时间 | 费用 |
+|------|---------|------|
+| **云 VM**（Azure、AWS 等） | 7×24 | ~$4–10/月 |
+| **树莓派 / 迷你主机** | 7×24（家庭网络） | 一次性 |
+| **笔记本** | 开盖时 | 免费 |
 
-> A small VM (1 vCPU, 1 GB RAM) is enough — single process, SQLite, minimal resources.
+> 一台小 VM（1 vCPU、1 GB RAM）足够——单进程、SQLite、资源占用极低。
 
 ---
 
-## Configuration
+## 配置
 
-All config lives in `.env`. Key variables:
+所有配置在 `.env`。核心变量：
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CHAT_PROVIDER` | `openai` | SDK: `openai` (+ compatible), `azure_openai`, `anthropic` |
-| `CHAT_API_KEY` | — | Your API key |
-| `CHAT_MODEL` | — | Model for conversations (required) |
-| `CHAT_BASE_URL` | — | Custom endpoint for OpenAI-compatible APIs |
-| `THINK_MODEL` | *=CHAT* | Cheaper model for heartbeat + maintenance (optional) |
-| `TELEGRAM_BOT_TOKEN` | — | From @BotFather |
-| `HEARTBEAT_INTERVAL_MINUTES` | `20` | Observe → Think → Act cycle |
-| `AWAKE_HOUR_START` / `END` | `7` / `23` | Heartbeat sleeps outside these hours |
-| `MAX_DAILY_PROACTIVE` | `10` | Rate limit for proactive messages |
-| `TIMEZONE_OFFSET_HOURS` | `0` | Your UTC offset |
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `CHAT_PROVIDER` | `openai` | SDK：`openai`（+ 兼容）、`azure_openai`、`anthropic` |
+| `CHAT_API_KEY` | — | 你的 API key |
+| `CHAT_MODEL` | — | 对话模型（必填） |
+| `CHAT_BASE_URL` | — | OpenAI 兼容 API 的自定义端点 |
+| `THINK_MODEL` | *=CHAT* | 心跳 + 维护用的便宜模型（可选） |
+| `TELEGRAM_BOT_TOKEN` | — | 从 @BotFather 获取 |
+| `HEARTBEAT_INTERVAL_MINUTES` | `20` | 心跳循环间隔 |
+| `AWAKE_HOUR_START` / `END` | `7` / `23` | 心跳在这些时间外休眠 |
+| `MAX_DAILY_PROACTIVE` | `10` | 每日主动消息上限 |
+| `TIMEZONE_OFFSET_HOURS` | `0` | 你的 UTC 偏移 |
 
 <details>
-<summary>Advanced: 5-tier routing, pre-router, embeddings, integrations</summary>
+<summary>进阶：3 级路由、Pre-Router、向量嵌入、集成</summary>
 
-**5-tier routing** — set `TIER_ROUTING_ENABLED=true`, then configure each tier:
+**3 级路由** — 设 `TIER_ROUTING_ENABLED=true`，然后配置每层：
 
 ```
-TIER_{LITE,CHAT,DEEP,BG_FAST,BG_DEEP}_{PROVIDER,API_KEY,MODEL,BASE_URL}
+TIER_{LITE,CHAT,DEEP}_{PROVIDER,API_KEY,MODEL,BASE_URL}
 ```
 
-**Pre-Router** — `TOOL_ROUTER_ENABLED=true` enables LLM-based skill selection per message. `TOOL_ESCALATION_ENABLED=true` (default) allows mid-turn skill requests.
+**Pre-Router** — `TOOL_ROUTER_ENABLED=true` 启用基于 LLM 的 skill 自动选择。`TOOL_ESCALATION_ENABLED=true`（默认）允许对话中途请求缺少的 skill。
 
-**Embeddings** — `AZURE_EMBEDDING_ENDPOINT`, `AZURE_EMBEDDING_API_KEY`, `AZURE_EMBEDDING_DEPLOYMENT`
+**向量嵌入** — `EMBEDDING_PROVIDER`（openai / azure_openai / ollama / none）、`EMBEDDING_API_KEY`、`EMBEDDING_MODEL`
 
-**Oura Ring** — `OURA_CLIENT_ID`, `OURA_CLIENT_SECRET` (run `python oura_auth.py` to set up)
+**Oura Ring** — `OURA_CLIENT_ID`、`OURA_CLIENT_SECRET`（运行 `python oura_auth.py` 设置）
 
-See [.env.example](.env.example) for key tunables; see `mochi/config.py` for the full list of ~70 tunables.
+完整列表见 [.env.example](.env.example)（关键参数）；详见 `mochi/config.py`（~80 个可调参数）。
 
 </details>
 
-**Example** — dual-model setup:
+**示例** — 双模型配置：
 
 ```dotenv
-CHAT_MODEL=gpt-4o            # conversations
-THINK_MODEL=gpt-4o-mini      # heartbeat + maintenance
+CHAT_MODEL=gpt-4o            # 对话
+THINK_MODEL=gpt-4o-mini      # 心跳 + 维护
 ```
 
 ---
 
-## Customization
+## 自定义
 
-| I want to change... | Edit |
-|---------------------|------|
-| Personality, tone, name | `prompts/personality.md` |
-| What gets remembered | `prompts/memory_extract.md` |
-| When to proactively message | `prompts/think_system.md` |
-| Morning / evening reports | `prompts/report_morning.md` / `report_evening.md` (off by default — set `MORNING_REPORT_HOUR` / `EVENING_REPORT_HOUR`) |
-| Observer intervals | `OBSERVATION.md` in each observer directory |
-| Add a skill or observer | See [CONTRIBUTING.md](CONTRIBUTING.md) |
+| 我想改… | 编辑 |
+|---------|------|
+| 性格、语气、名字 | `prompts/system_chat/soul.md` |
+| 记住哪些内容 | `prompts/memory_extract.md` |
+| 什么时候主动联系、催促哪些习惯 | `prompts/think_system.md` |
+| 早晚报告 | `prompts/report_morning.md` / `report_evening.md`（默认关闭——设 `MORNING_REPORT_HOUR` / `EVENING_REPORT_HOUR` 开启） |
+| 添加 skill 或 observer | 详见 [CONTRIBUTING.md](CONTRIBUTING.md) |
 
-> `prompts/personality.md` is the most impactful file — it defines how the bot talks and what the heartbeat pays attention to.
+> 性格文件影响最大——改了它，bot 说话方式就变。
 
 ---
 
-## Architecture
+## 路线图
 
-See [ARCHITECTURE.md](ARCHITECTURE.md).
+- [x] 任意 OpenAI 兼容 API（DeepSeek、Ollama、Groq 等）
+- [x] 双模型架构（Chat + Think）
+- [x] 3 级模型路由 + Pre-Router
+- [x] 持久记忆（三层 + 8 工具 + 夜间维护）
+- [x] 习惯追踪（频率/重要度/上下文/暂停/延后 + 心跳催促）
+- [x] 精确提醒（到点触发 + 循环提醒）
+- [x] 饮食记录（自然语言 → 热量估算 + 历史查询）
+- [x] 联网搜索（DuckDuckGo，无需 API key）
+- [x] Oura Ring 集成
+- [x] 日记系统（今日状态面板 + 夜间归档）
+- [x] 管理后台（Web UI）
+- [x] 打字节奏（多气泡 + 打字指示器）
+- [x] 早晚报告
+- [ ] 语音消息
+- [ ] 多用户支持
 
-## Roadmap
+## 贡献
 
-- [x] Any OpenAI-compatible API (DeepSeek, Ollama, Groq, etc.)
-- [x] Dual-model architecture (Chat + Think)
-- [x] 5-tier model routing
-- [x] Skill v2 — rich metadata, usage rules, multi-turn, flexible triggers
-- [x] Expanded DB — 22+ tables, FTS5, optional sqlite-vec
-- [x] Embedding support (Azure OpenAI + TTL cache)
-- [x] Oura Ring integration (observer + skill)
-- [x] Pre-router — automatic skill selection
-- [x] Tool governance — policy check, filter, rate limiter
-- [x] Diary system — daily working memory + nightly archive
-- [x] Nightly maintenance — dedup, LLM-based outdated removal, salience rebalance, core memory audit, trash purge
-- [x] Modular prompt assembly
-- [x] Chatty rhythm — multi-bubble + typing indicators
-- [x] Morning / evening reports
-- [ ] Admin portal (web UI)
-- [ ] Voice message support
-- [ ] Multi-user support
+详见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
-## Contributing
+## 许可证
 
-See [CONTRIBUTING.md](CONTRIBUTING.md).
-
-## License
-
-MIT — see [LICENSE](LICENSE)
+MIT — 详见 [LICENSE](LICENSE)

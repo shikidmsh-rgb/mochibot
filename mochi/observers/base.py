@@ -36,6 +36,7 @@ class ObserverMeta:
     interval: int = 20          # minutes between collections
     enabled: bool = True
     requires_config: list[str] = field(default_factory=list)
+    skill_name: str = ""        # owning skill (empty = standalone observer)
 
 
 def _parse_observation_md(md_path: str) -> ObserverMeta:
@@ -46,7 +47,7 @@ def _parse_observation_md(md_path: str) -> ObserverMeta:
       name: weather
       interval: 30
       enabled: true
-      requires_config: [OPENWEATHER_API_KEY, WEATHER_LAT]
+      requires_config: [WEATHER_CITY]
       ---
     """
     meta = ObserverMeta()
@@ -81,6 +82,8 @@ def _parse_observation_md(md_path: str) -> ObserverMeta:
             # Parse [KEY1, KEY2] or KEY1, KEY2
             keys = re.findall(r"[A-Z_][A-Z0-9_]+", val)
             meta.requires_config = keys
+        elif key == "skill_name":
+            meta.skill_name = val
 
     return meta
 
@@ -102,12 +105,11 @@ class Observer(ABC):
     def meta(self) -> ObserverMeta:
         """Parsed OBSERVATION.md metadata (lazy-loaded and cached)."""
         if self._meta is None:
-            # OBSERVATION.md lives next to observer.py
-            md_path = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)),
-                self._observer_dir(),
-                "OBSERVATION.md",
-            )
+            # OBSERVATION.md lives next to the observer subclass file
+            import inspect
+            class_file = os.path.abspath(inspect.getfile(self.__class__))
+            class_dir = os.path.dirname(class_file)
+            md_path = os.path.join(class_dir, "OBSERVATION.md")
             self._meta = _parse_observation_md(md_path)
             if not self._meta.name:
                 self._meta.name = self._observer_dir()
@@ -126,6 +128,21 @@ class Observer(ABC):
     def name(self) -> str:
         return self.meta.name or self.__class__.__name__.lower()
 
+    @property
+    def effective_interval(self) -> int:
+        """Interval in minutes, with DB override support.
+
+        Priority: DB override (_observer:{name}) > OBSERVATION.md default.
+        """
+        try:
+            from mochi.db import get_skill_config
+            overrides = get_skill_config(f"_observer:{self.name}")
+            if "interval" in overrides:
+                return max(1, int(overrides["interval"]))
+        except Exception:
+            pass
+        return self.meta.interval
+
     @abstractmethod
     async def observe(self) -> dict:
         """Collect data. Return a flat dict of observations.
@@ -140,7 +157,7 @@ class Observer(ABC):
         if self._last_collected_at is None:
             return True
         elapsed = (now - self._last_collected_at).total_seconds() / 60
-        return elapsed >= self.meta.interval
+        return elapsed >= self.effective_interval
 
     async def safe_observe(self) -> dict:
         """Wrapper: checks interval, calls observe(), caches result, handles errors."""

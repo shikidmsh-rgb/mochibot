@@ -10,13 +10,13 @@ log = logging.getLogger(__name__)
 
 
 async def generate_sticker_tags(emoji: str, set_name: str, caption: str) -> str:
-    """Generate semantic tags for a sticker using BG_FAST tier.
+    """Generate semantic tags for a sticker using LITE tier.
 
     Returns comma-separated tags (Chinese), e.g. "开心,撒娇,晚安".
     Falls back to emoji string on failure.
     """
     try:
-        from mochi.model_pool import pool
+        from mochi.llm import get_client_for_tier
 
         prompt = (
             "Generate 3-5 short semantic tags (in Chinese) for a Telegram sticker.\n"
@@ -27,15 +27,14 @@ async def generate_sticker_tags(emoji: str, set_name: str, caption: str) -> str:
             "Tags should describe mood/emotion/situation, e.g.: 开心,撒娇,晚安,加油"
         )
 
-        client, model = pool.get_tier("bg_fast")
+        client = get_client_for_tier("lite")
         response = await asyncio.to_thread(
-            client.chat.completions.create,
-            model=model,
+            client.chat,
             messages=[{"role": "user", "content": prompt}],
-            max_completion_tokens=150,
+            max_tokens=150,
         )
 
-        tags = (response.choices[0].message.content or "").strip()
+        tags = (response.content or "").strip()
         tags = tags.strip("\"'[]()").strip()
         return tags if tags else (emoji or "sticker")
 

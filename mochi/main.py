@@ -9,18 +9,17 @@ Starts all subsystems:
 
 import asyncio
 import logging
-from datetime import datetime, timezone, timedelta
 
 from mochi.config import (
     TELEGRAM_BOT_TOKEN,
-    TIMEZONE_OFFSET_HOURS,
     OWNER_USER_ID,
 )
-from mochi.db import init_db, get_pending_reminders, mark_reminder_fired
+from mochi.db import init_db
 import mochi.skills as skill_registry
 from mochi.ai_client import chat
 from mochi.transport import IncomingMessage
 from mochi.heartbeat import heartbeat_loop, set_send_callback
+from mochi.reminder_timer import reminder_loop, set_send_callback as set_reminder_callback
 
 logging.basicConfig(
     level=logging.INFO,
@@ -29,43 +28,10 @@ logging.basicConfig(
 )
 log = logging.getLogger("mochi")
 
-TZ = timezone(timedelta(hours=TIMEZONE_OFFSET_HOURS))
-
 
 async def handle_message(msg: IncomingMessage) -> str:
     """Central message handler — called by all transports."""
     return await chat(msg)
-
-
-async def check_and_fire_reminders(transport) -> int:
-    """Check for due reminders and deliver them (single pass).
-
-    Returns the number of reminders fired.
-    """
-    fired = 0
-    reminders = get_pending_reminders()
-    for r in reminders:
-        try:
-            await transport.send_message(
-                r["channel_id"],
-                f"⏰ Reminder: {r['message']}",
-            )
-            mark_reminder_fired(r["id"])
-            log.info("Reminder #%d fired", r["id"])
-            fired += 1
-        except Exception as e:
-            log.error("Failed to fire reminder #%d: %s", r["id"], e)
-    return fired
-
-
-async def reminder_checker(transport):
-    """Check for due reminders every 60 seconds and deliver them."""
-    while True:
-        try:
-            await check_and_fire_reminders(transport)
-        except Exception as e:
-            log.error("Reminder checker error: %s", e, exc_info=True)
-        await asyncio.sleep(60)
 
 
 async def main():
@@ -116,8 +82,13 @@ async def main():
 
     # 6. Start background tasks
     asyncio.create_task(heartbeat_loop())
-    asyncio.create_task(reminder_checker(transport))
-    log.info("Heartbeat and reminder checker started")
+
+    # Reminder timer: precise delivery at exact remind_at times
+    async def _send_via_transport(user_id: int, text: str) -> None:
+        await transport.send_message(user_id, text)
+    set_reminder_callback(_send_via_transport)
+    asyncio.create_task(reminder_loop())
+    log.info("Heartbeat and reminder timer started")
 
     log.info("=" * 50)
     log.info("MochiBot is alive! 🍡")

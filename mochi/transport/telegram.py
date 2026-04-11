@@ -238,9 +238,15 @@ class TelegramTransport(Transport):
             await update.message.reply_text("Sorry, I'm a personal companion bot.")
             return
 
-        # Wake heartbeat only after owner auth passes
-        from mochi.heartbeat import force_wake
-        force_wake()
+        # ── State signals (not business logic — just dispatching transitions) ──
+        from mochi.heartbeat import (
+            get_state, wake_up, clear_morning_hold, clear_silent_pause,
+            check_sleep_entry,
+        )
+        if get_state() == "SLEEPING":
+            wake_up("user_message")
+        clear_morning_hold()
+        clear_silent_pause()
 
         msg = IncomingMessage(
             user_id=user_id,
@@ -253,5 +259,7 @@ class TelegramTransport(Transport):
             response = await _on_message_callback(msg)
             if response:
                 await self.send_message(update.effective_chat.id, response)
+            # Check for goodnight keywords AFTER Chat has replied
+            check_sleep_entry(update.message.text)
         else:
             await update.message.reply_text("I'm still waking up... try again in a moment.")

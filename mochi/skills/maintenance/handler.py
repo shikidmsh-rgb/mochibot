@@ -31,13 +31,8 @@ async def run_maintenance(user_id: int = 0) -> dict:
     uid = user_id or OWNER_USER_ID
     results: dict = {}
 
-    # 1. Diary archive
-    try:
-        from mochi.skills.diary.handler import save_diary_snapshot
-        results["diary"] = save_diary_snapshot()
-    except Exception as e:
-        log.error("Maintenance diary archive failed: %s", e)
-        results["diary"] = f"Error: {e}"
+    # 1. Diary archive (disabled — diary skill not yet ready)
+    results["diary"] = "Skipped (diary disabled)"
 
     # 2. Dedup (uses LLM via memory_engine)
     try:

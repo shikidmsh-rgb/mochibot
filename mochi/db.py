@@ -3,17 +3,25 @@
 Lightweight schema. Tables are created automatically on first run.
 """
 
+import difflib
 import json
+import math
+import re
+import struct
 import sqlite3
 import logging
+import unicodedata
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
-from mochi.config import DB_PATH, TIMEZONE_OFFSET_HOURS, HEARTBEAT_LOG_DELETE_DAYS, HEARTBEAT_LOG_TRIM_DAYS
+from mochi.config import (
+    DB_PATH, TIMEZONE_OFFSET_HOURS, HEARTBEAT_LOG_DELETE_DAYS, HEARTBEAT_LOG_TRIM_DAYS, TZ,
+    RECALL_VEC_SIM_THRESHOLD, RECALL_BM25_WEIGHT, RECALL_VEC_SIM_WEIGHT,
+    RECALL_KEYWORD_BOOST, RECALL_FTS_CANDIDATE_MULTIPLIER, RECALL_FALLBACK_LIMIT,
+    RECALL_DECAY_HALF_LIFE_DAYS, VEC_SEARCH_NATIVE_ENABLED, VEC_SEARCH_CANDIDATE_LIMIT,
+)
 
 logger = logging.getLogger(__name__)
-
-TZ = timezone(timedelta(hours=TIMEZONE_OFFSET_HOURS))
 
 
 def _connect() -> sqlite3.Connection:
@@ -385,6 +393,9 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
     _add_col("habit_logs", "note", "TEXT NOT NULL DEFAULT ''")
     _add_col("habit_logs", "period", "TEXT NOT NULL DEFAULT ''")
 
+    # habit snooze support
+    _add_col("habits", "snoozed_until", "TEXT DEFAULT NULL")
+
     # sticker_registry index
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_sticker_tags ON sticker_registry(tags)"
@@ -406,17 +417,40 @@ def _init_fts(conn: sqlite3.Connection) -> None:
                     content, content_rowid='id', tokenize='unicode61'
                 )
             """)
-            # Backfill existing data
+            # Backfill with pre-tokenized content for CJK support
             rows = conn.execute("SELECT id, content FROM memory_items").fetchall()
             for r in rows:
                 conn.execute(
                     "INSERT INTO memory_items_fts(rowid, content) VALUES (?, ?)",
-                    (r["id"], r["content"]),
+                    (r["id"], _fts_tokenize(r["content"])),
                 )
             conn.commit()
             logger.info("Created memory_items_fts and backfilled %d rows", len(rows))
         except Exception as e:
             logger.warning("FTS5 init failed (not critical): %s", e)
+    else:
+        # One-time re-index: migrate from raw unicode61 to pre-tokenized CJK bigrams.
+        # Check sentinel in skill_config table; if not set, re-index all rows.
+        try:
+            sentinel = conn.execute(
+                "SELECT value FROM skill_config WHERE skill_name='_system' AND key='fts_tokenized'",
+            ).fetchone()
+            if not sentinel:
+                rows = conn.execute("SELECT id, content FROM memory_items").fetchall()
+                if rows:
+                    conn.execute("DELETE FROM memory_items_fts")
+                    for r in rows:
+                        conn.execute(
+                            "INSERT INTO memory_items_fts(rowid, content) VALUES (?, ?)",
+                            (r["id"], _fts_tokenize(r["content"])),
+                        )
+                    conn.execute(
+                        "INSERT OR REPLACE INTO skill_config(skill_name, key, value) VALUES ('_system', 'fts_tokenized', '1')",
+                    )
+                    conn.commit()
+                    logger.info("Re-indexed %d FTS rows with CJK tokenization", len(rows))
+        except Exception as e:
+            logger.debug("FTS re-index check failed: %s", e)
     try:
         conn.execute("SELECT COUNT(*) FROM memory_items_fts")
         _FTS_AVAILABLE = True
@@ -466,16 +500,91 @@ def _init_vec(conn: sqlite3.Connection) -> None:
         _VEC_AVAILABLE = False
 
 
+# ── Helpers for hybrid search ────────────────────────────────────────────
+
+
+def _fts_tokenize(text: str) -> str:
+    """Pre-tokenize text for FTS5: overlapping bigrams for CJK, words for English."""
+    normalized = unicodedata.normalize("NFKC", text or "").lower()
+    tokens: list[str] = []
+    alpha_buf: list[str] = []
+    cjk_buf: list[str] = []
+
+    def _is_cjk(ch: str) -> bool:
+        cp = ord(ch)
+        return 0x4E00 <= cp <= 0x9FFF or 0x3400 <= cp <= 0x4DBF or 0xF900 <= cp <= 0xFAFF
+
+    def flush_alpha():
+        if alpha_buf:
+            word = "".join(alpha_buf).strip()
+            if word:
+                tokens.append(word)
+            alpha_buf.clear()
+
+    def flush_cjk():
+        if len(cjk_buf) == 1:
+            tokens.append(cjk_buf[0])
+        elif len(cjk_buf) >= 2:
+            for i in range(len(cjk_buf) - 1):
+                tokens.append(cjk_buf[i] + cjk_buf[i + 1])
+        cjk_buf.clear()
+
+    for ch in normalized:
+        if _is_cjk(ch):
+            flush_alpha()
+            cjk_buf.append(ch)
+        elif ch.isalnum():
+            flush_cjk()
+            alpha_buf.append(ch)
+        else:
+            flush_cjk()
+            flush_alpha()
+
+    flush_cjk()
+    flush_alpha()
+    return " ".join(tokens)
+
+
+def _cosine_similarity(a: bytes, b: bytes) -> float:
+    """Compute cosine similarity between two packed float32 embedding blobs."""
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    n = len(a) // 4
+    va = struct.unpack(f"{n}f", a)
+    vb = struct.unpack(f"{n}f", b)
+    dot = sum(x * y for x, y in zip(va, vb))
+    norm_a = sum(x * x for x in va) ** 0.5
+    norm_b = sum(x * x for x in vb) ** 0.5
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def _load_vec_conn(conn: sqlite3.Connection) -> bool:
+    """Load sqlite-vec extension on a given connection. Returns True on success."""
+    if not _VEC_AVAILABLE:
+        return False
+    try:
+        import sqlite_vec
+        conn.enable_load_extension(True)
+        sqlite_vec.load(conn)
+        conn.enable_load_extension(False)
+        return True
+    except Exception:
+        return False
+
+
 def fts_upsert(item_id: int, content: str) -> None:
-    """Update FTS index for a memory item."""
+    """Update FTS index for a memory item (pre-tokenized for CJK support)."""
     if not _FTS_AVAILABLE:
         return
+    tokenized = _fts_tokenize(content)
     conn = _connect()
     try:
         conn.execute("DELETE FROM memory_items_fts WHERE rowid = ?", (item_id,))
         conn.execute(
             "INSERT INTO memory_items_fts(rowid, content) VALUES (?, ?)",
-            (item_id, content),
+            (item_id, tokenized),
         )
         conn.commit()
     except Exception as e:
@@ -584,39 +693,347 @@ def mark_messages_processed(user_id: int, up_to_id: int) -> None:
 # ═══════════════════════════════════════════════════════════════════════════
 
 def save_memory_item(user_id: int, category: str, content: str,
-                     importance: int = 1, source: str = "extracted") -> int:
+                     importance: int = 1, source: str = "extracted",
+                     embedding: bytes | None = None,
+                     append: bool = False,
+                     match_hint: str | None = None) -> int:
+    """Save a memory item with on-insert smart dedup.
+
+    Dedup priority:
+      1. match_hint keyword search (action=update from LLM)
+      2. Date-keyed prefix match ([YYYY-MM-DD]...)
+      3. Text similarity (normalized, SequenceMatcher)
+      4. Vector cosine similarity (if embedding provided)
+    If a match is found: UPDATE (keep longer content, bump importance/access).
+    Otherwise: INSERT new row.
+
+    append: if True and dated match found, concatenate new content with ' | '.
+    match_hint: keyword to locate old memory to overwrite (status updates).
+    """
     now = datetime.now(TZ).isoformat()
     conn = _connect()
-    cur = conn.execute(
-        """INSERT INTO memory_items (user_id, category, content, importance, source, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (user_id, category, content, importance, source, now, now),
-    )
+
+    def _normalize_text(text: str) -> str:
+        normalized = unicodedata.normalize("NFKC", text or "").lower()
+        return "".join(ch for ch in normalized if ch.isalnum() or "\u4e00" <= ch <= "\u9fff")
+
+    def _extract_date(text: str) -> str | None:
+        m = re.search(r"\d{4}-\d{2}-\d{2}", text or "")
+        return m.group(0) if m else None
+
+    # --- Priority 1: match_hint (action=update) ---
+    hint_matched = None
+    if match_hint:
+        hint_rows = conn.execute(
+            "SELECT id, content, access_count, embedding FROM memory_items "
+            "WHERE user_id = ? AND category = ? AND content LIKE ? "
+            "ORDER BY updated_at DESC LIMIT 10",
+            (user_id, category, f"%{match_hint}%"),
+        ).fetchall()
+        if hint_rows:
+            hint_matched = hint_rows[0]
+
+    # --- Priority 2-4: standard dedup ---
+    date_match = re.match(r"^\[\d{4}-\d{2}-\d{2}\]", content)
+    content_date = _extract_date(content)
+    norm_content = _normalize_text(content)
+    existing = None
+
+    # P2: Date-keyed prefix match
+    if date_match:
+        existing = conn.execute(
+            "SELECT id, content, access_count, embedding FROM memory_items "
+            "WHERE user_id = ? AND category = ? AND content LIKE ? LIMIT 1",
+            (user_id, category, f"{date_match.group(0)}%"),
+        ).fetchone()
+    else:
+        # Quick prefix check
+        existing = conn.execute(
+            "SELECT id, content, access_count, embedding FROM memory_items "
+            "WHERE user_id = ? AND category = ? AND content LIKE ? LIMIT 1",
+            (user_id, category, f"{content[:20]}%"),
+        ).fetchone()
+
+        # P3: Text similarity scan
+        if not existing:
+            candidates = conn.execute(
+                "SELECT id, content, access_count, embedding FROM memory_items "
+                "WHERE user_id = ? AND category = ? "
+                "AND content NOT LIKE '[____-__-__]%' "
+                "ORDER BY updated_at DESC LIMIT 120",
+                (user_id, category),
+            ).fetchall()
+
+            for cand in candidates:
+                norm_cand = _normalize_text(cand["content"])
+                if not norm_content or not norm_cand:
+                    continue
+                if norm_content == norm_cand:
+                    existing = cand
+                    break
+                ratio = difflib.SequenceMatcher(None, norm_content, norm_cand).ratio()
+                cand_date = _extract_date(cand["content"])
+                same_day = bool(content_date and cand_date and content_date == cand_date)
+                if (same_day and ratio >= 0.74) or ratio >= 0.92:
+                    existing = cand
+                    break
+
+            # P4: Vector similarity
+            if not existing and embedding:
+                for cand in candidates:
+                    cand_emb = cand["embedding"] if "embedding" in cand.keys() else None
+                    if not cand_emb:
+                        continue
+                    if _cosine_similarity(embedding, cand_emb) >= 0.92:
+                        existing = cand
+                        break
+
+    # hint_matched takes priority if no standard dedup hit
+    if hint_matched and not existing:
+        existing = hint_matched
+
+    if existing:
+        # Skip if content is identical
+        if existing["content"] == content:
+            conn.close()
+            return existing["id"]
+
+        # Decide what to keep
+        if hint_matched and existing["id"] == hint_matched["id"]:
+            keep_content = content
+            keep_emb = embedding
+        elif append and date_match:
+            new_body = content[len(date_match.group(0)):].strip()
+            old_body = existing["content"]
+            if new_body and new_body not in old_body:
+                keep_content = f"{old_body} | {new_body}"
+                keep_emb = None
+            else:
+                conn.close()
+                return existing["id"]
+        else:
+            keep_content = content if len(content) >= len(existing["content"]) else existing["content"]
+            keep_emb = embedding if len(content) >= len(existing["content"]) else (
+                existing["embedding"] if "embedding" in existing.keys() else None
+            )
+
+        if keep_emb is not None:
+            conn.execute(
+                "UPDATE memory_items SET content = ?, importance = MAX(importance, ?), "
+                "updated_at = ?, access_count = access_count + 1, embedding = ? WHERE id = ?",
+                (keep_content, importance, now, keep_emb, existing["id"]),
+            )
+        else:
+            conn.execute(
+                "UPDATE memory_items SET content = ?, importance = MAX(importance, ?), "
+                "updated_at = ?, access_count = access_count + 1 WHERE id = ?",
+                (keep_content, importance, now, existing["id"]),
+            )
+        item_id = existing["id"]
+        # Update FTS + vec indices
+        fts_upsert(item_id, keep_content)
+        if keep_emb is not None:
+            vec_upsert(item_id, keep_emb)
+    else:
+        cur = conn.execute(
+            "INSERT INTO memory_items (user_id, category, content, importance, "
+            "source, created_at, updated_at, embedding) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_id, category, content, importance, source, now, now, embedding),
+        )
+        item_id = cur.lastrowid
+        fts_upsert(item_id, content)
+        if embedding:
+            vec_upsert(item_id, embedding)
+
     conn.commit()
-    mid = cur.lastrowid
     conn.close()
-    return mid
+    return item_id
 
 
 def recall_memory(user_id: int, query: str = "", category: str = "",
-                  limit: int = 20) -> list[dict]:
+                  limit: int = 20,
+                  exclude_categories: list[str] | None = None,
+                  query_embedding: bytes | None = None) -> list[dict]:
+    """Recall memories — hybrid FTS5 BM25 + vector search with decay scoring.
+
+    Pipeline:
+      1a. sqlite-vec MATCH → top-K nearest neighbours + distances
+      1b. FTS5 MATCH → candidate IDs + BM25 scores
+      2.  Fallback expansion if too few candidates
+      3.  Fetch full rows for candidates only
+      4.  Hybrid scoring: vec_sim + bm25 + importance + decay
+    """
     conn = _connect()
-    sql = "SELECT id, category, content, importance, created_at FROM memory_items WHERE user_id = ?"
-    params: list = [user_id]
+    vec_ok = _load_vec_conn(conn) if query_embedding else False
+    now = datetime.now(TZ)
+    exclude = set(exclude_categories or [])
 
+    # Candidate accumulators: item_id → score component
+    vec_scores: dict[int, float] = {}   # item_id → cosine distance
+    bm25_scores: dict[int, float] = {}  # item_id → raw BM25 rank
+
+    # ── Phase 1a: Vector KNN ─────────────────────────────────────────
+    if vec_ok and query_embedding and VEC_SEARCH_NATIVE_ENABLED:
+        try:
+            k = VEC_SEARCH_CANDIDATE_LIMIT
+            vec_rows = conn.execute(
+                "SELECT item_id, distance FROM vec_memories "
+                "WHERE embedding MATCH ? AND k = ?",
+                (query_embedding, k),
+            ).fetchall()
+            for r in vec_rows:
+                vec_scores[r["item_id"]] = r["distance"]
+        except Exception as e:
+            logger.debug("Vec KNN search failed: %s", e)
+
+    # ── Phase 1b: FTS5 BM25 ─────────────────────────────────────────
+    if _FTS_AVAILABLE and query:
+        try:
+            fts_query = _fts_tokenize(query)
+            if fts_query.strip():
+                fts_limit = limit * RECALL_FTS_CANDIDATE_MULTIPLIER
+                fts_rows = conn.execute(
+                    "SELECT fts.rowid AS id, fts.rank AS bm25_raw "
+                    "FROM memory_items_fts fts "
+                    "JOIN memory_items m ON m.id = fts.rowid "
+                    "WHERE fts.content MATCH ? AND m.user_id = ? "
+                    "ORDER BY fts.rank LIMIT ?",
+                    (fts_query, user_id, fts_limit),
+                ).fetchall()
+                for r in fts_rows:
+                    bm25_scores[r["id"]] = r["bm25_raw"]
+        except Exception as e:
+            logger.debug("FTS5 search failed: %s", e)
+
+    # ── Phase 2: Fallback expansion ──────────────────────────────────
+    candidate_ids = set(vec_scores.keys()) | set(bm25_scores.keys())
+    if len(candidate_ids) < limit:
+        fallback_limit = RECALL_FALLBACK_LIMIT
+        # Build WHERE clause
+        conditions = ["user_id = ?"]
+        params: list = [user_id]
+        if category:
+            conditions.append("category = ?")
+            params.append(category)
+        if exclude:
+            ph = ",".join("?" * len(exclude))
+            conditions.append(f"category NOT IN ({ph})")
+            params.extend(exclude)
+        if query and not bm25_scores:
+            # No FTS available — fall back to LIKE
+            conditions.append("content LIKE ?")
+            params.append(f"%{query}%")
+        where = " AND ".join(conditions)
+        params.append(fallback_limit)
+        fb_rows = conn.execute(
+            f"SELECT id FROM memory_items WHERE {where} "
+            f"ORDER BY importance DESC, updated_at DESC LIMIT ?",
+            params,
+        ).fetchall()
+        for r in fb_rows:
+            candidate_ids.add(r["id"])
+
+    if not candidate_ids:
+        conn.close()
+        return []
+
+    # ── Phase 3: Fetch full rows for candidates ──────────────────────
+    id_ph = ",".join("?" * len(candidate_ids))
+    id_list = list(candidate_ids)
+
+    fetch_conditions = [f"id IN ({id_ph})", "user_id = ?"]
+    fetch_params: list = id_list + [user_id]
     if category:
-        sql += " AND category = ?"
-        params.append(category)
-    if query:
-        sql += " AND content LIKE ?"
-        params.append(f"%{query}%")
+        fetch_conditions.append("category = ?")
+        fetch_params.append(category)
+    if exclude:
+        ex_ph = ",".join("?" * len(exclude))
+        fetch_conditions.append(f"category NOT IN ({ex_ph})")
+        fetch_params.extend(exclude)
 
-    sql += " ORDER BY importance DESC, updated_at DESC LIMIT ?"
-    params.append(limit)
+    rows = conn.execute(
+        "SELECT id, category, content, importance, access_count, "
+        "last_accessed, embedding, created_at, updated_at "
+        f"FROM memory_items WHERE {' AND '.join(fetch_conditions)}",
+        fetch_params,
+    ).fetchall()
 
-    rows = conn.execute(sql, params).fetchall()
+    # ── Phase 4: Hybrid scoring ──────────────────────────────────────
+    scored: list[dict] = []
+    half_life = RECALL_DECAY_HALF_LIFE_DAYS or 30.0
+
+    for r in rows:
+        rid = r["id"]
+
+        # Recency decay
+        try:
+            updated = datetime.fromisoformat(r["updated_at"])
+            if updated.tzinfo is None:
+                updated = updated.replace(tzinfo=TZ)
+            days_ago = max((now - updated).total_seconds() / 86400, 0)
+        except (ValueError, TypeError):
+            days_ago = 365
+        decay = math.exp(-math.log(2) * days_ago / half_life)
+
+        # Base score from importance + access
+        access_bonus = min((r["access_count"] or 0) * 0.5, 3)
+        base_score = (r["importance"] * 2 + access_bonus) * decay
+
+        # Vector similarity
+        vec_sim = 0.0
+        if rid in vec_scores:
+            vec_sim = max(1.0 - vec_scores[rid], 0.0)
+        elif query_embedding and r["embedding"]:
+            # Python fallback when native KNN missed this candidate
+            vec_sim = _cosine_similarity(query_embedding, r["embedding"])
+
+        # BM25 normalised
+        bm25_norm = 0.0
+        if rid in bm25_scores:
+            bm25_norm = min(1.0, abs(bm25_scores[rid]) / 10.0)
+
+        # Filter: no relevance signal at all
+        if vec_sim < RECALL_VEC_SIM_THRESHOLD and bm25_norm == 0 and rid not in candidate_ids - set(id_list):
+            # Only keep if it came from fallback or has some signal
+            if rid in vec_scores and vec_sim < RECALL_VEC_SIM_THRESHOLD:
+                continue
+
+        score = (
+            RECALL_VEC_SIM_WEIGHT * vec_sim
+            + RECALL_BM25_WEIGHT * bm25_norm
+            + base_score
+            + (RECALL_KEYWORD_BOOST if bm25_norm > 0 else 0)
+        )
+
+        scored.append({
+            "id": rid,
+            "category": r["category"],
+            "content": r["content"],
+            "importance": r["importance"],
+            "score": round(score, 3),
+            "created_at": r["created_at"],
+        })
+
+    # Sort by score descending, take top `limit`
+    scored.sort(key=lambda x: x["score"], reverse=True)
+    result = scored[:limit]
+
+    # Bump access_count for returned items
+    item_ids = [m["id"] for m in result]
+    if item_ids:
+        ac_ph = ",".join("?" * len(item_ids))
+        try:
+            conn.execute(
+                f"UPDATE memory_items SET access_count = access_count + 1, "
+                f"last_accessed = ? WHERE id IN ({ac_ph})",
+                [now.isoformat()] + item_ids,
+            )
+            conn.commit()
+        except Exception as e:
+            logger.debug("access_count bump failed: %s", e)
+
     conn.close()
-    return [dict(r) for r in rows]
+    return result
 
 
 def get_all_memory_items(user_id: int) -> list[dict]:
@@ -901,6 +1318,28 @@ def mark_reminder_fired(reminder_id: int) -> None:
     conn.close()
 
 
+def get_next_pending_reminder() -> dict | None:
+    """Return the earliest unfired reminder, or None."""
+    conn = _connect()
+    row = conn.execute(
+        "SELECT id, user_id, channel_id, message, remind_at, recurrence "
+        "FROM reminders WHERE fired = 0 ORDER BY remind_at ASC LIMIT 1",
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def reschedule_reminder(reminder_id: int, new_remind_at: str) -> None:
+    """Update remind_at for a recurring reminder (reset fired to 0)."""
+    conn = _connect()
+    conn.execute(
+        "UPDATE reminders SET remind_at = ?, fired = 0 WHERE id = ?",
+        (new_remind_at, reminder_id),
+    )
+    conn.commit()
+    conn.close()
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Todos
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1059,6 +1498,94 @@ def get_last_heartbeat_log() -> dict | None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Health Log
+# ═══════════════════════════════════════════════════════════════════════════
+
+def save_health_log(user_id: int, date: str, log_type: str, content: str,
+                    source: str = "oura_daily", importance: int = 1,
+                    metrics: str | None = None) -> int:
+    """Insert or upsert a health log record.
+
+    Upsert rule: same (user_id, date, type, source) → UPDATE content/metrics/updated_at.
+    Different source with same date+type → INSERT (allows multiple sources to coexist).
+    """
+    now = datetime.now(TZ).isoformat()
+    conn = _connect()
+    existing = conn.execute(
+        "SELECT id FROM health_log "
+        "WHERE user_id = ? AND date = ? AND type = ? AND source = ? LIMIT 1",
+        (user_id, date, log_type, source),
+    ).fetchone()
+
+    if existing:
+        conn.execute(
+            "UPDATE health_log SET content = ?, metrics = ?, importance = MAX(importance, ?), "
+            "updated_at = ? WHERE id = ?",
+            (content, metrics, importance, now, existing["id"]),
+        )
+        conn.commit()
+        conn.close()
+        return existing["id"]
+
+    conn.execute(
+        "INSERT INTO health_log (user_id, date, type, source, content, metrics, "
+        "importance, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (user_id, date, log_type, source, content, metrics, importance, now, now),
+    )
+    row_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.commit()
+    conn.close()
+    return row_id
+
+
+def query_health_log(user_id: int, types: list[str] | None = None,
+                     days: int = 7, date: str | None = None,
+                     limit: int = 200) -> list[dict]:
+    """Query health_log by type(s) and date range.
+
+    Returns list of dicts sorted by date ASC.
+    If date is given, returns only that day's records (ignores days param).
+    types=None returns all types.
+    """
+    conn = _connect()
+    params: list = [user_id]
+    sql = ("SELECT id, date, type, source, content, metrics, importance, "
+           "created_at, updated_at FROM health_log WHERE user_id = ?")
+
+    if date:
+        sql += " AND date = ?"
+        params.append(date)
+    else:
+        cutoff = (datetime.now(TZ) - timedelta(days=days)).strftime("%Y-%m-%d")
+        sql += " AND date >= ?"
+        params.append(cutoff)
+
+    if types:
+        type_ph = ",".join("?" * len(types))
+        sql += f" AND type IN ({type_ph})"
+        params.extend(types)
+
+    sql += " ORDER BY date ASC LIMIT ?"
+    params.append(limit)
+
+    rows = conn.execute(sql, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def delete_health_log_items(item_ids: list[int]) -> int:
+    """Hard delete health_log rows by id list. Returns count deleted."""
+    if not item_ids:
+        return 0
+    conn = _connect()
+    ph = ",".join("?" * len(item_ids))
+    conn.execute(f"DELETE FROM health_log WHERE id IN ({ph})", item_ids)
+    conn.commit()
+    conn.close()
+    return len(item_ids)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Skill Runs
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -1151,105 +1678,249 @@ def get_active_todo_count(user_id: int) -> int:
 # Habits
 # ═══════════════════════════════════════════════════════════════════════════
 
-def create_habit(user_id: int, name: str, description: str = "") -> int:
-    """Create a new habit. Returns habit id."""
+def add_habit(user_id: int, name: str, frequency: str,
+              category: str = "", importance: str = "normal",
+              context: str = "") -> int:
+    """Create a new habit. Returns the habit id.
+
+    frequency: "daily:N" (N times/day) or "weekly:N" (N times/week)
+               or "weekly_on:DAY,...:N".
+    importance: "important" or "normal".
+    context: descriptive note (e.g. "morning and evening, after meals").
+    """
     now = datetime.now(TZ).isoformat()
     conn = _connect()
-    cur = conn.execute(
-        "INSERT OR IGNORE INTO habits (user_id, name, description, created_at) VALUES (?, ?, ?, ?)",
-        (user_id, name, description, now),
+    cursor = conn.execute(
+        "INSERT INTO habits (user_id, name, frequency, category, "
+        "importance, context, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (user_id, name, frequency, category, importance, context, now),
     )
+    habit_id = cursor.lastrowid
     conn.commit()
-    hid = cur.lastrowid
     conn.close()
-    return hid
+    return habit_id
 
 
-def log_habit(user_id: int, habit_name: str) -> bool:
-    """Log a habit completion for today. Returns True on success."""
+def list_habits(user_id: int, active_only: bool = True) -> list[dict]:
+    """Return habits for a user."""
     conn = _connect()
-    row = conn.execute(
-        "SELECT id FROM habits WHERE user_id = ? AND name = ? AND active = 1",
-        (user_id, habit_name),
-    ).fetchone()
-    if not row:
-        conn.close()
+    if active_only:
+        rows = conn.execute(
+            "SELECT * FROM habits WHERE user_id = ? AND active = 1 ORDER BY id",
+            (user_id,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM habits WHERE user_id = ? ORDER BY id",
+            (user_id,),
+        ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def deactivate_habit(user_id: int, habit_id: int) -> bool:
+    """Deactivate (soft-delete) a habit. Returns True if updated."""
+    conn = _connect()
+    cursor = conn.execute(
+        "UPDATE habits SET active = 0 WHERE id = ? AND user_id = ?",
+        (habit_id, user_id),
+    )
+    updated = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return updated
+
+
+def update_habit(habit_id: int, **fields) -> bool:
+    """Update mutable fields on a habit. Returns True if updated.
+
+    Allowed fields: name, context, importance, frequency.
+    """
+    allowed = {"name", "context", "importance", "frequency"}
+    updates = {k: v for k, v in fields.items() if k in allowed and v is not None}
+    if not updates:
         return False
-    habit_id = row["id"]
-    now = datetime.now(TZ).isoformat()
-    conn.execute(
-        "INSERT INTO habit_logs (habit_id, user_id, logged_at) VALUES (?, ?, ?)",
-        (habit_id, user_id, now),
+    set_clause = ", ".join(f"{k} = ?" for k in updates)
+    values = list(updates.values()) + [habit_id]
+    conn = _connect()
+    cursor = conn.execute(
+        f"UPDATE habits SET {set_clause} WHERE id = ? AND active = 1",
+        values,
     )
+    updated = cursor.rowcount > 0
     conn.commit()
     conn.close()
-    return True
+    return updated
 
 
-def get_habits_overview(user_id: int) -> list[dict]:
-    """Return active habits with streak and last-logged info.
+def checkin_habit(habit_id: int, user_id: int, period: str,
+                  note: str = "") -> int:
+    """Record a check-in for a habit. Returns the log id."""
+    now = datetime.now(TZ).isoformat()
+    conn = _connect()
+    cursor = conn.execute(
+        "INSERT INTO habit_logs (habit_id, user_id, note, logged_at, period) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (habit_id, user_id, note, now, period),
+    )
+    log_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return log_id
 
-    Each item: {name, description, streak_days, last_logged, logged_today}
+
+def get_habit_checkins(habit_id: int, period: str) -> list[dict]:
+    """Return check-in logs for a habit in a specific period."""
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT * FROM habit_logs WHERE habit_id = ? AND period = ? "
+        "ORDER BY logged_at",
+        (habit_id, period),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def delete_habit_checkin(log_id: int) -> bool:
+    """Delete a specific habit check-in log by its id. Returns True if deleted."""
+    conn = _connect()
+    cursor = conn.execute("DELETE FROM habit_logs WHERE id = ?", (log_id,))
+    conn.commit()
+    conn.close()
+    return cursor.rowcount > 0
+
+
+def get_habit_stats(habit_id: int, periods: list[str]) -> dict:
+    """Return check-in counts keyed by period for a habit.
+
+    periods: list of period strings, e.g. ["2026-02-22", "2026-02-21"].
+    Returns {period: count}.
+    """
+    if not periods:
+        return {}
+    conn = _connect()
+    placeholders = ",".join("?" for _ in periods)
+    rows = conn.execute(
+        f"SELECT period, COUNT(*) as cnt FROM habit_logs "
+        f"WHERE habit_id = ? AND period IN ({placeholders}) "
+        f"GROUP BY period",
+        [habit_id] + periods,
+    ).fetchall()
+    conn.close()
+    return {r["period"]: r["cnt"] for r in rows}
+
+
+def get_all_habit_checkins_for_period(user_id: int, period: str) -> dict[int, int]:
+    """Return {habit_id: checkin_count} for all habits for a given period."""
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT habit_id, COUNT(*) as cnt FROM habit_logs "
+        "WHERE user_id = ? AND period = ? GROUP BY habit_id",
+        (user_id, period),
+    ).fetchall()
+    conn.close()
+    return {r["habit_id"]: r["cnt"] for r in rows}
+
+
+def get_latest_habit_checkins_for_period(user_id: int, period: str) -> dict[int, str]:
+    """Return {habit_id: latest_logged_at} for all habits in a period."""
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT habit_id, MAX(logged_at) as latest FROM habit_logs "
+        "WHERE user_id = ? AND period = ? GROUP BY habit_id",
+        (user_id, period),
+    ).fetchall()
+    conn.close()
+    return {r["habit_id"]: r["latest"] for r in rows}
+
+
+def get_habit_streak(
+    habit_id: int, cycle: str, target: int,
+    allowed_days: set[int] | None = None, max_lookback: int = 90,
+) -> int:
+    """Compute current streak (consecutive completed periods) for a habit.
+
+    For daily habits: walks backwards from yesterday, skipping non-allowed days.
+    For weekly habits: walks backwards from last week.
+    Returns 0 if the most recent eligible period was missed.
     """
     now = datetime.now(TZ)
-    today_str = now.strftime("%Y-%m-%d")
+    if cycle == "daily":
+        periods = []
+        for i in range(1, max_lookback + 1):
+            d = now - timedelta(days=i)
+            if allowed_days is not None and d.weekday() not in allowed_days:
+                continue
+            periods.append(d.strftime("%Y-%m-%d"))
+    else:
+        periods = []
+        for i in range(1, max_lookback // 7 + 1):
+            d = now - timedelta(weeks=i)
+            periods.append(d.strftime("%G-W%V"))
 
-    conn = _connect()
-    habits = conn.execute(
-        "SELECT id, name, description FROM habits WHERE user_id = ? AND active = 1 ORDER BY name",
-        (user_id,),
-    ).fetchall()
+    if not periods:
+        return 0
 
-    result = []
-    for h in habits:
-        habit_id = h["id"]
-
-        # Last log date
-        last_row = conn.execute(
-            "SELECT logged_at FROM habit_logs WHERE habit_id = ? ORDER BY logged_at DESC LIMIT 1",
-            (habit_id,),
-        ).fetchone()
-        last_logged = last_row["logged_at"][:10] if last_row else None
-
-        # Logged today?
-        logged_today = last_logged == today_str
-
-        # Streak: count consecutive days ending today (or yesterday)
-        streak = _compute_streak(conn, habit_id, today_str)
-
-        result.append({
-            "name": h["name"],
-            "description": h["description"],
-            "streak_days": streak,
-            "last_logged": last_logged,
-            "logged_today": logged_today,
-        })
-
-    conn.close()
-    return result
-
-
-def _compute_streak(conn: sqlite3.Connection, habit_id: int, today_str: str) -> int:
-    """Count consecutive days the habit was logged, ending on today or yesterday."""
-    from datetime import date
-
-    today = date.fromisoformat(today_str)
-    # Collect distinct logged dates
-    rows = conn.execute(
-        "SELECT DISTINCT DATE(logged_at) as d FROM habit_logs WHERE habit_id = ? ORDER BY d DESC",
-        (habit_id,),
-    ).fetchall()
-    logged_dates = {date.fromisoformat(r["d"]) for r in rows}
-
+    stats = get_habit_stats(habit_id, periods)
     streak = 0
-    check = today
-    # Allow today OR yesterday as starting point
-    if check not in logged_dates:
-        check = today - timedelta(days=1)
-    while check in logged_dates:
-        streak += 1
-        check -= timedelta(days=1)
+    for p in periods:
+        if stats.get(p, 0) >= target:
+            streak += 1
+        else:
+            break
     return streak
+
+
+def pause_habit(user_id: int, habit_id: int, until_date: str) -> bool:
+    """Pause a habit until the given ISO date (inclusive). Returns True if updated."""
+    conn = _connect()
+    cur = conn.execute(
+        "UPDATE habits SET paused_until = ? WHERE id = ? AND user_id = ? AND active = 1",
+        (until_date, habit_id, user_id),
+    )
+    conn.commit()
+    ok = cur.rowcount > 0
+    conn.close()
+    return ok
+
+
+def resume_habit(user_id: int, habit_id: int) -> bool:
+    """Resume a paused habit (clear paused_until). Returns True if updated."""
+    conn = _connect()
+    cur = conn.execute(
+        "UPDATE habits SET paused_until = NULL WHERE id = ? AND user_id = ? AND active = 1",
+        (habit_id, user_id),
+    )
+    conn.commit()
+    ok = cur.rowcount > 0
+    conn.close()
+    return ok
+
+
+def snooze_habit(user_id: int, habit_id: int, until_iso: str) -> bool:
+    """Snooze habit nudges until given ISO datetime. Returns True if updated."""
+    conn = _connect()
+    cur = conn.execute(
+        "UPDATE habits SET snoozed_until = ? WHERE id = ? AND user_id = ? AND active = 1",
+        (until_iso, habit_id, user_id),
+    )
+    conn.commit()
+    ok = cur.rowcount > 0
+    conn.close()
+    return ok
+
+
+def clear_habit_snooze(user_id: int, habit_id: int) -> bool:
+    """Clear snooze on a habit. Returns True if updated."""
+    conn = _connect()
+    cur = conn.execute(
+        "UPDATE habits SET snoozed_until = NULL WHERE id = ? AND user_id = ? AND active = 1",
+        (habit_id, user_id),
+    )
+    conn.commit()
+    ok = cur.rowcount > 0
+    conn.close()
+    return ok
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1282,6 +1953,43 @@ def set_skill_enabled(skill_name: str, enabled: bool) -> None:
             "ON CONFLICT(skill_name, key) DO UPDATE SET value = 'false', updated_at = ?",
             (skill_name, now, now),
         )
+    conn.commit()
+    conn.close()
+
+
+def get_skill_config(skill_name: str) -> dict[str, str]:
+    """Return all config key-value pairs for a skill (excluding internal keys like _enabled)."""
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT key, value FROM skill_config "
+        "WHERE skill_name = ? AND key NOT LIKE '\\_%' ESCAPE '\\'",
+        (skill_name,),
+    ).fetchall()
+    conn.close()
+    return {r["key"]: r["value"] for r in rows}
+
+
+def set_skill_config(skill_name: str, key: str, value: str) -> None:
+    """Set a config value for a skill (upsert)."""
+    now = datetime.now(TZ).isoformat()
+    conn = _connect()
+    conn.execute(
+        "INSERT INTO skill_config (skill_name, key, value, updated_at) "
+        "VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(skill_name, key) DO UPDATE SET value = ?, updated_at = ?",
+        (skill_name, key, value, now, value, now),
+    )
+    conn.commit()
+    conn.close()
+
+
+def delete_skill_config(skill_name: str, key: str) -> None:
+    """Delete a config value for a skill."""
+    conn = _connect()
+    conn.execute(
+        "DELETE FROM skill_config WHERE skill_name = ? AND key = ?",
+        (skill_name, key),
+    )
     conn.commit()
     conn.close()
 

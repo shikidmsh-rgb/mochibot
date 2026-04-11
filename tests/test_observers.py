@@ -12,6 +12,9 @@ _temp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
 _temp_db.close()
 os.environ["MOCHIBOT_DB_PATH"] = _temp_db.name
 
+from mochi.db import init_db
+init_db()
+
 from mochi.observers.base import Observer, ObserverMeta, _parse_observation_md
 import mochi.observers as registry_module
 
@@ -73,6 +76,26 @@ class TestObservationMdParsing:
         assert meta.interval == 20
         assert meta.enabled is True
         assert meta.requires_config == []
+
+    def test_parse_skill_name_field(self, tmp_path):
+        """skill_name field should be parsed from front matter."""
+        md = tmp_path / "OBSERVATION.md"
+        md.write_text(
+            "---\n"
+            "name: oura\n"
+            "interval: 30\n"
+            "skill_name: oura\n"
+            "---\n"
+        )
+        meta = _parse_observation_md(str(md))
+        assert meta.skill_name == "oura"
+
+    def test_parse_skill_name_empty_by_default(self, tmp_path):
+        """Observers without skill_name should default to empty string."""
+        md = tmp_path / "OBSERVATION.md"
+        md.write_text("---\nname: standalone\n---\n")
+        meta = _parse_observation_md(str(md))
+        assert meta.skill_name == ""
 
     def test_parse_bad_interval_falls_back(self, tmp_path):
         md = tmp_path / "OBSERVATION.md"
@@ -205,6 +228,88 @@ class TestRegistry:
         assert "good" in result
         assert "bad" not in result  # silently dropped
 
+    def test_collect_all_skips_disabled_skill(self, tmp_path, monkeypatch):
+        """Observer with skill_name set should be skipped when that skill is disabled."""
+        import mochi.db as db_module
+        from mochi.db import init_db, set_skill_enabled
+        monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "test.db")
+        init_db()
+
+        # Disable the "oura" skill in DB
+        set_skill_enabled("oura", False)
+
+        obs = _AlwaysObserver()
+        obs._meta = ObserverMeta(name="oura_obs", interval=0, skill_name="oura")
+        registry_module._observers["oura_obs"] = obs
+
+        result = asyncio.run(registry_module.collect_all())
+        assert "oura_obs" not in result
+
+    def test_collect_all_allows_unlinked_observer(self, tmp_path, monkeypatch):
+        """Observer without skill_name should run regardless of disabled skills."""
+        import mochi.db as db_module
+        from mochi.db import init_db, set_skill_enabled
+        monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "test.db")
+        init_db()
+
+        # Disable some skill
+        set_skill_enabled("oura", False)
+
+        # This observer has no skill_name — should still run
+        obs = _AlwaysObserver()
+        obs._meta = ObserverMeta(name="standalone", interval=0)
+        registry_module._observers["standalone"] = obs
+
+        result = asyncio.run(registry_module.collect_all())
+        assert "standalone" in result
+
+    def test_collect_all_allows_enabled_skill(self, tmp_path, monkeypatch):
+        """Observer linked to an enabled skill should still run."""
+        import mochi.db as db_module
+        from mochi.db import init_db
+        monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "test.db")
+        init_db()
+
+        # Don't disable anything — skill is enabled by default
+        obs = _AlwaysObserver()
+        obs._meta = ObserverMeta(name="oura_obs", interval=0, skill_name="oura")
+        registry_module._observers["oura_obs"] = obs
+
+        result = asyncio.run(registry_module.collect_all())
+        assert "oura_obs" in result
+
+    def test_effective_interval_default(self):
+        """effective_interval should return meta.interval when no DB override."""
+        obs = _AlwaysObserver()
+        obs._meta = ObserverMeta(name="test", interval=45)
+        assert obs.effective_interval == 45
+
+    def test_effective_interval_db_override(self, tmp_path, monkeypatch):
+        """effective_interval should use DB override when set."""
+        import mochi.db as db_module
+        from mochi.db import init_db, set_skill_config
+        monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "test.db")
+        init_db()
+
+        set_skill_config("_observer:test_obs", "interval", "120")
+
+        obs = _AlwaysObserver()
+        obs._meta = ObserverMeta(name="test_obs", interval=30)
+        assert obs.effective_interval == 120
+
+    def test_effective_interval_clamps_minimum(self, tmp_path, monkeypatch):
+        """effective_interval should clamp to minimum of 1."""
+        import mochi.db as db_module
+        from mochi.db import init_db, set_skill_config
+        monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "test.db")
+        init_db()
+
+        set_skill_config("_observer:test_obs", "interval", "0")
+
+        obs = _AlwaysObserver()
+        obs._meta = ObserverMeta(name="test_obs", interval=30)
+        assert obs.effective_interval == 1
+
     def test_list_observers(self):
         obs = _AlwaysObserver()
         obs._meta = ObserverMeta(name="always", interval=30)
@@ -228,51 +333,49 @@ class TestHabitDb:
         monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "test.db")
         init_db()
 
-    def test_create_and_overview(self):
-        from mochi.db import create_habit, get_habits_overview
-        create_habit(1, "meditation", "Daily sit")
-        habits = get_habits_overview(1)
+    def test_create_and_list(self):
+        from mochi.db import add_habit, list_habits
+        add_habit(1, "meditation", frequency="daily:1")
+        habits = list_habits(1)
         assert len(habits) == 1
         assert habits[0]["name"] == "meditation"
-        assert habits[0]["logged_today"] is False
-        assert habits[0]["streak_days"] == 0
+        assert habits[0]["frequency"] == "daily:1"
 
-    def test_log_habit_today(self):
-        from mochi.db import create_habit, log_habit, get_habits_overview
-        create_habit(1, "exercise")
-        ok = log_habit(1, "exercise")
+    def test_checkin_habit(self):
+        from mochi.db import add_habit, checkin_habit, get_habit_checkins
+        hid = add_habit(1, "exercise", frequency="daily:1")
+        checkin_habit(hid, 1, "2026-04-11", note="morning run")
+        checkins = get_habit_checkins(hid, "2026-04-11")
+        assert len(checkins) == 1
+        assert checkins[0]["note"] == "morning run"
+
+    def test_deactivate_habit(self):
+        from mochi.db import add_habit, deactivate_habit, list_habits
+        hid = add_habit(1, "reading", frequency="daily:1")
+        assert len(list_habits(1)) == 1
+        ok = deactivate_habit(1, hid)
         assert ok is True
-        habits = get_habits_overview(1)
-        assert habits[0]["logged_today"] is True
-        assert habits[0]["streak_days"] == 1
-
-    def test_log_unknown_habit_returns_false(self):
-        from mochi.db import log_habit
-        assert log_habit(1, "nonexistent") is False
+        assert len(list_habits(1)) == 0  # active_only=True
 
     def test_streak_accumulates(self):
         from datetime import datetime, timezone, timedelta
-        from mochi.db import create_habit, get_habits_overview
+        from mochi.db import add_habit, get_habit_streak
         import mochi.db as db_mod
 
-        create_habit(1, "running")
+        hid = add_habit(1, "running", frequency="daily:1")
         conn = db_mod._connect()
-        # Manually insert logs for past 3 days
-        habit_id = conn.execute(
-            "SELECT id FROM habits WHERE user_id=1 AND name='running'"
-        ).fetchone()["id"]
         now = datetime.now(timezone(timedelta(hours=8)))
-        for days_ago in range(3):
-            day = (now - timedelta(days=days_ago)).isoformat()
+        for days_ago in range(1, 4):  # yesterday, day before, etc.
+            day = (now - timedelta(days=days_ago)).strftime("%Y-%m-%d")
             conn.execute(
-                "INSERT INTO habit_logs (habit_id, user_id, logged_at) VALUES (?,?,?)",
-                (habit_id, 1, day),
+                "INSERT INTO habit_logs (habit_id, user_id, logged_at, period) VALUES (?,?,?,?)",
+                (hid, 1, now.isoformat(), day),
             )
         conn.commit()
         conn.close()
 
-        habits = get_habits_overview(1)
-        assert habits[0]["streak_days"] == 3
+        streak = get_habit_streak(hid, "daily", 1)
+        assert streak == 3
 
 
 # ═══════════════════════════════════════════════════════════════════════════

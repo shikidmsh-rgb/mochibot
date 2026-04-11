@@ -1,11 +1,9 @@
 """Multi-model pool — tier-based routing for all LLM tasks.
 
-Five tiers:
-    lite     — cheap/fast model for simple tool tasks
-    chat     — balanced model for daily conversation (default)
-    deep     — strong model for complex analysis
-    bg_fast  — cheap model for background classification/tagging
-    bg_deep  — strong model for background reasoning/analysis
+Three tiers:
+    lite  — cheap/fast model for classification, tagging, simple tasks
+    chat  — balanced model for daily conversation (default)
+    deep  — strong model for background reasoning, memory ops, analysis
 
 When TIER_ROUTING_ENABLED=false (default), all tiers fall back to the
 CHAT_* / THINK_* config — zero-config = existing 2-model behavior.
@@ -22,8 +20,7 @@ from mochi.config import (
     TIER_LITE_PROVIDER, TIER_LITE_API_KEY, TIER_LITE_MODEL, TIER_LITE_BASE_URL,
     TIER_CHAT_PROVIDER, TIER_CHAT_API_KEY, TIER_CHAT_MODEL, TIER_CHAT_BASE_URL,
     TIER_DEEP_PROVIDER, TIER_DEEP_API_KEY, TIER_DEEP_MODEL, TIER_DEEP_BASE_URL,
-    TIER_BG_FAST_PROVIDER, TIER_BG_FAST_API_KEY, TIER_BG_FAST_MODEL, TIER_BG_FAST_BASE_URL,
-    TIER_BG_DEEP_PROVIDER, TIER_BG_DEEP_API_KEY, TIER_BG_DEEP_MODEL, TIER_BG_DEEP_BASE_URL,
+    EMBEDDING_PROVIDER, EMBEDDING_API_KEY, EMBEDDING_MODEL, EMBEDDING_BASE_URL,
     AZURE_EMBEDDING_ENDPOINT, AZURE_EMBEDDING_API_KEY,
     AZURE_EMBEDDING_DEPLOYMENT, AZURE_EMBEDDING_API_VERSION,
     EMBEDDING_CACHE_MAX_SIZE, EMBEDDING_CACHE_TTL_S,
@@ -32,7 +29,7 @@ from mochi.llm import LLMProvider, _make_client
 
 log = logging.getLogger(__name__)
 
-VALID_TIERS = frozenset({"lite", "chat", "deep", "bg_fast", "bg_deep"})
+VALID_TIERS = frozenset({"lite", "chat", "deep"})
 
 
 # ---------------------------------------------------------------------------
@@ -76,9 +73,90 @@ _TIER_CONFIGS: dict[str, tuple[str, str, str, str]] = {
     "lite":    (TIER_LITE_PROVIDER, TIER_LITE_API_KEY, TIER_LITE_MODEL, TIER_LITE_BASE_URL),
     "chat":    (TIER_CHAT_PROVIDER, TIER_CHAT_API_KEY, TIER_CHAT_MODEL, TIER_CHAT_BASE_URL),
     "deep":    (TIER_DEEP_PROVIDER, TIER_DEEP_API_KEY, TIER_DEEP_MODEL, TIER_DEEP_BASE_URL),
-    "bg_fast": (TIER_BG_FAST_PROVIDER, TIER_BG_FAST_API_KEY, TIER_BG_FAST_MODEL, TIER_BG_FAST_BASE_URL),
-    "bg_deep": (TIER_BG_DEEP_PROVIDER, TIER_BG_DEEP_API_KEY, TIER_BG_DEEP_MODEL, TIER_BG_DEEP_BASE_URL),
 }
+
+
+# ---------------------------------------------------------------------------
+# Embedding provider resolution + factory
+# ---------------------------------------------------------------------------
+
+def _resolve_embedding_config() -> tuple[str, str, str, str]:
+    """Resolve (provider, api_key, model, base_url) for embedding.
+
+    Priority:
+      1. EMBEDDING_PROVIDER set → use new EMBEDDING_* vars
+      2. Legacy AZURE_EMBEDDING_* vars present → auto-detect as azure_openai
+      3. Nothing configured → "none" (disabled)
+    """
+    provider = (EMBEDDING_PROVIDER or "").strip().lower()
+
+    if provider == "none":
+        return ("none", "", "", "")
+
+    if provider == "openai":
+        return (
+            "openai",
+            EMBEDDING_API_KEY,
+            EMBEDDING_MODEL or "text-embedding-3-small",
+            EMBEDDING_BASE_URL,
+        )
+
+    if provider == "azure_openai":
+        return (
+            "azure_openai",
+            EMBEDDING_API_KEY or AZURE_EMBEDDING_API_KEY,
+            EMBEDDING_MODEL or AZURE_EMBEDDING_DEPLOYMENT,
+            EMBEDDING_BASE_URL or AZURE_EMBEDDING_ENDPOINT,
+        )
+
+    if provider == "ollama":
+        return (
+            "ollama",
+            "ollama",  # dummy key required by SDK
+            EMBEDDING_MODEL or "nomic-embed-text",
+            EMBEDDING_BASE_URL or "http://localhost:11434/v1",
+        )
+
+    if provider:
+        log.warning("Unknown EMBEDDING_PROVIDER '%s', disabling embedding", provider)
+        return ("none", "", "", "")
+
+    # Auto-detect from legacy Azure vars
+    if AZURE_EMBEDDING_ENDPOINT and AZURE_EMBEDDING_API_KEY:
+        return (
+            "azure_openai",
+            AZURE_EMBEDDING_API_KEY,
+            AZURE_EMBEDDING_DEPLOYMENT,
+            AZURE_EMBEDDING_ENDPOINT,
+        )
+
+    return ("none", "", "", "")
+
+
+def _make_embed_client(provider: str, api_key: str, model: str,
+                       base_url: str) -> tuple:
+    """Instantiate an OpenAI-compatible embedding client, or (None, "").
+
+    Pure factory — provider-specific defaults belong in _resolve_embedding_config.
+    """
+    if provider == "none" or not provider:
+        return None, ""
+
+    if provider == "azure_openai":
+        from openai import AzureOpenAI
+        client = AzureOpenAI(
+            azure_endpoint=base_url,
+            api_key=api_key,
+            api_version=AZURE_EMBEDDING_API_VERSION,
+        )
+        return client, model
+
+    # openai + ollama both use the standard OpenAI client
+    from openai import OpenAI
+    kwargs: dict = {"api_key": api_key}
+    if base_url:
+        kwargs["base_url"] = base_url
+    return OpenAI(**kwargs), model
 
 
 # ---------------------------------------------------------------------------
@@ -86,7 +164,7 @@ _TIER_CONFIGS: dict[str, tuple[str, str, str, str]] = {
 # ---------------------------------------------------------------------------
 
 class ModelPool:
-    """Manages LLM clients for all five tiers plus embedding."""
+    """Manages LLM clients for all three tiers plus embedding."""
 
     def __init__(self):
         self._tiers: dict[str, LLMProvider] = {}
@@ -116,22 +194,22 @@ class ModelPool:
 
         log.info("Tier pool: %s", {t: m for t, m in self._tier_models.items()})
 
-        # Embedding client (Azure-only, raw SDK — not via LLMProvider)
+        # Embedding client (provider-agnostic via _make_embed_client)
         self._embed_client = None
-        self._embed_deployment = AZURE_EMBEDDING_DEPLOYMENT
+        self._embed_model = ""
         self._embed_cache = _TTLCache(EMBEDDING_CACHE_MAX_SIZE, EMBEDDING_CACHE_TTL_S)
 
-        if AZURE_EMBEDDING_ENDPOINT and AZURE_EMBEDDING_API_KEY:
-            try:
-                from openai import AzureOpenAI
-                self._embed_client = AzureOpenAI(
-                    azure_endpoint=AZURE_EMBEDDING_ENDPOINT,
-                    api_key=AZURE_EMBEDDING_API_KEY,
-                    api_version=AZURE_EMBEDDING_API_VERSION,
-                )
-                log.info("Embedding configured: %s", AZURE_EMBEDDING_DEPLOYMENT)
-            except Exception as e:
-                log.warning("Embedding client init failed: %s", e)
+        try:
+            e_prov, e_key, e_model, e_base = _resolve_embedding_config()
+            self._embed_client, self._embed_model = _make_embed_client(
+                e_prov, e_key, e_model, e_base,
+            )
+            if self._embed_client:
+                log.info("Embedding configured: provider=%s model=%s", e_prov, e_model)
+            else:
+                log.info("Embedding disabled (provider=%s)", e_prov or "none")
+        except Exception as e:
+            log.warning("Embedding client init failed: %s", e)
 
     def get_tier(self, tier: str = "chat") -> LLMProvider:
         """Get LLMProvider for a tier. Falls back to 'chat' for unknown tiers."""
@@ -200,7 +278,7 @@ class ModelPool:
             return cached
         try:
             resp = self._embed_client.embeddings.create(
-                model=self._embed_deployment, input=key,
+                model=self._embed_model, input=key,
             )
             vec = resp.data[0].embedding
             packed = struct.pack(f"{len(vec)}f", *vec)
@@ -217,7 +295,7 @@ class ModelPool:
         try:
             truncated = [t[:8000] for t in texts]
             resp = self._embed_client.embeddings.create(
-                model=self._embed_deployment, input=truncated,
+                model=self._embed_model, input=truncated,
             )
             results: list[bytes | None] = [None] * len(texts)
             for item in resp.data:

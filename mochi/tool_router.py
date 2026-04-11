@@ -4,11 +4,16 @@ Instead of injecting ALL tools into every LLM call (wastes tokens), the router
 classifies the user message first, then injects only the relevant tools.
 
 Two-tier detection:
-  1. LLM classification (BG_FAST tier, ~100 tokens) — primary
+  1. LLM classification (LITE tier, ~100 tokens) — primary
   2. Keyword fallback (0ms, 0 tokens)  — ONLY when LLM returns None or empty
 
 Iron rule: keywords fire ONLY when classify_skills_llm() returns None or empty.
            Never union keywords with LLM results.
+
+v3 additions:
+  - SSOT metadata from SKILL.md scan (lazy-initialized)
+  - get_tool_meta() for risk level lookup
+  - resolve_tier() for model tier routing
 """
 
 import asyncio
@@ -22,6 +27,108 @@ log = logging.getLogger(__name__)
 
 
 # ────────────────────────────────────────────────────────────────────────
+# v3: SSOT Metadata — auto-generated from SKILL.md files (lazy-initialized)
+# ────────────────────────────────────────────────────────────────────────
+
+TOOL_METADATA: dict[str, dict] = {}
+_SKILL_DESCRIPTIONS: dict[str, str] = {}
+_SKILL_DEFAULT_TIER: dict[str, str] = {}
+_metadata_initialized = False
+
+
+def _ensure_skill_metadata():
+    """Lazy-initialize metadata from SKILL.md files.
+
+    Safe to call multiple times (idempotent). Uses file-only scan — no handler imports.
+    """
+    global TOOL_METADATA, _SKILL_DESCRIPTIONS, _SKILL_DEFAULT_TIER
+    global _metadata_initialized
+
+    if _metadata_initialized:
+        return
+
+    try:
+        from mochi.skills.base import (
+            scan_skill_metadata, build_skill_descriptions,
+            build_tool_metadata, build_tier_defaults,
+        )
+
+        metas = scan_skill_metadata()
+        TOOL_METADATA = build_tool_metadata(metas)
+        _SKILL_DESCRIPTIONS = build_skill_descriptions(metas)
+        _SKILL_DEFAULT_TIER = build_tier_defaults(metas)
+
+        tool_count = len([t for t in TOOL_METADATA if t != "request_tools"])
+        log.info("[SkillMeta] Auto-generated: %d router skills, %d tools, %d tier overrides",
+                 len(_SKILL_DESCRIPTIONS), tool_count, len(_SKILL_DEFAULT_TIER))
+
+    except Exception as e:
+        log.error("[SkillMeta] SSOT scan failed: %s", e)
+        raise
+
+    _metadata_initialized = True
+
+
+def get_tool_meta(tool_name: str) -> dict:
+    """Get metadata for a tool. Unknown tools default to L0/unknown."""
+    _ensure_skill_metadata()
+    return TOOL_METADATA.get(tool_name, {"skill": "unknown", "risk_level": "L0"})
+
+
+# ────────────────────────────────────────────────────────────────────────
+# Model Tier Routing
+# ────────────────────────────────────────────────────────────────────────
+
+_VALID_TIERS = {"lite", "chat", "deep"}
+_TIER_PRIORITY = {"lite": 0, "chat": 1, "deep": 2}
+
+
+def resolve_tier(
+    llm_tier: str | None = None,
+    llm_skills: set[str] | None = None,
+) -> str:
+    """Resolve final chat tier from pre-router output with 4-level fallback.
+
+    Fallback chain:
+    1. LLM returned a valid tier → use it
+    2. LLM returned skills but no tier → infer from _SKILL_DEFAULT_TIER + admin overrides
+    3. Multiple skills with conflicting tiers → pick highest (deep > chat > lite)
+    4. Everything failed → "chat" (default)
+    """
+    _ensure_skill_metadata()
+
+    # Level 1: LLM returned a valid tier
+    if llm_tier and llm_tier in _VALID_TIERS:
+        return llm_tier
+
+    # Level 2+3: Infer from skills
+    if llm_skills:
+        skill_tiers: list[str] = []
+        for skill in llm_skills:
+            # Check admin override first
+            override = _get_skill_tier_override(skill)
+            if override and override in _VALID_TIERS:
+                skill_tiers.append(override)
+            elif skill in _SKILL_DEFAULT_TIER:
+                skill_tiers.append(_SKILL_DEFAULT_TIER[skill])
+        if skill_tiers:
+            return max(skill_tiers, key=lambda t: _TIER_PRIORITY.get(t, 1))
+
+    # Level 4: Default
+    return "chat"
+
+
+def _get_skill_tier_override(skill_name: str) -> str | None:
+    """Check skill_config table for admin-set tier override."""
+    try:
+        from mochi.db import get_skill_config
+        config = get_skill_config(skill_name)
+        return config.get("_tier")
+    except Exception:
+        return None
+
+
+# ────────────────────────────────────────────────────────────────────────
 # Keyword map — high-precision only. Fallback when LLM classification fails.
 # ────────────────────────────────────────────────────────────────────────
 
@@ -30,11 +137,21 @@ _SKILL_KEYWORDS: dict[str, tuple[str, ...]] = {
     "todo": ("todo", "待办", "task", "任务", "to-do", "checklist"),
     "memory": ("remember", "记住", "forget", "忘记", "recall", "回忆"),
     "oura": ("sleep", "睡眠", "heart rate", "心率", "hrv", "readiness", "stress", "oura"),
+    "web_search": ("web search", "google", "look up", "查一下", "搜一下", "duckduckgo", "ddg"),
 }
 
 
 def _build_skill_descriptions() -> dict[str, str]:
-    """Build {skill_name: description} from registered skills."""
+    """Build {skill_name: description} from SKILL.md metadata (SSOT).
+
+    Uses the lazy-initialized metadata scan — no handler imports needed.
+    Falls back to registry for skills without descriptions.
+    """
+    _ensure_skill_metadata()
+    if _SKILL_DESCRIPTIONS:
+        return dict(_SKILL_DESCRIPTIONS)
+
+    # Fallback: use registry if SSOT not available
     import mochi.skills as registry
     descriptions = {}
     for info in registry.get_skill_info_all():
@@ -65,7 +182,7 @@ def _build_router_prompt(descriptions: dict[str, str]) -> str:
 
 
 async def classify_skills_llm(message: str) -> Optional[list[str]]:
-    """Classify which skills a message needs using BG_FAST tier LLM.
+    """Classify which skills a message needs using LITE tier LLM.
 
     Returns list of skill names, or None on failure (triggers keyword fallback).
     """
@@ -83,7 +200,7 @@ async def classify_skills_llm(message: str) -> Optional[list[str]]:
     prompt = _build_router_prompt(descriptions)
 
     try:
-        client = get_client_for_tier("bg_fast")
+        client = get_client_for_tier("lite")
         response = await asyncio.to_thread(
             client.chat,
             messages=[

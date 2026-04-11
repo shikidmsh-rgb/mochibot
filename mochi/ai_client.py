@@ -12,8 +12,8 @@ import json
 import logging
 from datetime import datetime, timezone, timedelta
 
-from mochi.llm import get_client, LLMResponse
-from mochi.prompt_loader import get_full_prompt
+from mochi.llm import get_client, get_client_for_tier, LLMResponse
+from mochi.prompt_loader import get_prompt
 from mochi.db import (
     save_message, get_recent_messages, get_core_memory, log_usage,
 )
@@ -31,7 +31,8 @@ def _build_system_prompt(user_id: int, usage_rules: str = "") -> str:
         usage_rules: Optional tool usage rules to inject (from pre-router).
     """
     from mochi.config import HEARTBEAT_INTERVAL_MINUTES, AWAKE_HOUR_START, AWAKE_HOUR_END, TIMEZONE_OFFSET_HOURS
-    personality = get_full_prompt("system_chat", "Chat")
+    personality = get_prompt("system_chat/soul")
+    agent_desc = get_prompt("system_chat/agent")
     core_memory = get_core_memory(user_id)
 
     # Current local time (respects TIMEZONE_OFFSET_HOURS)
@@ -42,6 +43,8 @@ def _build_system_prompt(user_id: int, usage_rules: str = "") -> str:
     parts = []
     if personality:
         parts.append(personality)
+    if agent_desc:
+        parts.append(agent_desc)
 
     # Always inject current time so relative reminders ("in 5 minutes") can be resolved
     parts.append(f"## Current time\nRight now it is **{now_str}** (UTC{TIMEZONE_OFFSET_HOURS:+d}).")
@@ -92,13 +95,16 @@ async def chat(message: IncomingMessage) -> str:
 
     # ── Route: determine which tools to inject ──
     usage_rules = ""
+    tier = "chat"  # default tier
     if TOOL_ROUTER_ENABLED:
         from mochi.tool_router import (
-            classify_skills, REQUEST_TOOLS_DEF, validate_escalation,
+            classify_skills, resolve_tier, REQUEST_TOOLS_DEF, validate_escalation,
         )
         skill_names = await classify_skills(text)
         if skill_names:
             tools = skill_registry.get_tools_by_names(skill_names)
+            # Resolve model tier from classified skills
+            tier = resolve_tier(llm_skills=set(skill_names))
             # Collect usage rules for selected tools only
             tool_names_list = [
                 t["function"]["name"] for t in tools if "function" in t
@@ -128,7 +134,7 @@ async def chat(message: IncomingMessage) -> str:
 
     # ── LLM call with tool loop ──
     max_tool_rounds = TOOL_LOOP_MAX_ROUNDS
-    client = get_client()
+    client = get_client_for_tier(tier)
     escalation_count = 0
 
     for round_num in range(max_tool_rounds):
@@ -145,7 +151,7 @@ async def chat(message: IncomingMessage) -> str:
             response.total_tokens,
             tool_calls=len(response.tool_calls),
             model=response.model,
-            purpose="chat",
+            purpose=f"chat:{tier}",
         )
 
         # No tool calls — we have the final response

@@ -56,7 +56,7 @@ THINK_BASE_URL = _env("THINK_BASE_URL")  # defaults to CHAT_BASE_URL
 AZURE_API_VERSION = _env("AZURE_API_VERSION", "2024-12-01-preview")
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Model Tier Routing (5-tier system)
+# Model Tier Routing (3-tier system: lite / chat / deep)
 # ═══════════════════════════════════════════════════════════════════════════
 # When TIER_ROUTING_ENABLED=true, each tier can use a different model/provider.
 # When false (default), all tiers fall back to CHAT_* / THINK_* config.
@@ -79,20 +79,17 @@ TIER_DEEP_API_KEY = _env("TIER_DEEP_API_KEY")
 TIER_DEEP_MODEL = _env("TIER_DEEP_MODEL")
 TIER_DEEP_BASE_URL = _env("TIER_DEEP_BASE_URL")
 
-TIER_BG_FAST_PROVIDER = _env("TIER_BG_FAST_PROVIDER")
-TIER_BG_FAST_API_KEY = _env("TIER_BG_FAST_API_KEY")
-TIER_BG_FAST_MODEL = _env("TIER_BG_FAST_MODEL")
-TIER_BG_FAST_BASE_URL = _env("TIER_BG_FAST_BASE_URL")
-
-TIER_BG_DEEP_PROVIDER = _env("TIER_BG_DEEP_PROVIDER")
-TIER_BG_DEEP_API_KEY = _env("TIER_BG_DEEP_API_KEY")
-TIER_BG_DEEP_MODEL = _env("TIER_BG_DEEP_MODEL")
-TIER_BG_DEEP_BASE_URL = _env("TIER_BG_DEEP_BASE_URL")
-
 # ═══════════════════════════════════════════════════════════════════════════
 # Embedding (vector memory search)
 # ═══════════════════════════════════════════════════════════════════════════
 
+# Provider-agnostic embedding config
+EMBEDDING_PROVIDER = _env("EMBEDDING_PROVIDER")            # openai | azure_openai | ollama | none
+EMBEDDING_API_KEY = _env("EMBEDDING_API_KEY")
+EMBEDDING_MODEL = _env("EMBEDDING_MODEL")
+EMBEDDING_BASE_URL = _env("EMBEDDING_BASE_URL")
+
+# Legacy Azure embedding vars (backward-compat fallback)
 AZURE_EMBEDDING_ENDPOINT = _env("AZURE_EMBEDDING_ENDPOINT")
 AZURE_EMBEDDING_API_KEY = _env("AZURE_EMBEDDING_API_KEY")
 AZURE_EMBEDDING_DEPLOYMENT = _env("AZURE_EMBEDDING_DEPLOYMENT", "text-embedding-3-small")
@@ -105,7 +102,6 @@ EMBEDDING_CACHE_TTL_S = _env_int("EMBEDDING_CACHE_TTL_S", 300)
 # ═══════════════════════════════════════════════════════════════════════════
 
 TELEGRAM_BOT_TOKEN = _env("TELEGRAM_BOT_TOKEN")
-DISCORD_BOT_TOKEN = _env("DISCORD_BOT_TOKEN")
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Owner
@@ -151,14 +147,21 @@ def _persist_owner(user_id: int) -> None:
 # ═══════════════════════════════════════════════════════════════════════════
 
 HEARTBEAT_INTERVAL_MINUTES = _env_int("HEARTBEAT_INTERVAL_MINUTES", 20)
-AWAKE_HOUR_START = _env_int("AWAKE_HOUR_START", 7)
-AWAKE_HOUR_END = _env_int("AWAKE_HOUR_END", 23)
-FORCE_SLEEP_HOUR = _env_int("FORCE_SLEEP_HOUR", 1)
-FORCE_WAKE_HOUR = _env_int("FORCE_WAKE_HOUR", 8)
+AWAKE_HOUR_START = _env_int("AWAKE_HOUR_START", 7)      # startup-only: init state
+AWAKE_HOUR_END = _env_int("AWAKE_HOUR_END", 23)         # startup-only: init state
 MAX_DAILY_PROACTIVE = _env_int("MAX_DAILY_PROACTIVE", 10)
 PROACTIVE_COOLDOWN_SECONDS = _env_int("PROACTIVE_COOLDOWN_SECONDS", 1800)
 THINK_FALLBACK_MINUTES = _env_int("THINK_FALLBACK_MINUTES", 60)
 LLM_HEARTBEAT_TIMEOUT_SECONDS = _env_int("LLM_HEARTBEAT_TIMEOUT_SECONDS", 120)
+
+# Sleep/Wake State Machine
+SLEEP_KEYWORD_HOUR_START = _env_int("SLEEP_KEYWORD_HOUR_START", 21)
+SLEEP_KEYWORD_HOUR_END = _env_int("SLEEP_KEYWORD_HOUR_END", 4)
+SLEEP_KEYWORDS = _env("SLEEP_KEYWORDS", "晚安,睡了,去睡了,good night,gn").split(",")
+SILENCE_SLEEP_AFTER_HOUR = _env_int("SILENCE_SLEEP_AFTER_HOUR", 23)
+SILENCE_SLEEP_THRESHOLD_HOURS = _env_float("SILENCE_SLEEP_THRESHOLD_HOURS", 1.0)
+SILENCE_PAUSE_DAYS = _env_float("SILENCE_PAUSE_DAYS", 3.0)
+FALLBACK_WAKE_HOUR = _env_int("FALLBACK_WAKE_HOUR", 10)
 
 # Scheduled daily reports (-1 = disabled, which is the default)
 # Enable by setting MORNING_REPORT_HOUR / EVENING_REPORT_HOUR in .env
@@ -186,14 +189,14 @@ MAINTENANCE_ENABLED = _env_bool("MAINTENANCE_ENABLED", True)
 # Diary
 # ═══════════════════════════════════════════════════════════════════════════
 
-DIARY_MAX_LINES = _env_int("DIARY_MAX_LINES", 30)
-DIARY_TRIM_TO = _env_int("DIARY_TRIM_TO", 25)
+DIARY_STATUS_MAX_LINES = _env_int("DIARY_STATUS_MAX_LINES", 20)
+DIARY_ENTRY_MAX_LINES = _env_int("DIARY_ENTRY_MAX_LINES", 50)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Optional Integrations
 # ═══════════════════════════════════════════════════════════════════════════
 
-TAVILY_API_KEY = _env("TAVILY_API_KEY")
+WEB_SEARCH_TIMEOUT_S = _env_int("WEB_SEARCH_TIMEOUT_S", 20)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Oura Ring (optional — OAuth2)
@@ -219,6 +222,31 @@ HEARTBEAT_LOG_DELETE_DAYS = _env_int("HEARTBEAT_LOG_DELETE_DAYS", 30)
 
 TIMEZONE_OFFSET_HOURS = _env_int("TIMEZONE_OFFSET_HOURS", 0)
 
+from datetime import datetime, timezone, timedelta
+
+TZ = timezone(timedelta(hours=TIMEZONE_OFFSET_HOURS))
+
+
+def logical_today(now: datetime | None = None) -> str:
+    """Return today's date as YYYY-MM-DD, rolling over at MAINTENANCE_HOUR.
+
+    Before MAINTENANCE_HOUR, entries belong to "yesterday" (the previous
+    logical day). This keeps nightly archival and day boundaries consistent.
+    """
+    if now is None:
+        now = datetime.now(TZ)
+    if now.hour < MAINTENANCE_HOUR:
+        now = now - timedelta(days=1)
+    return now.strftime("%Y-%m-%d")
+
+
+def logical_yesterday(now: datetime | None = None) -> str:
+    """Return yesterday's logical date as YYYY-MM-DD."""
+    if now is None:
+        now = datetime.now(TZ)
+    today = datetime.strptime(logical_today(now), "%Y-%m-%d")
+    return (today - timedelta(days=1)).strftime("%Y-%m-%d")
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Memory Recall / Vector Search
 # ═══════════════════════════════════════════════════════════════════════════
@@ -226,8 +254,12 @@ TIMEZONE_OFFSET_HOURS = _env_int("TIMEZONE_OFFSET_HOURS", 0)
 RECALL_VEC_SIM_THRESHOLD = _env_float("RECALL_VEC_SIM_THRESHOLD", 0.25)
 RECALL_BM25_WEIGHT = _env_float("RECALL_BM25_WEIGHT", 2.0)
 RECALL_VEC_SIM_WEIGHT = _env_float("RECALL_VEC_SIM_WEIGHT", 6.0)
+RECALL_KEYWORD_BOOST = _env_float("RECALL_KEYWORD_BOOST", 1.0)
+RECALL_FTS_CANDIDATE_MULTIPLIER = _env_int("RECALL_FTS_CANDIDATE_MULTIPLIER", 5)
+RECALL_FALLBACK_LIMIT = _env_int("RECALL_FALLBACK_LIMIT", 100)
 VEC_SEARCH_NATIVE_ENABLED = _env_bool("VEC_SEARCH_NATIVE_ENABLED", True)
 VEC_EMBEDDING_DIM = _env_int("VEC_EMBEDDING_DIM", 1536)
+VEC_SEARCH_CANDIDATE_LIMIT = _env_int("VEC_SEARCH_CANDIDATE_LIMIT", 50)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Memory Lifecycle
@@ -278,12 +310,6 @@ TOOL_ESCALATION_ENABLED = _env_bool("TOOL_ESCALATION_ENABLED", True)
 TOOL_ESCALATION_MAX_PER_TURN = _env_int("TOOL_ESCALATION_MAX_PER_TURN", 2)
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Prompt Assembly
-# ═══════════════════════════════════════════════════════════════════════════
-
-SYSTEM_PROMPT_MODULAR_ENABLED = _env_bool("SYSTEM_PROMPT_MODULAR_ENABLED", False)
-
-# ═══════════════════════════════════════════════════════════════════════════
 # Tool Governance
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -295,12 +321,12 @@ TOOL_RATE_LIMIT_PER_MIN = _env_int("TOOL_RATE_LIMIT_PER_MIN", 10)
 # Chatty Rhythm
 # ═══════════════════════════════════════════════════════════════════════════
 
-TG_INTERIM_ENABLED = _env_bool("TG_INTERIM_ENABLED", False)
+TG_INTERIM_ENABLED = _env_bool("TG_INTERIM_ENABLED", True)
 TG_BUBBLE_DELAY_S = _env_float("TG_BUBBLE_DELAY_S", 1.0)
 TG_BUBBLE_MAX = _env_int("TG_BUBBLE_MAX", 4)
 TG_BUBBLE_DELIMITER = _env("TG_BUBBLE_DELIMITER", "|||")
 TG_BUBBLE_MIN_CHARS = _env_int("TG_BUBBLE_MIN_CHARS", 8)
-TG_AGGREGATE_ENABLED = _env_bool("TG_AGGREGATE_ENABLED", False)
+TG_AGGREGATE_ENABLED = _env_bool("TG_AGGREGATE_ENABLED", True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -328,8 +354,8 @@ def validate_config() -> None:
         issues.append(("CRITICAL", "CHAT_MODEL", "No LLM model configured"))
     if not CHAT_API_KEY and CHAT_PROVIDER != "ollama":
         issues.append(("CRITICAL", "CHAT_API_KEY", "No API key for chat model"))
-    if not TELEGRAM_BOT_TOKEN and not DISCORD_BOT_TOKEN:
-        issues.append(("WARN", "TELEGRAM_BOT_TOKEN / DISCORD_BOT_TOKEN",
+    if not TELEGRAM_BOT_TOKEN:
+        issues.append(("WARN", "TELEGRAM_BOT_TOKEN",
                         "No transport configured — bot will not receive messages"))
 
     has_critical = False
@@ -343,3 +369,15 @@ def validate_config() -> None:
     if has_critical:
         _log.critical("Critical config missing. Set them in .env and restart.")
         sys.exit(1)
+
+    # Deprecation warnings for removed config keys
+    for old_key, new_key in [
+        ("FORCE_SLEEP_HOUR", "SILENCE_SLEEP_AFTER_HOUR"),
+        ("FORCE_WAKE_HOUR", "FALLBACK_WAKE_HOUR"),
+    ]:
+        if os.getenv(old_key):
+            _log.warning(
+                "[DEPRECATED] %s is no longer used. Use %s instead. "
+                "See .env.example for the new sleep/wake config.",
+                old_key, new_key,
+            )

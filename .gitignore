@@ -15,9 +15,7 @@ build/
 .pytest_cache/
 
 # Data
-data/*.db
-data/*.db-wal
-data/*.db-shm
+data/
 
 # Claude Code
 CLAUDE.md
@@ -36,6 +34,12 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Internal docs (not for public repo)
+ARCHITECTURE.md
+
+# WIP (work-in-progress notes, not shipped)
+wip/
 
 # Temp scripts
 run_admin.py

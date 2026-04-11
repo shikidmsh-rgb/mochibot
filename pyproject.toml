@@ -1,6 +1,6 @@
 [project]
 name = "mochibot"
-version = "0.1.0-alpha"
+version = "0.2.0"
 description = "A lightweight AI companion framework with autonomous heartbeat, layered memory, and modular skills."
 readme = "README.md"
 license = {text = "MIT"}
@@ -29,6 +29,6 @@ search = ["tavily-python>=0.3.0"]
 all = ["anthropic>=0.25.0", "tavily-python>=0.3.0"]
 
 [project.urls]
-Homepage = "https://github.com/mochi-bot/mochibot"
-Repository = "https://github.com/mochi-bot/mochibot"
-Issues = "https://github.com/mochi-bot/mochibot/issues"
+Homepage = "https://github.com/shikidmsh-rgb/mochibot"
+Repository = "https://github.com/shikidmsh-rgb/mochibot"
+Issues = "https://github.com/shikidmsh-rgb/mochibot/issues"

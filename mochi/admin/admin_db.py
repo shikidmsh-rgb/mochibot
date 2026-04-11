@@ -13,7 +13,7 @@ log = logging.getLogger(__name__)
 
 TZ = timezone(timedelta(hours=TIMEZONE_OFFSET_HOURS))
 
-_VALID_TIERS = frozenset({"lite", "chat", "deep", "bg_fast", "bg_deep"})
+_VALID_TIERS = frozenset({"lite", "chat", "deep"})
 _VALID_PROVIDERS = frozenset({"openai", "azure_openai", "anthropic"})
 
 __KEEP__ = "__KEEP__"
@@ -164,15 +164,11 @@ def get_tier_effective_config() -> dict[str, dict]:
         TIER_LITE_PROVIDER, TIER_LITE_API_KEY, TIER_LITE_MODEL, TIER_LITE_BASE_URL,
         TIER_CHAT_PROVIDER, TIER_CHAT_API_KEY, TIER_CHAT_MODEL, TIER_CHAT_BASE_URL,
         TIER_DEEP_PROVIDER, TIER_DEEP_API_KEY, TIER_DEEP_MODEL, TIER_DEEP_BASE_URL,
-        TIER_BG_FAST_PROVIDER, TIER_BG_FAST_API_KEY, TIER_BG_FAST_MODEL, TIER_BG_FAST_BASE_URL,
-        TIER_BG_DEEP_PROVIDER, TIER_BG_DEEP_API_KEY, TIER_BG_DEEP_MODEL, TIER_BG_DEEP_BASE_URL,
     )
     env_tiers = {
         "lite":    (TIER_LITE_PROVIDER, TIER_LITE_API_KEY, TIER_LITE_MODEL, TIER_LITE_BASE_URL),
         "chat":    (TIER_CHAT_PROVIDER, TIER_CHAT_API_KEY, TIER_CHAT_MODEL, TIER_CHAT_BASE_URL),
         "deep":    (TIER_DEEP_PROVIDER, TIER_DEEP_API_KEY, TIER_DEEP_MODEL, TIER_DEEP_BASE_URL),
-        "bg_fast": (TIER_BG_FAST_PROVIDER, TIER_BG_FAST_API_KEY, TIER_BG_FAST_MODEL, TIER_BG_FAST_BASE_URL),
-        "bg_deep": (TIER_BG_DEEP_PROVIDER, TIER_BG_DEEP_API_KEY, TIER_BG_DEEP_MODEL, TIER_BG_DEEP_BASE_URL),
     }
 
     assignments = list_tier_assignments()

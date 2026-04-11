@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>🍡 MochiBot Setup</title>
+<title>🍡 MochiBot 管理后台</title>
 <style>
 :root {
   --primary: #D4785C;
@@ -108,6 +108,10 @@ select.form-input { cursor:pointer; }
 .config-item { display:flex; align-items:center; gap:6px; font-size:13px; padding:3px 0; }
 /* ── Loading ──────────────────────────── */
 .loading { text-align:center; padding:40px; color:var(--text-soft); }
+/* ── Prompt editor ───────────────────── */
+.prompt-editor { width:100%; min-height:320px; padding:12px; border:1px solid var(--border); border-radius:8px; font-family:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace; font-size:13px; line-height:1.6; color:var(--text); background:var(--card); resize:vertical; tab-size:2; }
+.prompt-editor:focus { outline:none; border-color:var(--primary); }
+.prompt-meta { display:flex; align-items:center; justify-content:space-between; margin-top:8px; font-size:12px; color:var(--text-soft); }
 .spinner { display:inline-block; width:24px; height:24px; border:3px solid var(--border); border-top-color:var(--primary); border-radius:50%; animation:spin .6s linear infinite; }
 @keyframes spin { to { transform:rotate(360deg); } }
 /* ── Mobile ───────────────────────────── */
@@ -132,55 +136,62 @@ select.form-input { cursor:pointer; }
     <h1>MochiBot</h1>
   </div>
   <nav class="sidebar-nav" id="sidebar-nav">
-    <button class="nav-item active" data-page="welcome"><span class="nav-icon">🏠</span> Setup</button>
-    <button class="nav-item" data-page="models"><span class="nav-icon">🤖</span> Models</button>
-    <button class="nav-item" data-page="heartbeat"><span class="nav-icon">💓</span> Heartbeat</button>
-    <button class="nav-item" data-page="skills"><span class="nav-icon">⚡</span> Skills</button>
+    <button class="nav-item active" data-page="welcome"><span class="nav-icon">🏠</span> 设置</button>
+    <button class="nav-item" data-page="models"><span class="nav-icon">🤖</span> 模型</button>
+    <button class="nav-item" data-page="heartbeat"><span class="nav-icon">💓</span> 心跳</button>
+    <button class="nav-item" data-page="skills"><span class="nav-icon">⚡</span> 技能</button>
+    <button class="nav-item" data-page="prompts"><span class="nav-icon">📝</span> 人格</button>
   </nav>
 </aside>
 
 <main class="content">
 <!-- ═══════ Page 0: Welcome ═══════ -->
 <section id="page-welcome" class="page active">
-  <h2 class="page-title">🍡 Setup Portal</h2>
-  <div id="welcome-content"><div class="loading"><div class="spinner"></div> Loading...</div></div>
+  <h2 class="page-title">🍡 设置向导</h2>
+  <div id="welcome-content"><div class="loading"><div class="spinner"></div> 加载中...</div></div>
 </section>
 
 <!-- ═══════ Page 1: Models ═══════ -->
 <section id="page-models" class="page">
-  <h2 class="page-title">Model Configuration</h2>
-  <div id="models-content"><div class="loading"><div class="spinner"></div> Loading...</div></div>
+  <h2 class="page-title">模型配置</h2>
+  <div id="models-content"><div class="loading"><div class="spinner"></div> 加载中...</div></div>
 </section>
 
 <!-- ═══════ Page 2: Heartbeat ═══════ -->
 <section id="page-heartbeat" class="page">
-  <h2 class="page-title">Heartbeat Configuration</h2>
-  <div id="heartbeat-content"><div class="loading"><div class="spinner"></div> Loading...</div></div>
+  <h2 class="page-title">心跳配置</h2>
+  <div id="heartbeat-content"><div class="loading"><div class="spinner"></div> 加载中...</div></div>
 </section>
 
 <!-- ═══════ Page 3: Skills ═══════ -->
 <section id="page-skills" class="page">
-  <h2 class="page-title">Skill Manager</h2>
-  <div id="skills-content"><div class="loading"><div class="spinner"></div> Loading...</div></div>
+  <h2 class="page-title">技能管理</h2>
+  <div id="skills-content"><div class="loading"><div class="spinner"></div> 加载中...</div></div>
+</section>
+
+<!-- ═══════ Page 4: Prompts ═══════ -->
+<section id="page-prompts" class="page">
+  <h2 class="page-title">人格编辑</h2>
+  <div id="prompts-content"><div class="loading"><div class="spinner"></div> 加载中...</div></div>
 </section>
 </main>
 
 <!-- Modal -->
 <div class="modal-overlay" id="model-modal" onclick="if(event.target===this)closeModelModal()">
   <div class="modal">
-    <h3 id="model-modal-title">Add Model</h3>
-    <div class="form-group"><label class="form-label">Name</label><input class="form-input" id="mm-name" placeholder="e.g. my-gpt4o"></div>
-    <div class="form-group"><label class="form-label">Provider</label>
-      <select class="form-input" id="mm-provider"><option value="openai">OpenAI (compatible)</option><option value="azure_openai">Azure OpenAI</option><option value="anthropic">Anthropic</option></select>
+    <h3 id="model-modal-title">添加模型</h3>
+    <div class="form-group"><label class="form-label">名称</label><input class="form-input" id="mm-name" placeholder="例如 my-gpt4o"></div>
+    <div class="form-group"><label class="form-label">服务商</label>
+      <select class="form-input" id="mm-provider"><option value="openai">OpenAI（兼容）</option><option value="azure_openai">Azure OpenAI</option><option value="anthropic">Anthropic</option></select>
     </div>
-    <div class="form-group"><label class="form-label">Model</label><input class="form-input" id="mm-model" placeholder="e.g. gpt-4o"></div>
+    <div class="form-group"><label class="form-label">模型</label><input class="form-input" id="mm-model" placeholder="例如 gpt-4o"></div>
     <div class="form-group"><label class="form-label">API Key</label><input class="form-input" id="mm-apikey" type="password" placeholder="sk-..."></div>
-    <div class="form-group"><label class="form-label">Base URL (optional)</label><input class="form-input" id="mm-baseurl" placeholder="https://..."></div>
+    <div class="form-group"><label class="form-label">Base URL（可选）</label><input class="form-input" id="mm-baseurl" placeholder="https://..."></div>
     <div id="mm-test-result" style="font-size:13px;margin-top:8px"></div>
     <div class="modal-footer">
-      <button class="btn btn-ghost" onclick="closeModelModal()">Cancel</button>
-      <button class="btn btn-ghost" onclick="testModelInModal()">🔌 Test</button>
-      <button class="btn btn-primary" onclick="saveModelFromModal()">Save</button>
+      <button class="btn btn-ghost" onclick="closeModelModal()">取消</button>
+      <button class="btn btn-ghost" onclick="testModelInModal()">🔌 测试</button>
+      <button class="btn btn-primary" onclick="saveModelFromModal()">保存</button>
     </div>
   </div>
 </div>
@@ -204,7 +215,7 @@ function showToast(msg) { const t=document.getElementById('toast'); t.textConten
 
 // ── Navigation ───────────────────────────
 const loaded = {};
-const loaders = { welcome:loadWelcome, models:loadModels, heartbeat:loadHeartbeat, skills:loadSkills };
+const loaders = { welcome:loadWelcome, models:loadModels, heartbeat:loadHeartbeat, skills:loadSkills, prompts:loadPrompts };
 
 document.getElementById('sidebar-nav').addEventListener('click', e => {
   const item = e.target.closest('.nav-item');
@@ -229,6 +240,33 @@ function toggleSidebar() {
 loaded.welcome = true;
 loadWelcome();
 
+function toggleTransportConfig() {
+  const el = document.getElementById('transport-cfg');
+  if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+
+async function saveTransportConfig() {
+  const keys = ['TELEGRAM_BOT_TOKEN'];
+  const body = {};
+  let hasValue = false;
+  for (const key of keys) {
+    const input = document.getElementById('cfg-' + key);
+    if (input && input.value.trim()) {
+      body[key] = input.value.trim();
+      hasValue = true;
+    }
+  }
+  if (!hasValue) return showToast('没有要保存的值');
+  try {
+    // Reuse the skill config endpoint — it writes to .env via the same whitelist
+    const r = await api('PUT', '/env', body);
+    if (r.errors && r.errors.length) showToast('部分保存失败: ' + r.errors.map(e=>e.key).join(', '));
+    else showToast('已保存到 .env（重启生效）');
+    loaded.welcome = false;
+    loadWelcome();
+  } catch(e) { showToast('错误: ' + e.message); }
+}
+
 // ═══════════════════════════════════════════
 // Page 0: Welcome
 // ═══════════════════════════════════════════
@@ -239,11 +277,11 @@ async function loadWelcome() {
     let html = '';
 
     // Setup Checklist
-    html += '<div class="card"><div class="card-title">Setup Checklist</div>';
+    html += '<div class="card"><div class="card-title">配置检查</div>';
     const checks = [
-      ['Chat Model', s.config_status.chat_model.set, s.config_status.chat_model.value],
-      ['Chat API Key', s.config_status.chat_api_key.set, ''],
-      ['Transport', s.config_status.telegram_bot_token.set || s.config_status.discord_bot_token.set, s.config_status.telegram_bot_token.set ? 'Telegram' : s.config_status.discord_bot_token.set ? 'Discord' : ''],
+      ['对话模型', s.config_status.chat_model.set, s.config_status.chat_model.value],
+      ['API Key', s.config_status.chat_api_key.set, ''],
+      ['消息通道', s.config_status.telegram_bot_token.set, s.config_status.telegram_bot_token.set ? 'Telegram' : ''],
       ['Owner ID', s.config_status.owner_user_id.set, s.config_status.owner_user_id.value],
     ];
     for (const [label, ok, val] of checks) {
@@ -253,24 +291,38 @@ async function loadWelcome() {
 
     // Stats
     html += '<div class="stat-grid">';
-    html += `<div class="stat-card"><div class="stat-number">${s.skills_count}</div><div class="stat-label">Skills</div></div>`;
-    html += `<div class="stat-card"><div class="stat-number">${s.skills_disabled}</div><div class="stat-label">Disabled</div></div>`;
-    html += `<div class="stat-card"><div class="stat-number" style="font-size:18px">${esc(s.heartbeat_state)}</div><div class="stat-label">Heartbeat</div></div>`;
+    html += `<div class="stat-card"><div class="stat-number">${s.skills_count}</div><div class="stat-label">技能</div></div>`;
+    html += `<div class="stat-card"><div class="stat-number">${s.skills_disabled}</div><div class="stat-label">已禁用</div></div>`;
+    html += `<div class="stat-card"><div class="stat-number" style="font-size:18px">${esc(s.heartbeat_state)}</div><div class="stat-label">心跳</div></div>`;
     html += '</div>';
 
     // Integrations
-    html += '<div class="card"><div class="card-title">Integrations</div>';
+    html += '<div class="card"><div class="card-title">集成</div>';
     for (const [name, info] of Object.entries(s.integrations)) {
       const ok = info.configured;
       html += `<div class="check-row"><span class="check-icon">${ok?'✅':'⬜'}</span><strong>${esc(name)}</strong>`;
-      if (!ok && info.missing.length) html += ` <span style="color:var(--text-soft);font-size:12px;margin-left:6px">Missing: ${info.missing.map(esc).join(', ')}</span>`;
+      if (!ok && info.missing.length) html += ` <span style="color:var(--text-soft);font-size:12px;margin-left:6px">缺少: ${info.missing.map(esc).join(', ')}</span>`;
       html += '</div>';
     }
     html += '</div>';
 
     if (s.first_run) {
-      html = `<div class="card" style="background:var(--primary-bg);border-color:var(--primary)"><strong>👋 Welcome!</strong> Start by configuring your LLM model on the <a href="#" onclick="event.preventDefault();document.querySelector('[data-page=models]').click()">Models</a> page.</div>` + html;
+      html = `<div class="card" style="background:var(--primary-bg);border-color:var(--primary)"><strong>👋 欢迎！</strong> 先到 <a href="#" onclick="event.preventDefault();document.querySelector('[data-page=models]').click()">模型</a> 页面配置你的 LLM 模型。</div>` + html;
     }
+
+    // Transport config (bot token)
+    const hasTelegram = s.config_status.telegram_bot_token.set;
+    html += '<div class="card"><div class="card-title">消息通道</div>';
+    html += `<div class="check-row"><span class="check-icon">${hasTelegram?'✅':'⬜'}</span><strong>Telegram</strong>${hasTelegram?' <span class="badge badge-ok">已配置</span>':''}</div>`;
+    if (!hasTelegram) {
+      html += `<button class="btn btn-ghost btn-sm" style="margin-top:8px" onclick="toggleTransportConfig()">配置</button>`;
+      html += '<div id="transport-cfg" style="display:none;margin-top:12px">';
+      html += '<div class="form-group"><label class="form-label">Telegram Bot Token</label><input class="form-input" id="cfg-TELEGRAM_BOT_TOKEN" type="password" placeholder="123456:ABC-DEF..."></div>';
+      html += '<button class="btn btn-primary btn-sm" onclick="saveTransportConfig()">保存到 .env</button>';
+      html += '<span style="font-size:11px;color:var(--text-soft);margin-left:8px">（重启生效）</span>';
+      html += '</div>';
+    }
+    html += '</div>';
 
     el.innerHTML = html;
   } catch(e) { el.innerHTML = `<div class="card" style="color:var(--danger)">❌ ${esc(e.message)}</div>`; }
@@ -288,41 +340,41 @@ async function loadModels() {
     let html = '';
 
     // Model Registry
-    html += '<div class="card"><div class="card-title">Model Registry</div>';
+    html += '<div class="card"><div class="card-title">模型注册表</div>';
     if (models.length === 0) {
-      html += '<p style="color:var(--text-soft);font-size:13px">No models registered yet. Add one to get started.</p>';
+      html += '<p style="color:var(--text-soft);font-size:13px">还没有注册模型。添加一个开始使用。</p>';
     } else {
-      html += '<table class="tbl"><tr><th>Name</th><th>Provider</th><th>Model</th><th>Key</th><th></th></tr>';
+      html += '<table class="tbl"><tr><th>名称</th><th>服务商</th><th>模型</th><th>Key</th><th></th></tr>';
       for (const m of models) {
         html += `<tr>
           <td><strong>${esc(m.name)}</strong></td>
           <td><span class="badge badge-info">${esc(m.provider)}</span></td>
           <td>${esc(m.model)}</td>
-          <td>${m.api_key_set?'<span class="badge badge-ok">Set</span>':'<span class="badge badge-warn">Missing</span>'}</td>
+          <td>${m.api_key_set?'<span class="badge badge-ok">已设置</span>':'<span class="badge badge-warn">未设置</span>'}</td>
           <td style="text-align:right">
-            <button class="btn btn-ghost btn-sm" onclick="editModel('${esc(m.name)}')">Edit</button>
-            <button class="btn btn-ghost btn-sm" onclick="testModel('${esc(m.name)}',this)">Test</button>
-            <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="deleteModel('${esc(m.name)}')">Del</button>
+            <button class="btn btn-ghost btn-sm" onclick="editModel('${esc(m.name)}')">编辑</button>
+            <button class="btn btn-ghost btn-sm" onclick="testModel('${esc(m.name)}',this)">测试</button>
+            <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="deleteModel('${esc(m.name)}')">删除</button>
           </td></tr>`;
       }
       html += '</table>';
     }
-    html += `<div style="margin-top:12px"><button class="btn btn-primary" onclick="openModelModal()">+ Add Model</button></div></div>`;
+    html += `<div style="margin-top:12px"><button class="btn btn-primary" onclick="openModelModal()">+ 添加模型</button></div></div>`;
 
     // Tier Assignment
-    html += '<div class="card"><div class="card-title">Tier Assignment</div>';
-    html += '<table class="tbl"><tr><th>Tier</th><th>Model</th><th>Source</th><th></th></tr>';
-    for (const tier of ['lite','chat','deep','bg_fast','bg_deep']) {
+    html += '<div class="card"><div class="card-title">层级分配</div>';
+    html += '<table class="tbl"><tr><th>层级</th><th>模型</th><th>来源</th><th></th></tr>';
+    for (const tier of ['lite','chat','deep']) {
       const cfg = tiers[tier] || {};
       const src = cfg.source || 'env';
       const isDb = src.startsWith('db:');
       html += `<tr>
         <td><strong>${esc(tier)}</strong></td>
-        <td>${esc(cfg.model||'(not set)')}</td>
+        <td>${esc(cfg.model||'（未设置）')}</td>
         <td><span class="badge ${isDb?'badge-info':'badge-gray'}">${esc(src)}</span></td>
         <td style="text-align:right">
           <select class="form-input" style="width:auto;display:inline;font-size:12px" onchange="assignTier('${tier}',this.value)">
-            <option value="">Use .env</option>
+            <option value="">使用 .env</option>
             ${models.map(m=>`<option value="${esc(m.name)}" ${isDb && src==='db:'+m.name?'selected':''}>${esc(m.name)}</option>`).join('')}
           </select>
         </td></tr>`;
@@ -335,13 +387,13 @@ async function loadModels() {
 
 function openModelModal(name) {
   _modelEditName = name || null;
-  document.getElementById('model-modal-title').textContent = name ? 'Edit Model' : 'Add Model';
+  document.getElementById('model-modal-title').textContent = name ? '编辑模型' : '添加模型';
   document.getElementById('mm-name').value = name || '';
   document.getElementById('mm-name').disabled = !!name;
   document.getElementById('mm-provider').value = 'openai';
   document.getElementById('mm-model').value = '';
   document.getElementById('mm-apikey').value = '';
-  document.getElementById('mm-apikey').placeholder = name ? '(unchanged)' : 'sk-...';
+  document.getElementById('mm-apikey').placeholder = name ? '（不修改）' : 'sk-...';
   document.getElementById('mm-baseurl').value = '';
   document.getElementById('mm-test-result').innerHTML = '';
   if (name) {
@@ -360,7 +412,7 @@ function closeModelModal() { document.getElementById('model-modal').classList.re
 
 async function saveModelFromModal() {
   const name = document.getElementById('mm-name').value.trim();
-  if (!name) return showToast('Name is required');
+  if (!name) return showToast('名称不能为空');
   const apiKey = document.getElementById('mm-apikey').value;
   const body = {
     name,
@@ -371,19 +423,19 @@ async function saveModelFromModal() {
   };
   try {
     await api('POST','/models', body);
-    showToast('Model saved');
+    showToast('模型已保存');
     closeModelModal();
     loaded.models = false;
     loadModels();
-  } catch(e) { showToast('Error: ' + e.message); }
+  } catch(e) { showToast('错误: ' + e.message); }
 }
 
 function editModel(name) { openModelModal(name); }
 
 async function deleteModel(name) {
-  if (!confirm('Delete model "' + name + '"?')) return;
-  try { await api('DELETE','/models/'+encodeURIComponent(name)); showToast('Deleted'); loaded.models=false; loadModels(); }
-  catch(e) { showToast('Error: ' + e.message); }
+  if (!confirm('确定删除模型 "' + name + '"？')) return;
+  try { await api('DELETE','/models/'+encodeURIComponent(name)); showToast('已删除'); loaded.models=false; loadModels(); }
+  catch(e) { showToast('错误: ' + e.message); }
 }
 
 async function testModel(name, btn) {
@@ -392,8 +444,8 @@ async function testModel(name, btn) {
   btn.disabled = true;
   try {
     const r = await api('POST','/models/'+encodeURIComponent(name)+'/test');
-    if (r.ok) { showToast('✅ Connected' + (r.latency_ms ? ' ('+r.latency_ms+'ms)' : '')); }
-    else { showToast('❌ ' + (r.error||'Failed')); }
+    if (r.ok) { showToast('✅ 已连接' + (r.latency_ms ? '（'+r.latency_ms+'ms）' : '')); }
+    else { showToast('❌ ' + (r.error||'失败')); }
   } catch(e) { showToast('❌ ' + e.message); }
   finally { btn.textContent = orig; btn.disabled = false; }
 }
@@ -403,12 +455,12 @@ async function testModelInModal() {
   const name = document.getElementById('mm-name').value.trim();
   if (!name) return;
   // Save first, then test
-  res.innerHTML = '<span style="color:var(--text-soft)">Saving and testing...</span>';
+  res.innerHTML = '<span style="color:var(--text-soft)">保存并测试中...</span>';
   try {
     await saveModelFromModal();
     const r = await api('POST','/models/'+encodeURIComponent(name)+'/test');
-    if (r.ok) res.innerHTML = `<span style="color:var(--success)">✅ Connected${r.latency_ms?' ('+r.latency_ms+'ms)':''}</span>`;
-    else res.innerHTML = `<span style="color:var(--danger)">❌ ${esc(r.error||'Failed')}</span>`;
+    if (r.ok) res.innerHTML = `<span style="color:var(--success)">✅ 已连接${r.latency_ms?'（'+r.latency_ms+'ms）':''}</span>`;
+    else res.innerHTML = `<span style="color:var(--danger)">❌ ${esc(r.error||'失败')}</span>`;
     // Re-open modal since saveModelFromModal closes it
     document.getElementById('model-modal').classList.add('open');
   } catch(e) { res.innerHTML = `<span style="color:var(--danger)">❌ ${esc(e.message)}</span>`; document.getElementById('model-modal').classList.add('open'); }
@@ -418,10 +470,10 @@ async function assignTier(tier, modelName) {
   try {
     if (modelName) { await api('PUT','/tiers/'+tier, {model_name:modelName}); }
     else { await api('DELETE','/tiers/'+tier); }
-    showToast('Tier ' + tier + ' updated');
+    showToast(tier + ' 层级已更新');
     loaded.models = false;
     loadModels();
-  } catch(e) { showToast('Error: ' + e.message); }
+  } catch(e) { showToast('错误: ' + e.message); }
 }
 
 // ═══════════════════════════════════════════
@@ -435,17 +487,18 @@ async function loadHeartbeat() {
 
     // State card
     html += '<div class="stat-grid">';
-    html += `<div class="stat-card"><div class="stat-number" style="font-size:18px">${esc(state.state||'UNKNOWN')}</div><div class="stat-label">State</div></div>`;
-    html += `<div class="stat-card"><div class="stat-number">${state.proactive_today||0}</div><div class="stat-label">Proactive Today</div></div>`;
-    html += `<div class="stat-card"><div class="stat-number">${state.proactive_limit||'—'}</div><div class="stat-label">Daily Limit</div></div>`;
+    html += `<div class="stat-card"><div class="stat-number" style="font-size:18px">${esc(state.state||'UNKNOWN')}</div><div class="stat-label">状态</div></div>`;
+    html += `<div class="stat-card"><div class="stat-number">${state.proactive_today||0}</div><div class="stat-label">今日主动消息</div></div>`;
+    html += `<div class="stat-card"><div class="stat-number">${state.proactive_limit||'—'}</div><div class="stat-label">每日上限</div></div>`;
     html += '</div>';
 
     // Config groups
     const groups = [
-      { title:'Timing', keys:['HEARTBEAT_INTERVAL_MINUTES','AWAKE_HOUR_START','AWAKE_HOUR_END','FORCE_SLEEP_HOUR','FORCE_WAKE_HOUR'] },
-      { title:'Proactive Limits', keys:['MAX_DAILY_PROACTIVE','PROACTIVE_COOLDOWN_SECONDS','THINK_FALLBACK_MINUTES','LLM_HEARTBEAT_TIMEOUT_SECONDS'] },
-      { title:'Reports', keys:['MORNING_REPORT_HOUR','EVENING_REPORT_HOUR'] },
-      { title:'Maintenance', keys:['MAINTENANCE_HOUR','MAINTENANCE_ENABLED'] },
+      { title:'时间', keys:['HEARTBEAT_INTERVAL_MINUTES','AWAKE_HOUR_START','AWAKE_HOUR_END','FORCE_SLEEP_HOUR','FORCE_WAKE_HOUR'] },
+      { title:'主动消息限制', keys:['MAX_DAILY_PROACTIVE','PROACTIVE_COOLDOWN_SECONDS','THINK_FALLBACK_MINUTES','LLM_HEARTBEAT_TIMEOUT_SECONDS'] },
+      { title:'报告', keys:['MORNING_REPORT_HOUR','EVENING_REPORT_HOUR'] },
+      { title:'维护', keys:['MAINTENANCE_HOUR','MAINTENANCE_ENABLED'] },
+      { title:'Token 限制', keys:['AI_CHAT_MAX_COMPLETION_TOKENS','REPORT_MAX_TOKENS','TOOL_LOOP_MAX_ROUNDS','TOOL_LOOP_PER_TOOL_LIMIT'] },
     ];
 
     for (const g of groups) {
@@ -460,18 +513,55 @@ async function loadHeartbeat() {
           html += `<div style="display:flex;align-items:center;gap:10px;padding:6px 0">
             <label class="toggle"><input type="checkbox" ${val==='true'||val===true?'checked':''} onchange="setHBParam('${key}',this.checked)"><span class="slider"></span></label>
             <span style="font-size:14px">${esc(label)}</span>
-            ${hasOverride?`<button class="btn btn-ghost btn-sm" onclick="resetHBParam('${key}')">Reset</button>`:''}
+            ${hasOverride?`<button class="btn btn-ghost btn-sm" onclick="resetHBParam('${key}')">重置</button>`:''}
           </div>`;
         } else {
           html += `<div class="form-group" style="display:flex;align-items:center;gap:10px">
             <label style="min-width:200px;font-size:13px">${esc(label)}</label>
             <input class="form-input" style="width:100px" type="number" value="${esc(val)}" onchange="setHBParam('${key}',this.value)" data-key="${key}">
-            <span style="font-size:11px;color:var(--text-soft)">default: ${c.env_default}</span>
-            ${hasOverride?`<button class="btn btn-ghost btn-sm" onclick="resetHBParam('${key}')">Reset</button>`:''}
+            <span style="font-size:11px;color:var(--text-soft)">默认: ${c.env_default}</span>
+            ${hasOverride?`<button class="btn btn-ghost btn-sm" onclick="resetHBParam('${key}')">重置</button>`:''}
           </div>`;
         }
       }
       html += '</div>';
+    }
+
+    // ── Observers ──
+    try {
+      const observers = await api('GET','/observers');
+      html += '<div class="card"><div class="card-title">观察器</div>';
+      html += '<table class="tbl"><tr><th>观察器</th><th>间隔（分钟）</th><th>状态</th><th>关联技能</th><th></th></tr>';
+      for (const o of observers) {
+        const statusBadge = !o.enabled
+          ? '<span class="badge badge-err">已禁用</span>'
+          : o.consecutive_errors >= 5
+            ? '<span class="badge badge-err">失败</span>'
+            : o.last_collected_at
+              ? '<span class="badge badge-ok">运行中</span>'
+              : '<span class="badge badge-gray">等待中</span>';
+        const linked = o.skill_name
+          ? `<span class="badge badge-info">${esc(o.skill_name)}</span>`
+          : o.infrastructure
+            ? '<span class="badge badge-gray">基础设施</span>'
+            : '—';
+        const intervalInput = o.infrastructure
+          ? `<span>${o.effective_interval}</span>`
+          : `<input class="form-input" style="width:70px;display:inline;font-size:12px;text-align:center" type="number" min="1" max="1440" value="${o.effective_interval}" onchange="setObserverInterval('${esc(o.name)}',this.value)">`;
+        const resetBtn = o.has_override
+          ? ` <button class="btn btn-ghost btn-sm" onclick="resetObserverInterval('${esc(o.name)}')">重置</button>`
+          : '';
+        html += `<tr>
+          <td><strong>👁 ${esc(o.name)}</strong></td>
+          <td>${intervalInput}${resetBtn}${o.has_override?' <span style="font-size:11px;color:var(--text-soft)">(default: '+o.default_interval+')</span>':''}</td>
+          <td>${statusBadge}</td>
+          <td>${linked}</td>
+          <td style="font-size:11px;color:var(--text-soft)">${o.last_collected_at?'上次: '+new Date(o.last_collected_at).toLocaleTimeString():''}</td>
+        </tr>`;
+      }
+      html += '</table></div>';
+    } catch(e) {
+      html += `<div class="card" style="color:var(--text-soft)">无法加载观察器</div>`;
     }
 
     el.innerHTML = html;
@@ -481,17 +571,33 @@ async function loadHeartbeat() {
 async function setHBParam(key, value) {
   try {
     await api('PUT','/heartbeat/config', {[key]: value});
-    showToast(key + ' updated');
-  } catch(e) { showToast('Error: ' + e.message); }
+    showToast(key + ' 已更新');
+  } catch(e) { showToast('错误: ' + e.message); }
 }
 
 async function resetHBParam(key) {
   try {
     await api('PUT','/heartbeat/config', {[key]: null});
-    showToast(key + ' reset to default');
+    showToast(key + ' 已重置为默认值');
     loaded.heartbeat = false;
     loadHeartbeat();
-  } catch(e) { showToast('Error: ' + e.message); }
+  } catch(e) { showToast('错误: ' + e.message); }
+}
+
+async function setObserverInterval(name, value) {
+  try {
+    await api('PUT','/observers/'+encodeURIComponent(name)+'/config', {interval: parseInt(value)});
+    showToast(name + ' 间隔已更新');
+  } catch(e) { showToast('错误: ' + e.message); }
+}
+
+async function resetObserverInterval(name) {
+  try {
+    await api('PUT','/observers/'+encodeURIComponent(name)+'/config', {interval: null});
+    showToast(name + ' 间隔已重置为默认值');
+    loaded.heartbeat = false;
+    loadHeartbeat();
+  } catch(e) { showToast('错误: ' + e.message); }
 }
 
 // ═══════════════════════════════════════════
@@ -502,35 +608,47 @@ async function loadSkills() {
   try {
     const skills = await api('GET','/skills');
     if (skills.length === 0) {
-      el.innerHTML = '<div class="card"><p style="color:var(--text-soft)">No skills registered.</p></div>';
+      el.innerHTML = '<div class="card"><p style="color:var(--text-soft)">没有注册的技能。</p></div>';
       return;
     }
-    const typeIcons = { tool:'🔧', automation:'🤖', hybrid:'⚡' };
+    const typeIcons = { tool:'🔧', automation:'🤖', hybrid:'⚡', observer:'👁' };
     let html = '';
     for (const s of skills) {
       const icon = typeIcons[s.type] || '📦';
+      const senseBadge = s.has_observer ? ' <span class="badge badge-info">observer</span>' : '';
       html += `<div class="skill-card ${s.enabled?'':'disabled'}">
         <div class="skill-header">
-          <div><span class="skill-name">${icon} ${esc(s.name)}</span> <span class="badge badge-gray">${esc(s.type)}</span></div>
+          <div><span class="skill-name">${icon} ${esc(s.name)}</span> <span class="badge badge-gray">${esc(s.type)}</span>${senseBadge}</div>
           <label class="toggle"><input type="checkbox" ${s.enabled?'checked':''} onchange="toggleSkill('${esc(s.name)}',this.checked)"><span class="slider"></span></label>
         </div>
         ${s.description?`<div class="skill-desc">${esc(s.description)}</div>`:''}
         <div class="skill-tools">${(s.tools||[]).map(t=>`<span class="pill">${esc(t)}</span>`).join('')}</div>`;
 
-      // Config status
-      if (s.requires_config && s.requires_config.length > 0) {
-        html += '<div class="config-list"><div style="font-size:12px;font-weight:600;color:var(--text-soft);margin-bottom:4px">REQUIRED CONFIG</div>';
-        for (const key of s.requires_config) {
-          const set = s.config_status && s.config_status[key];
-          html += `<div class="config-item"><span>${set?'✅':'❌'}</span><code style="font-size:12px">${esc(key)}</code></div>`;
+      // Config section — prefer config_schema if available
+      const hasSchema = s.config_schema && s.config_schema.length > 0;
+      const hasRequires = s.requires_config && s.requires_config.length > 0;
+
+      if (hasSchema || hasRequires) {
+        const configKeys = hasSchema
+          ? s.config_schema.map(e => ({key:e.key, secret:e.secret, desc:e.description, isSet: s.config_status && s.config_status[e.key]}))
+          : s.requires_config.map(k => ({key:k, secret:true, desc:'', isSet: s.config_status && s.config_status[k]}));
+
+        html += '<div class="config-list"><div style="font-size:12px;font-weight:600;color:var(--text-soft);margin-bottom:4px">配置</div>';
+        for (const c of configKeys) {
+          html += `<div class="config-item"><span>${c.isSet?'✅':'❌'}</span><code style="font-size:12px">${esc(c.key)}</code>`;
+          if (c.desc) html += ` <span style="font-size:11px;color:var(--text-soft);margin-left:4px">${esc(c.desc)}</span>`;
+          html += '</div>';
         }
-        html += `<button class="btn btn-ghost btn-sm" style="margin-top:6px" onclick="toggleSkillConfig('${esc(s.name)}')">Configure</button>`;
+        const keysJson = JSON.stringify(configKeys.map(c=>({key:c.key,secret:c.secret}))).replace(/"/g,'&quot;');
+        html += `<button class="btn btn-ghost btn-sm" style="margin-top:6px" onclick="toggleSkillConfig('${esc(s.name)}')">配置</button>`;
         html += `<div id="skill-cfg-${esc(s.name)}" style="display:none;margin-top:8px">`;
-        for (const key of s.requires_config) {
-          html += `<div class="form-group"><label class="form-label">${esc(key)}</label><input class="form-input" id="scfg-${esc(s.name)}-${esc(key)}" type="${key.includes('KEY')||key.includes('SECRET')||key.includes('TOKEN')?'password':'text'}" placeholder="${esc(key)}"></div>`;
+        for (const c of configKeys) {
+          const inputType = c.secret ? 'password' : 'text';
+          html += `<div class="form-group"><label class="form-label">${esc(c.key)}</label><input class="form-input" id="scfg-${esc(s.name)}-${esc(c.key)}" type="${inputType}" placeholder="${esc(c.desc||c.key)}"></div>`;
         }
-        html += `<button class="btn btn-primary btn-sm" onclick="saveSkillConfig('${esc(s.name)}', ${JSON.stringify(s.requires_config).replace(/"/g,'&quot;')})">Save to .env</button></div>`;
-        html += '</div>';
+        html += `<button class="btn btn-primary btn-sm" onclick="saveSkillConfig('${esc(s.name)}')">保存</button>`;
+        html += `<span style="font-size:11px;color:var(--text-soft);margin-left:8px">保存到数据库（立即生效）</span>`;
+        html += '</div></div>';
       }
       html += '</div>';
     }
@@ -541,10 +659,10 @@ async function loadSkills() {
 async function toggleSkill(name, enabled) {
   try {
     await api('PUT','/skills/'+encodeURIComponent(name)+'/enabled', {enabled});
-    showToast(name + (enabled?' enabled':' disabled'));
+    showToast(name + (enabled?' 已启用':' 已禁用'));
     loaded.skills = false;
     loadSkills();
-  } catch(e) { showToast('Error: ' + e.message); }
+  } catch(e) { showToast('错误: ' + e.message); }
 }
 
 function toggleSkillConfig(name) {
@@ -552,22 +670,120 @@ function toggleSkillConfig(name) {
   if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
 }
 
-async function saveSkillConfig(name, keys) {
+async function saveSkillConfig(name) {
+  const cfgDiv = document.getElementById('skill-cfg-' + name);
+  if (!cfgDiv) return;
+  const inputs = cfgDiv.querySelectorAll('.form-input');
   const body = {};
   let hasValue = false;
-  for (const key of keys) {
-    const input = document.getElementById('scfg-' + name + '-' + key);
-    if (input && input.value.trim()) {
+  for (const input of inputs) {
+    if (input.value.trim()) {
+      const key = input.id.replace('scfg-' + name + '-', '');
       body[key] = input.value.trim();
       hasValue = true;
     }
   }
-  if (!hasValue) return showToast('No values to save');
+  if (!hasValue) return showToast('没有要保存的值');
   try {
     const r = await api('PUT','/skills/'+encodeURIComponent(name)+'/config', body);
-    if (r.errors && r.errors.length) showToast('Some keys failed: ' + r.errors.map(e=>e.key).join(', '));
-    else showToast('Config saved to .env (restart to apply)');
-  } catch(e) { showToast('Error: ' + e.message); }
+    if (r.errors && r.errors.length) showToast('部分保存失败: ' + r.errors.map(e=>e.key+': '+e.error).join(', '));
+    else showToast('✅ 配置已保存（立即生效）');
+    loaded.skills = false;
+    loadSkills();
+  } catch(e) { showToast('错误: ' + e.message); }
+}
+
+// ═══════════════════════════════════════════
+// Page 4: Persona
+// ═══════════════════════════════════════════
+let _currentPrompt = null;
+
+function encodePromptPath(name) {
+  // Encode each segment but preserve '/' for FastAPI {name:path}
+  return name.split('/').map(encodeURIComponent).join('/');
+}
+
+async function loadPrompts() {
+  const el = document.getElementById('prompts-content');
+  try {
+    const data = await api('GET','/prompts');
+    const prompts = data.prompts;
+    let html = '';
+
+    // Prompt list
+    html += '<div class="card"><div class="card-title">人格文件</div>';
+    html += '<table class="tbl"><tr><th>文件</th><th>大小</th><th>状态</th><th></th></tr>';
+    for (const p of prompts) {
+      html += `<tr>
+        <td><strong>${esc(p.name)}</strong></td>
+        <td>${p.chars} 字符</td>
+        <td>${p.exists?'<span class="badge badge-ok">存在</span>':'<span class="badge badge-warn">缺失</span>'}</td>
+        <td style="text-align:right"><button class="btn btn-ghost btn-sm" onclick="openPromptEditor('${esc(p.name)}')">${p.exists?'编辑':'创建'}</button></td>
+      </tr>`;
+    }
+    html += '</table></div>';
+
+    // Editor area (hidden until a prompt is selected)
+    html += '<div id="prompt-editor-area" style="display:none">';
+    html += '<div class="card">';
+    html += '<div class="card-title" id="prompt-editor-title">编辑中: —</div>';
+    html += '<textarea class="prompt-editor" id="prompt-textarea" oninput="updatePromptCharCount()"></textarea>';
+    html += '<div class="prompt-meta"><span id="prompt-char-count">0 字符</span>';
+    html += '<div><button class="btn btn-ghost btn-sm" onclick="closePromptEditor()">取消</button> ';
+    html += '<button class="btn btn-primary btn-sm" onclick="savePrompt()">保存</button></div>';
+    html += '</div></div></div>';
+
+    el.innerHTML = html;
+  } catch(e) { el.innerHTML = `<div class="card" style="color:var(--danger)">❌ ${esc(e.message)}</div>`; }
+}
+
+async function openPromptEditor(name) {
+  _currentPrompt = name;
+  const area = document.getElementById('prompt-editor-area');
+  const textarea = document.getElementById('prompt-textarea');
+  const title = document.getElementById('prompt-editor-title');
+  title.textContent = '编辑中: ' + name;
+  textarea.value = '';
+  area.style.display = 'block';
+  try {
+    const data = await api('GET','/prompts/'+encodePromptPath(name));
+    textarea.value = data.content;
+    updatePromptCharCount();
+    textarea.focus();
+  } catch(e) {
+    if (e.message.includes('404')) {
+      // New file
+      textarea.value = '';
+      updatePromptCharCount();
+      textarea.focus();
+    } else {
+      showToast('错误: ' + e.message);
+    }
+  }
+}
+
+function closePromptEditor() {
+  _currentPrompt = null;
+  const area = document.getElementById('prompt-editor-area');
+  if (area) area.style.display = 'none';
+}
+
+function updatePromptCharCount() {
+  const textarea = document.getElementById('prompt-textarea');
+  const counter = document.getElementById('prompt-char-count');
+  if (textarea && counter) counter.textContent = textarea.value.length + ' 字符';
+}
+
+async function savePrompt() {
+  if (!_currentPrompt) return;
+  const textarea = document.getElementById('prompt-textarea');
+  const content = textarea.value;
+  try {
+    const r = await api('POST','/prompts/'+encodePromptPath(_currentPrompt), {content});
+    showToast('✅ 已保存 ' + _currentPrompt + '（' + r.chars + ' 字符）');
+    loaded.prompts = false;
+    loadPrompts();
+  } catch(e) { showToast('错误: ' + e.message); }
 }
 </script>
 </body>

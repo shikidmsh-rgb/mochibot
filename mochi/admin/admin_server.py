@@ -8,7 +8,7 @@ import asyncio
 import logging
 import os
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 log = logging.getLogger(__name__)
 
@@ -19,8 +19,43 @@ try:
 except ImportError:
     HAS_FASTAPI = False
 
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+_PROMPTS_DIR = _PROJECT_ROOT / "prompts"
+
+_ALLOWED_PROMPTS: frozenset[str] = frozenset({
+    "think_system.md",
+    "report_morning.md",
+    "report_evening.md",
+    "memory_extract.md",
+    "system_chat/soul.md",
+    "system_chat/agent.md",
+    "system_chat/user.md",
+    "system_chat/runtime_context.md",
+})
+
+_MAX_PROMPT_SIZE = 50 * 1024  # 50 KB
+
+
+def _prompt_path(name: str) -> Path:
+    """Resolve prompt name to safe absolute path inside prompts directory."""
+    normalized = PurePosixPath(name)
+    if normalized.is_absolute() or ".." in normalized.parts:
+        raise ValueError("Invalid prompt path")
+    return _PROMPTS_DIR / Path(*normalized.parts)
+
+
 if HAS_FASTAPI:
     app = FastAPI(title="MochiBot Setup Portal", docs_url="/api/docs")
+
+    @app.on_event("startup")
+    async def _startup():
+        """Ensure DB and registries are initialized (needed for uvicorn --reload)."""
+        from mochi.db import init_db
+        from mochi import skills as skill_registry
+        from mochi import observers as observer_registry
+        init_db()
+        skill_registry.discover()
+        observer_registry.discover()
 
     # ── Auth ──────────────────────────────────────────────────────────────
 
@@ -65,14 +100,28 @@ if HAS_FASTAPI:
     # Page 0: Status
     # ═══════════════════════════════════════════════════════════════════════
 
+    def _embedding_integration_status(provider: str, _int_status) -> dict:
+        """Dynamic integration status based on EMBEDDING_PROVIDER."""
+        p = (provider or "").strip().lower()
+        if p == "none":
+            return {"configured": False, "missing": [], "disabled": True}
+        if p == "openai":
+            return _int_status("embedding", ["EMBEDDING_API_KEY"])
+        if p == "azure_openai":
+            return _int_status("embedding", ["EMBEDDING_API_KEY", "EMBEDDING_BASE_URL"])
+        if p == "ollama":
+            return _int_status("embedding", ["EMBEDDING_MODEL"])
+        # Legacy auto-detect (EMBEDDING_PROVIDER not set)
+        return _int_status("embedding", ["AZURE_EMBEDDING_ENDPOINT", "AZURE_EMBEDDING_API_KEY"])
+
     @app.get("/api/status", dependencies=[Depends(_verify_token)])
     async def get_status():
         from mochi.config import (
             CHAT_MODEL, CHAT_API_KEY, CHAT_PROVIDER,
-            TELEGRAM_BOT_TOKEN, DISCORD_BOT_TOKEN,
+            TELEGRAM_BOT_TOKEN,
             OWNER_USER_ID, TIER_ROUTING_ENABLED,
             OURA_CLIENT_ID, OURA_CLIENT_SECRET, OURA_REFRESH_TOKEN,
-            TAVILY_API_KEY,
+            EMBEDDING_PROVIDER,
             AZURE_EMBEDDING_ENDPOINT, AZURE_EMBEDDING_API_KEY,
             DB_PATH,
         )
@@ -87,16 +136,15 @@ if HAS_FASTAPI:
             "chat_api_key": {"set": bool(CHAT_API_KEY)},
             "chat_provider": {"set": bool(CHAT_PROVIDER), "value": CHAT_PROVIDER},
             "telegram_bot_token": {"set": bool(TELEGRAM_BOT_TOKEN)},
-            "discord_bot_token": {"set": bool(DISCORD_BOT_TOKEN)},
             "owner_user_id": {"set": bool(OWNER_USER_ID), "value": str(OWNER_USER_ID) if OWNER_USER_ID else ""},
             "tier_routing_enabled": {"set": TIER_ROUTING_ENABLED, "value": str(TIER_ROUTING_ENABLED)},
         }
 
         integrations = {
-            "weather": _integration_status("weather", ["OPENWEATHER_API_KEY", "WEATHER_LAT", "WEATHER_LON"]),
+            "weather": _integration_status("weather", ["WEATHER_CITY"]),
             "oura": _integration_status("oura", ["OURA_CLIENT_ID", "OURA_CLIENT_SECRET", "OURA_REFRESH_TOKEN"]),
-            "web_search": _integration_status("web_search", ["TAVILY_API_KEY"]),
-            "embedding": _integration_status("embedding", ["AZURE_EMBEDDING_ENDPOINT", "AZURE_EMBEDDING_API_KEY"]),
+            "web_search": {"configured": True, "missing": [], "note": "DuckDuckGo — no API key needed"},
+            "embedding": _embedding_integration_status(EMBEDDING_PROVIDER, _integration_status),
         }
 
         # Skill stats
@@ -264,6 +312,11 @@ if HAS_FASTAPI:
         "EVENING_REPORT_HOUR": "int",
         "MAINTENANCE_HOUR": "int",
         "MAINTENANCE_ENABLED": "bool",
+        # Token limits
+        "AI_CHAT_MAX_COMPLETION_TOKENS": "int",
+        "REPORT_MAX_TOKENS": "int",
+        "TOOL_LOOP_MAX_ROUNDS": "int",
+        "TOOL_LOOP_PER_TOOL_LIMIT": "int",
     }
 
     @app.get("/api/heartbeat/config", dependencies=[Depends(_verify_token)])
@@ -317,13 +370,58 @@ if HAS_FASTAPI:
         return value
 
     # ═══════════════════════════════════════════════════════════════════════
+    # Observers (displayed on Heartbeat page)
+    # ═══════════════════════════════════════════════════════════════════════
+
+    @app.get("/api/observers", dependencies=[Depends(_verify_token)])
+    async def api_list_observers():
+        from mochi.observers import get_observers_for_admin
+        return get_observers_for_admin()
+
+    @app.put("/api/observers/{name}/config", dependencies=[Depends(_verify_token)])
+    async def api_set_observer_config(name: str, request: Request):
+        """Set observer config overrides (e.g. interval)."""
+        from mochi.observers import get_observer
+        from mochi.db import set_skill_config, delete_skill_config
+
+        obs = get_observer(name)
+        if not obs:
+            return {"ok": False, "error": f"Unknown observer: {name}"}
+
+        body = await request.json()
+        updated = []
+        errors = []
+
+        for key, value in body.items():
+            if key == "interval":
+                if value is None:
+                    # Reset to default
+                    delete_skill_config(f"_observer:{name}", "interval")
+                    updated.append("interval")
+                else:
+                    try:
+                        iv = int(value)
+                        if iv < 1 or iv > 1440:
+                            errors.append({"key": key, "error": "interval must be 1-1440"})
+                            continue
+                        set_skill_config(f"_observer:{name}", "interval", str(iv))
+                        updated.append("interval")
+                    except (ValueError, TypeError):
+                        errors.append({"key": key, "error": "interval must be an integer"})
+            else:
+                errors.append({"key": key, "error": f"Unknown observer config key: {key}"})
+
+        return {"ok": len(errors) == 0, "updated": updated, "errors": errors}
+
+    # ═══════════════════════════════════════════════════════════════════════
     # Page 3: Skills
     # ═══════════════════════════════════════════════════════════════════════
 
     @app.get("/api/skills", dependencies=[Depends(_verify_token)])
     async def api_list_skills():
         from mochi.skills import get_skill_info_all
-        return get_skill_info_all()
+        from mochi.observers import get_observer_info_all
+        return get_skill_info_all() + get_observer_info_all()
 
     @app.put("/api/skills/{name}/enabled", dependencies=[Depends(_verify_token)])
     async def api_set_skill_enabled(name: str, request: Request):
@@ -335,6 +433,104 @@ if HAS_FASTAPI:
 
     @app.put("/api/skills/{name}/config", dependencies=[Depends(_verify_token)])
     async def api_set_skill_config(name: str, request: Request):
+        """Set config values for a skill. Stored in DB (not .env).
+
+        Also updates os.environ so changes take effect immediately.
+        """
+        body = await request.json()
+        from mochi.skills import get_skill
+        from mochi.db import set_skill_config
+
+        skill = get_skill(name)
+        if not skill:
+            return {"ok": False, "error": f"Unknown skill: {name}"}
+
+        # Validate keys against skill's declared config
+        allowed_keys = set(skill.requires_config)
+        for entry in skill.config_schema:
+            allowed_keys.add(entry["key"])
+        for field in skill._config_schema_typed:
+            allowed_keys.add(field.key)
+
+        written = []
+        errors = []
+        for key, value in body.items():
+            if key not in allowed_keys:
+                errors.append({"key": key, "error": f"Key not declared by skill {name}"})
+                continue
+            set_skill_config(name, key, str(value))
+            os.environ[key] = str(value)  # immediate effect
+            written.append(key)
+
+        # Hot-reload resolved config
+        if written:
+            skill.refresh_config()
+
+        return {"ok": len(errors) == 0, "written": written, "errors": errors}
+
+    @app.get("/api/skills/{name}/config", dependencies=[Depends(_verify_token)])
+    async def api_get_skill_config(name: str):
+        """Get config values for a skill. Merges DB + env + schema defaults.
+
+        Secret values are masked in the response.
+        """
+        from mochi.skills import get_skill
+        from mochi.db import get_skill_config
+
+        skill = get_skill(name)
+        if not skill:
+            return {"ok": False, "error": f"Unknown skill: {name}"}
+
+        db_config = get_skill_config(name)
+        secret_keys = {e["key"] for e in skill.config_schema if e.get("secret")}
+
+        config = []
+        for entry in skill.config_schema:
+            key = entry["key"]
+            # Priority: DB > env > schema default
+            if key in db_config:
+                raw_value = db_config[key]
+            elif os.getenv(key):
+                raw_value = os.getenv(key, "")
+            else:
+                raw_value = entry.get("default", "")
+
+            is_set = bool(raw_value)
+            display_value = "***" if (key in secret_keys and is_set) else raw_value
+
+            config.append({
+                "key": key,
+                "value": display_value,
+                "is_set": is_set,
+                "source": "db" if key in db_config else ("env" if os.getenv(key) else "default"),
+                "secret": key in secret_keys,
+                "type": entry.get("type", "string"),
+                "description": entry.get("description", ""),
+            })
+
+        # Also include requires_config keys not in schema
+        schema_keys = {e["key"] for e in skill.config_schema}
+        for key in skill.requires_config:
+            if key in schema_keys:
+                continue
+            raw_value = db_config.get(key, os.getenv(key, ""))
+            config.append({
+                "key": key,
+                "value": "***" if raw_value else "",
+                "is_set": bool(raw_value),
+                "source": "db" if key in db_config else ("env" if os.getenv(key) else ""),
+                "secret": True,  # assume secret if not in schema
+                "type": "string",
+                "description": "",
+            })
+
+        return {"ok": True, "skill": name, "config": config}
+
+    # ── Generic .env writer ───────────────────────────────────────────────
+
+    @app.put("/api/env", dependencies=[Depends(_verify_token)])
+    async def api_write_env(request: Request):
+        """Write key=value pairs to .env (whitelist enforced)."""
         body = await request.json()
         from mochi.admin.admin_env import write_env_value
         written = []
@@ -346,6 +542,51 @@ if HAS_FASTAPI:
             except (ValueError, PermissionError) as e:
                 errors.append({"key": key, "error": str(e)})
         return {"ok": len(errors) == 0, "written": written, "errors": errors}
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # Page 4: Prompts
+    # ═══════════════════════════════════════════════════════════════════════
+
+    @app.get("/api/prompts", dependencies=[Depends(_verify_token)])
+    async def api_list_prompts():
+        """List all editable prompt files with char counts."""
+        prompts = []
+        for fname in sorted(_ALLOWED_PROMPTS):
+            p = _prompt_path(fname)
+            if p.exists():
+                content = p.read_text(encoding="utf-8")
+                prompts.append({"name": fname, "chars": len(content), "exists": True})
+            else:
+                prompts.append({"name": fname, "chars": 0, "exists": False})
+        return {"prompts": prompts}
+
+    @app.get("/api/prompts/{name:path}", dependencies=[Depends(_verify_token)])
+    async def api_get_prompt(name: str):
+        """Read a single prompt file."""
+        if name not in _ALLOWED_PROMPTS:
+            raise HTTPException(403, f"'{name}' not in allowed list")
+        p = _prompt_path(name)
+        if not p.exists():
+            raise HTTPException(404, "Prompt file not found")
+        return {"name": name, "content": p.read_text(encoding="utf-8")}
+
+    @app.post("/api/prompts/{name:path}", dependencies=[Depends(_verify_token)])
+    async def api_save_prompt(name: str, request: Request):
+        """Save content to a prompt file. Hot-reloads immediately."""
+        if name not in _ALLOWED_PROMPTS:
+            raise HTTPException(403, f"'{name}' not in allowed list")
+        body = await request.json()
+        content = body.get("content", "")
+        if len(content.encode("utf-8")) > _MAX_PROMPT_SIZE:
+            raise HTTPException(413, f"Prompt too large (max {_MAX_PROMPT_SIZE // 1024}KB)")
+        p = _prompt_path(name)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content, encoding="utf-8")
+        # Hot-reload
+        from mochi.prompt_loader import reload_all
+        reload_all()
+        log.info("Admin: saved prompt '%s' (%d chars)", name, len(content))
+        return {"ok": True, "name": name, "chars": len(content)}
 
 
 # ═══════════════════════════════════════════════════════════════════════════

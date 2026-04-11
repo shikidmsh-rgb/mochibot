@@ -1,7 +1,19 @@
 """Tests for skill registry and SKILL.md parsing."""
 
+import os
+import tempfile
+
 import pytest
-from mochi.skills.base import _parse_skill_md, Skill, SkillContext, SkillResult
+
+# Isolated DB for tests that hit get_tools / get_disabled_skills
+_temp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+_temp_db.close()
+os.environ["MOCHIBOT_DB_PATH"] = _temp_db.name
+
+from mochi.db import init_db
+init_db()
+
+from mochi.skills.base import _parse_skill_md, _parse_config_schema, Skill, SkillContext, SkillResult
 
 
 class TestSkillMdParser:
@@ -85,6 +97,48 @@ expose: false
 
 class TestSkillMdParserV2:
     """Tests for v2 SKILL.md format."""
+
+    def test_parse_sense_field(self, tmp_path):
+        """observer: true should be parsed as boolean."""
+        md = tmp_path / "SKILL.md"
+        md.write_text("""---
+name: sensor_skill
+observer: true
+---
+""")
+        result = _parse_skill_md(str(md))
+        assert result["observer"] is True
+
+    def test_parse_sense_false_by_default(self, tmp_path):
+        """Skills without observer: should default to False."""
+        md = tmp_path / "SKILL.md"
+        md.write_text("""---
+name: no_sense
+---
+""")
+        result = _parse_skill_md(str(md))
+        assert result["observer"] is False
+
+    def test_parse_diary_tags(self, tmp_path):
+        """diary: [journal, today_ctx] should be parsed as list."""
+        md = tmp_path / "SKILL.md"
+        md.write_text("""---
+name: diary_skill
+diary: [journal, today_ctx]
+---
+""")
+        result = _parse_skill_md(str(md))
+        assert result["diary"] == ["journal", "today_ctx"]
+
+    def test_parse_diary_empty_by_default(self, tmp_path):
+        """Skills without diary: should default to []."""
+        md = tmp_path / "SKILL.md"
+        md.write_text("""---
+name: no_diary
+---
+""")
+        result = _parse_skill_md(str(md))
+        assert result["diary"] == []
 
     def test_parse_v2_format(self, tmp_path):
         """v2 format: ## Tools / ### tool_name"""
@@ -196,6 +250,33 @@ A tool
 class TestSkillV2Attributes:
     """Test v2 Skill class attributes and methods."""
 
+    def test_has_sense_populated(self):
+        """Skills with observer: true should have has_observer=True."""
+        import mochi.skills as skill_registry
+        skill_registry._skills.clear()
+        skill_registry._tool_map.clear()
+        skill_registry.discover()
+
+        oura = skill_registry.get_skill("oura")
+        assert oura is not None
+        assert oura.has_observer is True
+
+        # A skill without observer: should be False
+        todo = skill_registry.get_skill("todo")
+        assert todo is not None
+        assert todo.has_observer is False
+
+    def test_diary_tags_populated(self):
+        """Diary skill should be discoverable as automation type."""
+        import mochi.skills as skill_registry
+        skill_registry._skills.clear()
+        skill_registry._tool_map.clear()
+        skill_registry.discover()
+
+        diary = skill_registry.get_skill("diary")
+        assert diary is not None
+        assert diary.skill_type == "automation"
+
     def test_has_trigger_simple(self):
         """Test has_trigger with simple string triggers."""
         class DummySkill(Skill):
@@ -234,6 +315,58 @@ class TestSkillV2Attributes:
             assert "type" in info
             assert "multi_turn" in info
             assert "has_usage_rules" in info
+            # V2 fields
+            assert "has_observer" in info
+            assert "diary_tags" in info
+            assert "config_missing" in info
+
+
+class TestSkillConfigValidation:
+    """Test requires_config auto-disable for skills."""
+
+    def test_config_missing_set_on_discovery(self, monkeypatch):
+        """Skills with missing required config should have _config_missing set."""
+        import mochi.skills as skill_registry
+        skill_registry._skills.clear()
+        skill_registry._tool_map.clear()
+
+        # Ensure oura config vars are NOT set
+        monkeypatch.delenv("OURA_CLIENT_ID", raising=False)
+        monkeypatch.delenv("OURA_CLIENT_SECRET", raising=False)
+        monkeypatch.delenv("OURA_REFRESH_TOKEN", raising=False)
+
+        skill_registry.discover()
+        oura = skill_registry.get_skill("oura")
+        assert oura is not None
+        assert len(oura._config_missing) > 0
+        assert "OURA_CLIENT_ID" in oura._config_missing
+
+    def test_config_missing_excludes_from_get_tools(self, monkeypatch):
+        """get_tools() should exclude skills with missing config."""
+        import mochi.skills as skill_registry
+        skill_registry._skills.clear()
+        skill_registry._tool_map.clear()
+
+        monkeypatch.delenv("OURA_CLIENT_ID", raising=False)
+        monkeypatch.delenv("OURA_CLIENT_SECRET", raising=False)
+        monkeypatch.delenv("OURA_REFRESH_TOKEN", raising=False)
+
+        skill_registry.discover()
+        tools = skill_registry.get_tools()
+        tool_names = [t["function"]["name"] for t in tools]
+        assert "get_oura_data" not in tool_names
+
+    def test_config_present_no_missing(self, monkeypatch):
+        """Skills with all config present should have empty _config_missing."""
+        import mochi.skills as skill_registry
+        skill_registry._skills.clear()
+        skill_registry._tool_map.clear()
+
+        # memory skill has no requires_config
+        skill_registry.discover()
+        memory = skill_registry.get_skill("memory")
+        assert memory is not None
+        assert memory._config_missing == []
 
 
 class TestSkillDiscovery:
@@ -300,3 +433,178 @@ class TestSkillExecution:
         result = await skill.execute(ctx)
         assert result.success
         assert "Stand up" in result.output
+
+
+class TestConfigSchema:
+    """Tests for ## Config section parsing in SKILL.md."""
+
+    def test_parse_config_schema(self, tmp_path):
+        """Parse ## Config table from SKILL.md."""
+        md = tmp_path / "SKILL.md"
+        md.write_text("""---
+name: test_skill
+requires_config: [MY_KEY]
+---
+
+## Config
+| Key | Type | Secret | Default | Description |
+|-----|------|--------|---------|-------------|
+| MY_KEY | string | yes | | API key for service |
+| MY_LAT | string | no | 40.7 | Latitude |
+""")
+        result = _parse_skill_md(str(md))
+        schema = result["config_schema"]
+        assert len(schema) == 2
+
+        key_entry = schema[0]
+        assert key_entry["key"] == "MY_KEY"
+        assert key_entry["type"] == "string"
+        assert key_entry["secret"] is True
+        assert key_entry["default"] == ""
+
+        lat_entry = schema[1]
+        assert lat_entry["key"] == "MY_LAT"
+        assert lat_entry["secret"] is False
+        assert lat_entry["default"] == "40.7"
+
+    def test_parse_config_schema_empty(self, tmp_path):
+        """Skills without ## Config should have empty schema."""
+        md = tmp_path / "SKILL.md"
+        md.write_text("---\nname: no_config\n---\n")
+        result = _parse_skill_md(str(md))
+        assert result["config_schema"] == []
+
+    def test_real_skill_config_schema(self):
+        """Oura SKILL.md should have config schema (front-matter config: block)."""
+        import mochi.skills as skill_registry
+        skill_registry._skills.clear()
+        skill_registry._tool_map.clear()
+        skill_registry.discover()
+
+        oura = skill_registry.get_skill("oura")
+        assert oura is not None
+        # Oura config now has diary_journal and diary_today_ctx (from front-matter config:)
+        # Credentials (OURA_CLIENT_ID etc.) moved to requires: env:
+        assert len(oura.config_schema) == 2
+        keys = [e["key"] for e in oura.config_schema]
+        assert "diary_journal" in keys
+        assert "diary_today_ctx" in keys
+
+    def test_weather_config_schema(self):
+        """Weather SKILL.md should have config schema (front-matter config: block)."""
+        import mochi.skills as skill_registry
+        skill_registry._skills.clear()
+        skill_registry._tool_map.clear()
+        skill_registry.discover()
+
+        weather = skill_registry.get_skill("weather")
+        assert weather is not None
+        assert len(weather.config_schema) == 1
+        keys = [e["key"] for e in weather.config_schema]
+        assert "WEATHER_CITY" in keys
+
+
+class TestSkillConfigDb:
+    """Tests for per-skill config DB storage."""
+
+    @pytest.fixture(autouse=True)
+    def fresh_db(self, tmp_path, monkeypatch):
+        import mochi.db as db_module
+        monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "test.db")
+        db_module.init_db()
+
+    def test_get_set_skill_config(self):
+        from mochi.db import get_skill_config, set_skill_config
+        # Initially empty
+        assert get_skill_config("oura") == {}
+        # Set a value
+        set_skill_config("oura", "OURA_CLIENT_ID", "my-client-id")
+        config = get_skill_config("oura")
+        assert config["OURA_CLIENT_ID"] == "my-client-id"
+
+    def test_set_skill_config_upsert(self):
+        from mochi.db import get_skill_config, set_skill_config
+        set_skill_config("oura", "OURA_CLIENT_ID", "old-value")
+        set_skill_config("oura", "OURA_CLIENT_ID", "new-value")
+        assert get_skill_config("oura")["OURA_CLIENT_ID"] == "new-value"
+
+    def test_delete_skill_config(self):
+        from mochi.db import get_skill_config, set_skill_config, delete_skill_config
+        set_skill_config("oura", "OURA_CLIENT_ID", "val")
+        delete_skill_config("oura", "OURA_CLIENT_ID")
+        assert get_skill_config("oura") == {}
+
+    def test_skill_config_excludes_internal_keys(self):
+        """get_skill_config() should not return _enabled key."""
+        from mochi.db import get_skill_config, set_skill_enabled, set_skill_config
+        set_skill_enabled("oura", False)
+        set_skill_config("oura", "OURA_CLIENT_ID", "val")
+        config = get_skill_config("oura")
+        assert "_enabled" not in config
+        assert "OURA_CLIENT_ID" in config
+
+    def test_skill_config_isolation(self):
+        """Config for skill A should not leak into skill B."""
+        from mochi.db import get_skill_config, set_skill_config
+        set_skill_config("oura", "OURA_CLIENT_ID", "oura-key")
+        set_skill_config("weather", "WEATHER_CITY", "Tokyo")
+        assert "OURA_CLIENT_ID" in get_skill_config("oura")
+        assert "OURA_CLIENT_ID" not in get_skill_config("weather")
+
+
+class TestSkillGetConfig:
+    """Tests for Skill.get_config() priority chain."""
+
+    @pytest.fixture(autouse=True)
+    def fresh_db(self, tmp_path, monkeypatch):
+        import mochi.db as db_module
+        monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "test.db")
+        db_module.init_db()
+
+    def test_get_config_from_env(self, monkeypatch):
+        """get_config() should fall back to env when DB is empty."""
+        monkeypatch.setenv("TEST_KEY", "env-value")
+
+        class DummySkill(Skill):
+            async def execute(self, ctx):
+                return SkillResult()
+
+        s = DummySkill()
+        s._name = "dummy"
+        assert s.get_config("TEST_KEY") == "env-value"
+
+    def test_get_config_db_overrides_env(self, monkeypatch):
+        """DB value should take priority over env."""
+        monkeypatch.setenv("TEST_KEY", "env-value")
+        from mochi.db import set_skill_config
+        set_skill_config("dummy", "TEST_KEY", "db-value")
+
+        class DummySkill(Skill):
+            async def execute(self, ctx):
+                return SkillResult()
+
+        s = DummySkill()
+        s._name = "dummy"
+        assert s.get_config("TEST_KEY") == "db-value"
+
+    def test_get_config_schema_default(self):
+        """get_config() should use schema default when DB and env are empty."""
+        class DummySkill(Skill):
+            async def execute(self, ctx):
+                return SkillResult()
+
+        s = DummySkill()
+        s._name = "dummy"
+        s.config_schema = [{"key": "MY_PORT", "type": "string", "secret": False,
+                            "default": "8080", "description": "Port"}]
+        assert s.get_config("MY_PORT") == "8080"
+
+    def test_get_config_empty_fallback(self):
+        """get_config() should return empty string when nothing matches."""
+        class DummySkill(Skill):
+            async def execute(self, ctx):
+                return SkillResult()
+
+        s = DummySkill()
+        s._name = "dummy"
+        assert s.get_config("NONEXISTENT") == ""

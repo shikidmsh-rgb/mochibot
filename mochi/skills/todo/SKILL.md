@@ -1,17 +1,23 @@
 ---
 name: todo
-expose: true
-triggers: [tool_call]
+description: "Todo list — create, list, complete, and delete tasks"
+type: tool
+expose_as_tool: true
 ---
 
-## Tool: manage_todo
+## Tools
 
-Description: Create, list, complete, or delete todo items.
+### manage_todo (L1)
+Create, list, complete, or delete todo items.
 
-### Parameters
-| Name | Type | Required | Description |
-|------|------|----------|-------------|
-| action | string | yes | One of: add, list, complete, delete |
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| action | string (enum: add, list, complete, delete) | yes | What to do |
 | task | string | no | Task description (required for add) |
 | category | string | no | Optional category tag |
 | todo_id | integer | no | Todo ID (required for complete/delete) |
+
+## Usage Rules
+- When user says "I need to X" or "add X to my list", create the todo directly
+- `list` returns incomplete todos by default
+- Mark todos `complete` when user says they finished something on their list
