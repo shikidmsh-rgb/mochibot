@@ -1497,6 +1497,27 @@ def get_last_heartbeat_log() -> dict | None:
     return dict(row) if row else None
 
 
+def get_awake_tick_count_today() -> int:
+    """Count today's awake heartbeat ticks (Think actually ran).
+
+    Used to detect first tick of the day for morning briefing.
+    Excludes passive/sleeping actions so SLEEPING-state ticks don't count.
+    """
+    from mochi.config import logical_today
+    today = logical_today()
+    conn = _connect()
+    row = conn.execute(
+        "SELECT COUNT(*) as cnt FROM heartbeat_log "
+        "WHERE action NOT IN "
+        "('sleeping','observe_only','silent_pause','morning_hold',"
+        "'maintenance','maintenance_error') "
+        "AND created_at LIKE ?",
+        (f"{today}%",),
+    ).fetchone()
+    conn.close()
+    return row["cnt"] if row else 0
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Health Log
 # ═══════════════════════════════════════════════════════════════════════════

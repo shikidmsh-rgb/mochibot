@@ -28,7 +28,6 @@ from mochi.config import (
     SILENCE_PAUSE_DAYS, FALLBACK_WAKE_HOUR,
     MAX_DAILY_PROACTIVE, PROACTIVE_COOLDOWN_SECONDS,
     THINK_FALLBACK_MINUTES, LLM_HEARTBEAT_TIMEOUT_SECONDS,
-    MORNING_REPORT_HOUR, EVENING_REPORT_HOUR,
     MAINTENANCE_HOUR, MAINTENANCE_ENABLED,
     TZ,
     OWNER_USER_ID,
@@ -161,8 +160,6 @@ _last_think_at: datetime | None = None
 _last_proactive_at: datetime | None = None
 _proactive_count_today: int = 0
 _last_proactive_date: str = ""
-_last_morning_report_date: str = ""
-_last_evening_report_date: str = ""
 _last_maintenance_date: str = ""
 
 # Sleep/wake tracking
@@ -477,6 +474,10 @@ async def _observe(user_id: int) -> dict:
     except Exception as e:
         log.warning("Diary refresh failed: %s", e)
 
+    # First tick of the day (for Think morning awareness)
+    from mochi.db import get_awake_tick_count_today
+    observation["is_first_tick_today"] = get_awake_tick_count_today() == 0
+
     return observation
 
 
@@ -519,65 +520,6 @@ def _check_observer_deltas(observation: dict) -> bool:
 
     _prev_observer_raw = dict(observer_data)
     return has_any_delta
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Daily Reports — morning briefing & evening reflection
-# ═══════════════════════════════════════════════════════════════════════════
-
-def _report_due() -> str | None:
-    """Return 'morning' or 'evening' if a scheduled report hasn't been sent today."""
-    now = datetime.now(TZ)
-    today = now.strftime("%Y-%m-%d")
-    hour = now.hour
-    morning_hour = _effective('MORNING_REPORT_HOUR')
-    evening_hour = _effective('EVENING_REPORT_HOUR')
-    if morning_hour >= 0 and hour == morning_hour and today != _last_morning_report_date:
-        return "morning"
-    if evening_hour >= 0 and hour == evening_hour and today != _last_evening_report_date:
-        return "evening"
-    return None
-
-
-async def _send_report(report_type: str, user_id: int, observation: dict) -> None:
-    """Generate and send a daily report using the appropriate prompt."""
-    global _last_morning_report_date, _last_evening_report_date
-
-    prompt = get_prompt(f"report_{report_type}")
-    if not prompt:
-        log.warning("Report prompt not found: report_%s", report_type)
-        return
-
-    obs_text = json.dumps(observation, ensure_ascii=False, indent=2)
-    client = get_client(purpose="think")
-    response = await asyncio.to_thread(
-        client.chat,
-        messages=[
-            {"role": "system", "content": prompt},
-            {"role": "user", "content": f"Current context:\n{obs_text}"},
-        ],
-        temperature=0.7,
-        max_tokens=600,
-    )
-
-    log_usage(
-        response.prompt_tokens, response.completion_tokens,
-        response.total_tokens, model=response.model, purpose=f"report_{report_type}",
-    )
-
-    content = response.content.strip()
-    if content and _send_callback:
-        await _send_callback(user_id, content)
-        save_message(user_id, "assistant", content)
-        log_heartbeat(_state, f"report_{report_type}", content[:100])
-        log.info("Daily %s report sent", report_type)
-        today = datetime.now(TZ).strftime("%Y-%m-%d")
-        if report_type == "morning":
-            _last_morning_report_date = today
-        else:
-            _last_evening_report_date = today
-    else:
-        log.warning("Report skipped: no callback or empty content")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -640,6 +582,10 @@ def _should_think(observation: dict) -> bool:
 
     # Always think on first run
     if _last_think_at is None:
+        return True
+
+    # First tick of the day — always think (morning briefing)
+    if observation.get("is_first_tick_today"):
         return True
 
     minutes_since = (now - _last_think_at).total_seconds() / 60
@@ -718,11 +664,14 @@ def _build_observation_text(obs: dict) -> str:
     sections = []
 
     # Time
-    sections.append(
+    time_lines = (
         f"## Time\n"
         f"- {obs.get('timestamp', '?')}\n"
         f"- {obs.get('weekday', '?')}, {obs.get('time_of_day', '?')}"
     )
+    if obs.get("is_first_tick_today"):
+        time_lines += "\n- **First tick of the day** (morning briefing opportunity)"
+    sections.append(time_lines)
 
     # Messages
     sections.append(
@@ -923,22 +872,16 @@ async def heartbeat_loop() -> None:
                 continue
 
             # ── 4. Morning hold: suppress proactive but still observe/maintain ──
-            # (We continue the loop so maintenance/reports can still run,
+            # (We continue the loop so maintenance can still run,
             #  but skip Think/proactive actions)
 
             # Nightly maintenance (runs once per day at MAINTENANCE_HOUR)
             await _llm_with_timeout(_run_maintenance_if_due(user_id), "maintenance")
 
-            # Observe (cheap: no LLM — needed for both reports and think)
+            # Observe (cheap: no LLM)
             observation = await _observe(user_id)
 
-            # Scheduled daily reports take priority
-            report_type = _report_due()
-            if report_type:
-                await _llm_with_timeout(
-                    _send_report(report_type, user_id, observation), "report")
-
-            # Morning hold: skip Think/proactive (but observation + reports ran)
+            # Morning hold: skip Think/proactive (but observation ran)
             if _morning_hold:
                 log_heartbeat(_state, "morning_hold")
                 await asyncio.sleep(interval)

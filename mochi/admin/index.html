@@ -601,12 +601,9 @@ async function loadHeartbeat() {
       PROACTIVE_COOLDOWN_SECONDS:    ['冷却时间（秒）',      '两条主动消息之间至少间隔多少秒'],
       THINK_FALLBACK_MINUTES:        ['思考回退（分钟）',    'Think 模型超时后回退到 Chat 模型的等待时间'],
       LLM_HEARTBEAT_TIMEOUT_SECONDS: ['LLM 超时（秒）',      '心跳中调用 LLM 的最大等待时间'],
-      MORNING_REPORT_HOUR:           ['早报时间（时）',      '每天几点发送早间报告'],
-      EVENING_REPORT_HOUR:           ['晚报时间（时）',      '每天几点发送晚间报告'],
       MAINTENANCE_HOUR:              ['维护时间（时）',      '每天几点执行维护任务（清理、优化）'],
       MAINTENANCE_ENABLED:           ['启用维护',            '是否启用每日自动维护'],
       AI_CHAT_MAX_COMPLETION_TOKENS: ['对话最大 tokens',     '单次对话回复的 token 上限'],
-      REPORT_MAX_TOKENS:             ['报告最大 tokens',     '早晚报告的 token 上限'],
       TOOL_LOOP_MAX_ROUNDS:          ['工具循环上限',        '单次对话中工具调用的最大轮数'],
       TOOL_LOOP_PER_TOOL_LIMIT:      ['单工具调用上限',      '单次对话中同一个工具的最大调用次数'],
     };
@@ -615,9 +612,8 @@ async function loadHeartbeat() {
     const groups = [
       { title:'时间调度', keys:['HEARTBEAT_INTERVAL_MINUTES','AWAKE_HOUR_START','AWAKE_HOUR_END','FORCE_SLEEP_HOUR','FORCE_WAKE_HOUR'] },
       { title:'主动消息', keys:['MAX_DAILY_PROACTIVE','PROACTIVE_COOLDOWN_SECONDS','THINK_FALLBACK_MINUTES','LLM_HEARTBEAT_TIMEOUT_SECONDS'] },
-      { title:'定时报告', keys:['MORNING_REPORT_HOUR','EVENING_REPORT_HOUR'] },
       { title:'维护', keys:['MAINTENANCE_HOUR','MAINTENANCE_ENABLED'] },
-      { title:'Token 限制', keys:['AI_CHAT_MAX_COMPLETION_TOKENS','REPORT_MAX_TOKENS','TOOL_LOOP_MAX_ROUNDS','TOOL_LOOP_PER_TOOL_LIMIT'] },
+      { title:'Token 限制', keys:['AI_CHAT_MAX_COMPLETION_TOKENS','TOOL_LOOP_MAX_ROUNDS','TOOL_LOOP_PER_TOOL_LIMIT'] },
     ];
 
     for (const g of groups) {
@@ -628,16 +624,15 @@ async function loadHeartbeat() {
         const val = c.override !== null && c.override !== undefined ? c.override : c.env_default;
         const hasOverride = c.override !== null && c.override !== undefined;
         const [label, tip] = hbLabels[key] || [key, ''];
-        const tipHtml = tip ? ` <span style="cursor:help;color:var(--text-soft)" title="${esc(tip)}">ⓘ</span>` : '';
         if (c.type === 'bool') {
-          html += `<div style="display:flex;align-items:center;gap:10px;padding:6px 0">
+          html += `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
             <label class="toggle"><input type="checkbox" ${val==='true'||val===true?'checked':''} onchange="setHBParam('${key}',this.checked)"><span class="slider"></span></label>
-            <span style="font-size:14px">${esc(label)}${tipHtml}</span>
+            <div style="flex:1"><div style="font-size:14px">${esc(label)}</div>${tip?`<div style="font-size:11px;color:var(--text-soft);margin-top:2px">${esc(tip)}</div>`:''}</div>
             ${hasOverride?`<button class="btn btn-ghost btn-sm" onclick="resetHBParam('${key}')">重置</button>`:''}
           </div>`;
         } else {
-          html += `<div class="form-group" style="display:flex;align-items:center;gap:10px">
-            <label style="min-width:220px;font-size:13px">${esc(label)}${tipHtml}</label>
+          html += `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
+            <div style="min-width:220px"><div style="font-size:13px">${esc(label)}</div>${tip?`<div style="font-size:11px;color:var(--text-soft);margin-top:2px">${esc(tip)}</div>`:''}</div>
             <input class="form-input" style="width:100px" type="number" value="${esc(val)}" onchange="setHBParam('${key}',this.value)" data-key="${key}">
             <span style="font-size:11px;color:var(--text-soft)">默认: ${c.env_default}</span>
             ${hasOverride?`<button class="btn btn-ghost btn-sm" onclick="resetHBParam('${key}')">重置</button>`:''}
@@ -732,13 +727,15 @@ async function loadSkills() {
       return;
     }
     const typeIcons = { tool:'🔧', automation:'🤖', hybrid:'⚡', observer:'👁' };
+    const typeLabels = { tool:'工具', automation:'自动化', hybrid:'混合', observer:'观察器' };
     let html = '';
     for (const s of skills) {
       const icon = typeIcons[s.type] || '📦';
-      const senseBadge = s.has_observer ? ' <span class="badge badge-info">observer</span>' : '';
+      const typeLabel = typeLabels[s.type] || s.type;
+      const senseBadge = s.has_observer ? ' <span class="badge badge-info">观察器</span>' : '';
       html += `<div class="skill-card ${s.enabled?'':'disabled'}">
         <div class="skill-header">
-          <div><span class="skill-name">${icon} ${esc(s.name)}</span> <span class="badge badge-gray">${esc(s.type)}</span>${senseBadge}</div>
+          <div><span class="skill-name">${icon} ${esc(s.name)}</span> <span class="badge badge-gray">${esc(typeLabel)}</span>${senseBadge}</div>
           <label class="toggle"><input type="checkbox" ${s.enabled?'checked':''} onchange="toggleSkill('${esc(s.name)}',this.checked)"><span class="slider"></span></label>
         </div>
         ${s.description?`<div class="skill-desc">${esc(s.description)}</div>`:''}

@@ -88,14 +88,6 @@ _PROMPT_META: dict[str, dict[str, str]] = {
         "label": "思考框架 Think",
         "desc": "Agent 内部思考时使用的 system prompt",
     },
-    "report_morning.md": {
-        "label": "早安报告 Morning",
-        "desc": "每日早安消息的生成模板",
-    },
-    "report_evening.md": {
-        "label": "晚安报告 Evening",
-        "desc": "每日晚安消息的生成模板",
-    },
     "memory_extract.md": {
         "label": "记忆提取 Memory",
         "desc": "从对话中提取长期记忆的指令模板",
@@ -435,13 +427,10 @@ if HAS_FASTAPI:
         "PROACTIVE_COOLDOWN_SECONDS": "int",
         "THINK_FALLBACK_MINUTES": "int",
         "LLM_HEARTBEAT_TIMEOUT_SECONDS": "int",
-        "MORNING_REPORT_HOUR": "int",
-        "EVENING_REPORT_HOUR": "int",
         "MAINTENANCE_HOUR": "int",
         "MAINTENANCE_ENABLED": "bool",
         # Token limits
         "AI_CHAT_MAX_COMPLETION_TOKENS": "int",
-        "REPORT_MAX_TOKENS": "int",
         "TOOL_LOOP_MAX_ROUNDS": "int",
         "TOOL_LOOP_PER_TOOL_LIMIT": "int",
     }

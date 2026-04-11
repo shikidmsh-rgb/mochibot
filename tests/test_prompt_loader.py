@@ -21,8 +21,3 @@ class TestGetPrompt:
     def test_memory_extract_loads(self):
         content = get_prompt("memory_extract")
         assert content
-
-    def test_report_morning_loads(self):
-        content = get_prompt("report_morning")
-        assert content
-        assert "morning" in content.lower() or "briefing" in content.lower()

@@ -163,11 +163,6 @@ SILENCE_SLEEP_THRESHOLD_HOURS = _env_float("SILENCE_SLEEP_THRESHOLD_HOURS", 1.0)
 SILENCE_PAUSE_DAYS = _env_float("SILENCE_PAUSE_DAYS", 3.0)
 FALLBACK_WAKE_HOUR = _env_int("FALLBACK_WAKE_HOUR", 10)
 
-# Scheduled daily reports (-1 = disabled, which is the default)
-# Enable by setting MORNING_REPORT_HOUR / EVENING_REPORT_HOUR in .env
-MORNING_REPORT_HOUR = _env_int("MORNING_REPORT_HOUR", -1)
-EVENING_REPORT_HOUR = _env_int("EVENING_REPORT_HOUR", -1)
-
 # ═══════════════════════════════════════════════════════════════════════════
 # Memory
 # ═══════════════════════════════════════════════════════════════════════════
@@ -274,7 +269,6 @@ RECALL_DECAY_HALF_LIFE_DAYS = _env_float("RECALL_DECAY_HALF_LIFE_DAYS", 30.0)
 # ═══════════════════════════════════════════════════════════════════════════
 
 AI_CHAT_MAX_COMPLETION_TOKENS = _env_int("AI_CHAT_MAX_COMPLETION_TOKENS", 4096)
-REPORT_MAX_TOKENS = _env_int("REPORT_MAX_TOKENS", 2048)
 TOOL_LOOP_MAX_ROUNDS = _env_int("TOOL_LOOP_MAX_ROUNDS", 5)
 TOOL_LOOP_PER_TOOL_LIMIT = _env_int("TOOL_LOOP_PER_TOOL_LIMIT", 5)
 
@@ -380,4 +374,13 @@ def validate_config() -> None:
                 "[DEPRECATED] %s is no longer used. Use %s instead. "
                 "See .env.example for the new sleep/wake config.",
                 old_key, new_key,
+            )
+
+    for removed_key in ("MORNING_REPORT_HOUR", "EVENING_REPORT_HOUR", "REPORT_MAX_TOKENS"):
+        if os.getenv(removed_key):
+            _log.warning(
+                "[DEPRECATED] %s is no longer used. Morning briefings are now "
+                "generated automatically by Think on the first heartbeat tick. "
+                "You can safely remove this from .env.",
+                removed_key,
             )

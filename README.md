@@ -225,7 +225,7 @@ THINK_MODEL=gpt-4o-mini      # 心跳 + 维护
 | 性格、语气、名字 | `prompts/system_chat/soul.md` |
 | 记住哪些内容 | `prompts/memory_extract.md` |
 | 什么时候主动联系、催促哪些习惯 | `prompts/think_system.md` |
-| 早晚报告 | `prompts/report_morning.md` / `report_evening.md`（默认关闭——设 `MORNING_REPORT_HOUR` / `EVENING_REPORT_HOUR` 开启） |
+| 早间汇报 | `prompts/think_system.md`（Think 模型在每天第一次心跳时自动生成早报，无需额外配置） |
 | 添加 skill 或 observer | 详见 [CONTRIBUTING.md](CONTRIBUTING.md) |
 
 > 性格文件影响最大——改了它，bot 说话方式就变。
@@ -246,7 +246,7 @@ THINK_MODEL=gpt-4o-mini      # 心跳 + 维护
 - [x] 日记系统（今日状态面板 + 夜间归档）
 - [x] 管理后台（Web UI）
 - [x] 打字节奏（多气泡 + 打字指示器）
-- [x] 早晚报告
+- [x] 早间汇报（Think 驱动）
 - [ ] 语音消息
 - [ ] 多用户支持
 
