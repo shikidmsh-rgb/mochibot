@@ -71,6 +71,8 @@
 
 **1. 下载项目**
 
+打开终端，cd 到你想放项目的目录，然后：
+
 ```bash
 git clone https://github.com/shikidmsh-rgb/mochibot.git
 cd mochibot
