@@ -7,6 +7,7 @@
 轻量自托管 · SQLite · 任意 OpenAI 兼容 API
 
 </div>
+<img width="1110" height="544" alt="image" src="https://github.com/user-attachments/assets/3e81dc4d-b517-43a9-ac37-9899b73e5fea" />
 
 ---
 
