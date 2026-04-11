@@ -69,20 +69,38 @@
 
 **前置条件**：Python 3.11+、一个 LLM API key、一个 [Telegram bot token](https://core.telegram.org/bots#how-do-i-create-a-bot)
 
+**1. 下载项目**
+
 ```bash
 git clone https://github.com/shikidmsh-rgb/mochibot.git
 cd mochibot
+```
+
+**2. 创建并激活虚拟环境**
+
+```bash
 python -m venv .venv
+```
 
-# 激活虚拟环境：
-# Windows PowerShell:  .venv\Scripts\Activate.ps1
-# Windows CMD:         .venv\Scripts\activate.bat
-# macOS / Linux:       source .venv/bin/activate
+激活（选你的终端）：
 
+| 终端 | 命令 |
+|------|------|
+| Windows PowerShell | `.venv\Scripts\Activate.ps1` |
+| Windows CMD | `.venv\Scripts\activate.bat` |
+| macOS / Linux | `source .venv/bin/activate` |
+
+激活成功后命令行前面会出现 `(.venv)` 标志。
+
+**3. 安装依赖**
+
+```bash
 pip install -r requirements.txt
 ```
 
-### 方式一：通过管理后台配置（推荐）
+### **4. 配置** — 选一种方式：
+
+#### 方式一：通过管理后台（推荐）
 
 ```bash
 pip install fastapi uvicorn   # 安装管理后台依赖（只需一次）
@@ -90,20 +108,20 @@ python -m mochi.admin         # 启动管理后台
 ```
 
 打开浏览器访问 http://127.0.0.1:8080 → 在 Web UI 中填写 API key、模型、Telegram token 等配置。
-配好后回到终端按 `Ctrl+C` 关掉 admin，然后启动 bot：
 
-```bash
-python -m mochi.main
-```
-
-### 方式二：手动编辑 .env
+#### 方式二：手动编辑 .env
 
 ```bash
 cp .env.example .env        # 用文本编辑器打开 .env，填入 CHAT_API_KEY、CHAT_MODEL、TELEGRAM_BOT_TOKEN
-python -m mochi.main
 ```
 
----
+### **5. 启动**
+
+如果用了管理后台，先回到终端按 `Ctrl+C` 关掉 admin，然后：
+
+```bash
+python -m mochi.main
+```
 
 打开 Telegram → 找到你的 bot → 发任意消息。第一个发消息的人自动成为 owner。
 
