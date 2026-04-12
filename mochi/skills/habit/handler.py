@@ -9,7 +9,7 @@ Port of private Mochi's habit skill, adapted to MochiBot conventions:
 
 import logging
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from mochi.config import TZ, logical_today
 from mochi.skills.base import Skill, SkillContext, SkillResult
@@ -58,11 +58,42 @@ def _is_paused(habit: dict) -> bool:
 
 class HabitSkill(Skill):
 
+    def _seed_defaults(self, user_id: int) -> None:
+        """Seed default habits from config if user has none yet."""
+        if list_habits(user_id):
+            return
+        raw = self.get_config("default_habits") or ""
+        if not raw:
+            return
+        for entry in raw.split(";"):
+            entry = entry.strip()
+            if not entry:
+                continue
+            parts = entry.split("|")
+            if len(parts) < 2:
+                continue
+            name = parts[0].strip()
+            frequency = parts[1].strip()
+            importance = parts[2].strip() if len(parts) > 2 else "normal"
+            context = parts[3].strip() if len(parts) > 3 else ""
+            if importance not in ("important", "normal"):
+                importance = "normal"
+            if not parse_frequency(frequency):
+                log.warning("Skipping invalid default habit frequency: %s", frequency)
+                continue
+            try:
+                add_habit(user_id=user_id, name=name, frequency=frequency,
+                          category="", importance=importance, context=context)
+            except Exception:
+                log.warning("Failed to seed default habit: %s", name)
+
     async def execute(self, context: SkillContext) -> SkillResult:
         """Dispatch by tool_name + action."""
         args = context.args
         action = args.get("action", "")
         uid = context.user_id
+
+        self._seed_defaults(uid)
 
         if context.tool_name == "query_habit":
             if action == "list":
@@ -331,24 +362,6 @@ class HabitSkill(Skill):
         if len(existing) >= target:
             cycle_label = "today" if cycle == "daily" else "this week"
             return SkillResult(output=f"{habit['name']} already completed {target}x {cycle_label}! 🎉")
-
-        # Guard against parallel tool calls in the same LLM turn (race condition).
-        # Window catches near-simultaneous duplicate calls; legitimate rapid
-        # checkins from separate user messages always have a larger gap.
-        dedup_sec = int(self.get_config("checkin_dedup_seconds") or 5)
-        if existing and count == 1:
-            last_checkin_str = existing[-1].get("checked_at", "")
-            try:
-                last_dt = datetime.fromisoformat(last_checkin_str)
-                if last_dt.tzinfo is None:
-                    last_dt = last_dt.replace(tzinfo=timezone.utc)
-                seconds_since = (datetime.now(last_dt.tzinfo) - last_dt).total_seconds()
-                if seconds_since < dedup_sec:
-                    return SkillResult(
-                        output=f"Duplicate checkin ignored — {habit['name']} was checked in {int(seconds_since)}s ago.",
-                    )
-            except Exception:
-                pass
 
         # Write checkins, stopping at target
         slots_left = target - len(existing)

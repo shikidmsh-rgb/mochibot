@@ -9,10 +9,10 @@ writes:
   diary: [diary]
   db: [habit_checkins]
 config:
-  checkin_dedup_seconds:
-    type: int
-    default: 5
-    description: "Ignore duplicate single check-ins for the same habit within this window (race condition guard)"
+  default_habits:
+    type: str
+    default: "喝水|daily:6|normal|每天至少6杯"
+    description: "Pipe-separated default habits seeded on first use. Format per entry: name|frequency|importance|note. Multiple entries separated by semicolons."
 ---
 
 # Habit Skill
