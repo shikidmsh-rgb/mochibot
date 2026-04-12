@@ -34,6 +34,15 @@ async def run_maintenance(user_id: int = 0) -> dict:
     # 1. Diary archive — handled by heartbeat nightly tick (mochi/heartbeat.py)
     results["diary"] = "Handled by heartbeat"
 
+    # 1b. Notes archive — snapshot notes.md (persistent, not cleared)
+    try:
+        from mochi.skills.note.handler import archive_notes
+        notes_result = archive_notes()
+        results["notes"] = f"Archived {notes_result.get('archived', 0)} snapshot(s)"
+    except Exception as e:
+        log.error("Maintenance notes archive failed: %s", e)
+        results["notes"] = f"Error: {e}"
+
     # 2. Dedup (uses LLM via memory_engine)
     try:
         from mochi.memory_engine import deduplicate_memories

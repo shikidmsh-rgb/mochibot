@@ -183,6 +183,19 @@ MAINTENANCE_HOUR = _env_int("MAINTENANCE_HOUR", 3)
 MAINTENANCE_ENABLED = _env_bool("MAINTENANCE_ENABLED", True)
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Bedtime Tidy
+# ═══════════════════════════════════════════════════════════════════════════
+
+BEDTIME_TIDY_ENABLED = _env_bool("BEDTIME_TIDY_ENABLED", True)
+BEDTIME_TIDY_TIMEOUT_S = _env_int("BEDTIME_TIDY_TIMEOUT_S", 60)
+BEDTIME_TIDY_MAX_ROUNDS = _env_int("BEDTIME_TIDY_MAX_ROUNDS", 5)
+BEDTIME_TIDY_MAX_TOKENS = _env_int("BEDTIME_TIDY_MAX_TOKENS", 1024)
+BEDTIME_TIDY_TOOLS = _env(
+    "BEDTIME_TIDY_TOOLS",
+    "manage_note,manage_todo",
+).split(",")
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Diary
 # ═══════════════════════════════════════════════════════════════════════════
 

@@ -12,6 +12,7 @@
 - **Messages** — 用户沉默时长、今日消息数、用户状态
 - **Today Status** — 习惯/待办/提醒的实时进度（⚡ = 重要习惯）
 - **Today Journal** — 今天已发生的事件和已发送的消息
+- **Notes** — 用户的工作笔记/备忘。这是持久的，写在 notes.md 里。如果用户说"晚点做XXX"，笔记里会有记录，你据此判断是否需要提醒
 - **Core Memory** — 用户的个性化记忆
 - **Maintenance** — 系统维护结果
 - **Upcoming Reminders** — 即将到来的提醒

@@ -29,6 +29,7 @@ from mochi.config import (
     MAX_DAILY_PROACTIVE, PROACTIVE_COOLDOWN_SECONDS,
     THINK_FALLBACK_MINUTES, LLM_HEARTBEAT_TIMEOUT_SECONDS,
     MAINTENANCE_HOUR, MAINTENANCE_ENABLED,
+    BEDTIME_TIDY_ENABLED, BEDTIME_TIDY_TIMEOUT_S,
     TZ,
     OWNER_USER_ID,
 )
@@ -241,26 +242,86 @@ def clear_morning_hold() -> None:
         log.info("Morning hold cleared — proactive messages resumed")
 
 
-def check_sleep_entry(last_user_msg_text: str | None = None) -> None:
+def check_sleep_entry(last_user_msg_text: str | None = None) -> bool:
     """Check if user is going to sleep via goodnight keywords.
 
     Called by transport AFTER the Chat model has already replied.
     Only triggers during night hours to avoid false positives
     (e.g. "昨天好困" during daytime).
+
+    Returns True if sleep was triggered (caller should run bedtime tidy).
     """
     if _state != AWAKE or not last_user_msg_text:
-        return
+        return False
 
     now = datetime.now(TZ)
     hour = now.hour
     # Night window: SLEEP_KEYWORD_HOUR_START (21) to SLEEP_KEYWORD_HOUR_END (4)
     is_night = hour >= SLEEP_KEYWORD_HOUR_START or hour < SLEEP_KEYWORD_HOUR_END
     if not is_night:
-        return
+        return False
 
     text_lower = last_user_msg_text.lower().strip()
     if any(kw in text_lower for kw in SLEEP_KEYWORDS):
-        go_to_sleep(reason=f"keyword: {text_lower[:20]}")
+        return True
+
+    return False
+
+
+async def handle_sleep_keyword(user_id: int) -> None:
+    """Run bedtime tidy then transition to SLEEPING.
+
+    Called by transport layer when check_sleep_entry() returns True.
+    """
+    await _run_bedtime_tidy(user_id, reason="keyword")
+    go_to_sleep(reason="keyword")
+
+
+async def _run_bedtime_tidy(user_id: int, reason: str = "unknown") -> None:
+    """Run the bedtime tidy routine if enabled.
+
+    Gathers today's findings and passes them to chat_bedtime_tidy(),
+    which uses tools (notes, todos) to clean up before saying goodnight.
+    """
+    if not _effective('BEDTIME_TIDY_ENABLED'):
+        return
+
+    try:
+        from mochi.ai_client import chat_bedtime_tidy
+        from mochi.diary import diary
+
+        findings = []
+
+        # Include diary status as findings context
+        diary_status = diary.read(section="今日状態")
+        if diary_status:
+            findings.append({
+                "topic": "today_status",
+                "summary": diary_status[:300],
+            })
+
+        findings.append({
+            "topic": "sleep_transition",
+            "summary": f"Sleep reason: {reason}",
+        })
+
+        tidy_msg = await asyncio.wait_for(
+            chat_bedtime_tidy(findings, user_id),
+            timeout=_effective('BEDTIME_TIDY_TIMEOUT_S'),
+        )
+
+        if tidy_msg and tidy_msg != "[SKIP]" and _send_callback:
+            await _send_callback(user_id, tidy_msg)
+            save_message(user_id, "assistant", tidy_msg)
+            log_heartbeat(_state, "bedtime_tidy", tidy_msg[:100])
+            log.info("Bedtime tidy complete: %s", tidy_msg[:60])
+        elif tidy_msg == "[SKIP]":
+            log.info("Bedtime tidy vetoed by LLM")
+
+    except asyncio.TimeoutError:
+        log.warning("Bedtime tidy timed out after %ds", _effective('BEDTIME_TIDY_TIMEOUT_S'))
+    except Exception as e:
+        log.error("Bedtime tidy failed: %s", e, exc_info=True)
 
 
 def check_silence_sleep() -> dict | None:
@@ -473,6 +534,15 @@ async def _observe(user_id: int) -> dict:
         observation["diary_journal"] = diary.read(section="今日日記")
     except Exception as e:
         log.warning("Diary refresh failed: %s", e)
+
+    # Notes (persistent working memory)
+    try:
+        from mochi.skills.note.handler import read_notes_for_observation
+        notes_section = read_notes_for_observation(compact=True)
+        if notes_section:
+            observation["notes"] = notes_section
+    except Exception as e:
+        log.warning("Notes read failed: %s", e)
 
     # First tick of the day (for Think morning awareness)
     from mochi.db import get_awake_tick_count_today
@@ -690,6 +760,11 @@ def _build_observation_text(obs: dict) -> str:
     if diary_journal:
         sections.append(f"## Today Journal\n{diary_journal}")
 
+    # Notes (persistent working memory from notes.md)
+    notes = obs.get("notes", "")
+    if notes:
+        sections.append(notes)
+
     # Core memory
     core = obs.get("core_memory_preview", "")
     if core:
@@ -871,14 +946,19 @@ async def heartbeat_loop() -> None:
             # ── 2. Silence sleep check (AWAKE path) ──
             sleep_action = check_silence_sleep()
             if sleep_action:
-                if _send_callback:
-                    # Generate goodnight via chat_proactive for persona consistency
-                    hint = sleep_action["context_hint"]
-                    silence_h = sleep_action["silence_hours"]
-                    re = "再次" if hint == "re_sleep" else ""
+                # Run bedtime tidy before sleeping (includes goodnight message)
+                hint = sleep_action["context_hint"]
+                silence_h = sleep_action["silence_hours"]
+                re_tag = "再次" if hint == "re_sleep" else ""
+                await _run_bedtime_tidy(
+                    user_id,
+                    reason=f"silence_{silence_h}h_{re_tag}静默",
+                )
+                # If bedtime tidy didn't send a message, fall back to simple goodnight
+                if _send_callback and _state == AWAKE:
                     finding = {
                         "topic": "sleep_transition",
-                        "summary": f"用户已沉默{silence_h}小时，深夜{re}静默，大概率睡着了",
+                        "summary": f"用户已沉默{silence_h}小时，深夜{re_tag}静默，大概率睡着了",
                     }
                     from mochi.ai_client import chat_proactive
                     goodnight_msg = await _llm_with_timeout(

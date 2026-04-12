@@ -257,8 +257,9 @@ class TelegramTransport(Transport):
             if result:
                 await self._send_chat_result(update.effective_chat.id, result)
             # Check for goodnight keywords AFTER Chat has replied
-            from mochi.heartbeat import check_sleep_entry
-            check_sleep_entry(update.message.text)
+            from mochi.heartbeat import check_sleep_entry, handle_sleep_keyword
+            if check_sleep_entry(update.message.text):
+                await handle_sleep_keyword(user_id)
         else:
             await update.message.reply_text("I'm still waking up... try again in a moment.")
 

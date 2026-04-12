@@ -105,14 +105,14 @@ class TestGoToSleep:
 class TestCheckSleepEntry:
 
     def test_keyword_during_night_triggers_sleep(self, monkeypatch):
-        """Keyword match during night hours triggers go_to_sleep."""
+        """Keyword match during night hours returns True (signals sleep)."""
         import mochi.heartbeat as hb
         # Simulate 22:00
         fake_now = datetime(2026, 3, 28, 22, 0, tzinfo=hb.TZ)
         monkeypatch.setattr(hb, "datetime", _FakeDatetime(fake_now))
 
-        check_sleep_entry("晚安~")
-        assert get_state() == SLEEPING
+        result = check_sleep_entry("晚安~")
+        assert result is True
 
     def test_keyword_during_daytime_no_trigger(self, monkeypatch):
         """Keyword match during daytime does NOT trigger sleep."""
@@ -121,8 +121,8 @@ class TestCheckSleepEntry:
         fake_now = datetime(2026, 3, 28, 14, 0, tzinfo=hb.TZ)
         monkeypatch.setattr(hb, "datetime", _FakeDatetime(fake_now))
 
-        check_sleep_entry("晚安~")
-        assert get_state() == AWAKE  # no transition
+        result = check_sleep_entry("晚安~")
+        assert result is False
 
     def test_no_keyword_no_trigger(self, monkeypatch):
         """Non-keyword text does not trigger sleep."""
@@ -130,18 +130,18 @@ class TestCheckSleepEntry:
         fake_now = datetime(2026, 3, 28, 23, 0, tzinfo=hb.TZ)
         monkeypatch.setattr(hb, "datetime", _FakeDatetime(fake_now))
 
-        check_sleep_entry("明天再聊")
-        assert get_state() == AWAKE
+        result = check_sleep_entry("明天再聊")
+        assert result is False
 
     def test_sleeping_state_noop(self, monkeypatch):
-        """check_sleep_entry does nothing when already SLEEPING."""
+        """check_sleep_entry returns False when already SLEEPING."""
         import mochi.heartbeat as hb
         monkeypatch.setattr(hb, "_state", SLEEPING)
         fake_now = datetime(2026, 3, 28, 22, 0, tzinfo=hb.TZ)
         monkeypatch.setattr(hb, "datetime", _FakeDatetime(fake_now))
 
-        check_sleep_entry("晚安")
-        assert get_state() == SLEEPING
+        result = check_sleep_entry("晚安")
+        assert result is False
 
 
 class TestCheckSilenceSleep:
@@ -366,10 +366,10 @@ class TestFallbackWakeE2E:
 
 
 class TestSleepKeywordE2E:
-    """E2E: user says goodnight keyword → Chat replies → bot sleeps."""
+    """E2E: user says goodnight keyword → Chat replies → check_sleep_entry returns True."""
 
     def test_keyword_after_chat_reply(self, monkeypatch):
-        """check_sleep_entry transitions to SLEEPING after Chat reply."""
+        """check_sleep_entry returns True for sleep keyword after Chat reply."""
         import mochi.heartbeat as hb
 
         # Simulate 22:30
@@ -377,15 +377,15 @@ class TestSleepKeywordE2E:
         monkeypatch.setattr(hb, "datetime", _FakeDatetime(fake_now))
 
         # User said "good night" — Chat already replied at this point
-        hb.check_sleep_entry("good night everyone!")
+        result = hb.check_sleep_entry("good night everyone!")
 
-        assert hb.get_state() == SLEEPING
+        assert result is True
 
     def test_keyword_gn_works(self, monkeypatch):
-        """'gn' keyword triggers sleep at night."""
+        """'gn' keyword returns True at night."""
         import mochi.heartbeat as hb
         fake_now = datetime(2026, 3, 28, 23, 0, tzinfo=hb.TZ)
         monkeypatch.setattr(hb, "datetime", _FakeDatetime(fake_now))
 
-        hb.check_sleep_entry("ok gn")
-        assert hb.get_state() == SLEEPING
+        result = hb.check_sleep_entry("ok gn")
+        assert result is True

@@ -80,6 +80,15 @@ def _build_system_prompt(user_id: int, usage_rules: str = "",
     if core_memory:
         parts.append(f"## What you know about the user\n{core_memory}")
 
+    # Notes (persistent working memory from notes.md)
+    try:
+        from mochi.skills.note.handler import read_notes_for_observation
+        notes_section = read_notes_for_observation(compact=True)
+        if notes_section:
+            parts.append(notes_section)
+    except Exception:
+        pass
+
     if usage_rules:
         parts.append(f"## Tool usage rules\n{usage_rules}")
 
@@ -397,4 +406,149 @@ async def chat_proactive(findings: list[dict], user_id: int) -> str | None:
 
     except Exception as e:
         log.error("chat_proactive failed: %s", e, exc_info=True)
+        return None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Bedtime Tidy — evening review with tools (notes/todos)
+# ═══════════════════════════════════════════════════════════════════════════
+
+_last_bedtime_tidy_date: str = ""
+
+
+async def chat_bedtime_tidy(
+    findings: list[dict],
+    user_id: int,
+) -> str | None:
+    """Bedtime review — tidy todos, clean notes, say goodnight.
+
+    Same pattern as chat_proactive but with its own tools, timeout, and prompt.
+    Injects notes.md into context so the LLM can see current notes.
+    Only runs once per calendar day to prevent duplicate tidying.
+    """
+    global _last_bedtime_tidy_date
+    from mochi.config import (
+        BEDTIME_TIDY_MAX_TOKENS,
+        BEDTIME_TIDY_TOOLS,
+        BEDTIME_TIDY_MAX_ROUNDS,
+        PROACTIVE_CHAT_HISTORY_TURNS,
+        TZ,
+    )
+
+    local_today = datetime.now(TZ).strftime("%Y-%m-%d")
+    if _last_bedtime_tidy_date == local_today:
+        log.info("bedtime_tidy already ran today (%s), skipping", local_today)
+        return None
+
+    # Format findings
+    lines = []
+    for f in findings:
+        line = f"- [{f.get('topic', '?')}] {f.get('summary', '?')}"
+        lines.append(line)
+    findings_text = "\n".join(lines)
+
+    try:
+        # Build system prompt (same soul + runtime context as chat)
+        core_memory = get_core_memory(user_id)
+        system_prompt = _build_system_prompt(user_id, core_memory=core_memory)
+
+        # Inject notes.md so LLM sees current notes without a tool call
+        try:
+            from mochi.skills.note.handler import read_notes_for_observation
+            notes_section = read_notes_for_observation(compact=False)
+            if notes_section:
+                system_prompt += f"\n\n{notes_section}\n"
+        except Exception as e:
+            log.warning("bedtime_tidy: failed to load notes: %s", e)
+
+        # Load history for context awareness
+        history = get_recent_messages(user_id, limit=PROACTIVE_CHAT_HISTORY_TURNS)
+
+        # Load bedtime tidy instruction and inject findings
+        instruction = get_prompt("bedtime_tidy")
+        if not instruction:
+            log.warning("bedtime_tidy prompt not found")
+            return None
+        instruction = instruction.replace("{findings_text}", findings_text)
+
+        # Assemble messages: system + history + instruction
+        messages = [{"role": "system", "content": system_prompt}]
+        for msg in history:
+            messages.append({"role": msg["role"], "content": msg["content"]})
+        messages.append({"role": "user", "content": instruction})
+
+        # Resolve tools from skill registry
+        import mochi.skills as skill_registry
+        tools = skill_registry.get_tools_by_names(BEDTIME_TIDY_TOOLS)
+        tool_name_list = [t["function"]["name"] for t in tools] if tools else []
+        log.info("chat_bedtime_tidy: findings=%d, history=%d, tools=%s",
+                 len(findings), len(history), tool_name_list)
+
+        client = get_client_for_tier("chat")
+
+        # Tool loop (sequential rounds)
+        for round_num in range(BEDTIME_TIDY_MAX_ROUNDS):
+            response = await asyncio.to_thread(
+                client.chat,
+                messages=messages,
+                tools=tools if tools else None,
+                temperature=0.7,
+                max_tokens=BEDTIME_TIDY_MAX_TOKENS,
+            )
+
+            log_usage(
+                response.prompt_tokens, response.completion_tokens,
+                response.total_tokens,
+                tool_calls=len(response.tool_calls),
+                model=response.model,
+                purpose="bedtime_tidy",
+            )
+
+            if not response.tool_calls:
+                break
+
+            # Process tool calls
+            assistant_msg = {"role": "assistant", "content": response.content or ""}
+            if response.tool_calls:
+                assistant_msg["tool_calls"] = [
+                    {
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": {
+                            "name": tc["name"],
+                            "arguments": json.dumps(tc["arguments"]),
+                        },
+                    }
+                    for tc in response.tool_calls
+                ]
+            messages.append(assistant_msg)
+
+            for tc in response.tool_calls:
+                log.info("bedtime_tidy tool: %s(%s)",
+                         tc["name"], json.dumps(tc["arguments"], ensure_ascii=False)[:100])
+                result = await skill_registry.dispatch(
+                    tc["name"], tc["arguments"],
+                    user_id=user_id, channel_id=0,
+                )
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "content": result.output or "No result",
+                })
+
+        reply = (response.content or "").strip()
+
+        if "[SKIP]" in reply:
+            log.info("bedtime_tidy vetoed by LLM")
+            return "[SKIP]"
+
+        if not reply:
+            return None
+
+        log.info("bedtime_tidy generated: %s", reply[:60])
+        _last_bedtime_tidy_date = local_today
+        return reply
+
+    except Exception as e:
+        log.error("chat_bedtime_tidy failed: %s", e, exc_info=True)
         return None
