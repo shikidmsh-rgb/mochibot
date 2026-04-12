@@ -17,7 +17,7 @@ from datetime import datetime, timezone, timedelta
 from mochi.llm import get_client, get_client_for_tier, LLMResponse
 from mochi.prompt_loader import get_prompt
 from mochi.db import (
-    save_message, get_recent_messages, get_core_memory, log_usage,
+    save_message, get_recent_messages, get_core_memory, list_habits, log_usage,
 )
 import mochi.skills as skill_registry
 from mochi.transport import IncomingMessage
@@ -35,18 +35,21 @@ class ChatResult:
 
 
 def _build_system_prompt(user_id: int, usage_rules: str = "",
-                         tool_names: list[str] | None = None) -> str:
+                         tool_names: list[str] | None = None,
+                         core_memory: str = "",
+                         habits: list[dict] | None = None) -> str:
     """Build the system prompt: personality(Chat) + heartbeat context + core memory.
 
     Args:
         user_id: Owner user ID for core memory lookup.
         usage_rules: Optional tool usage rules to inject (from pre-router).
         tool_names: Tool names available this turn (for dynamic context injection).
+        core_memory: Pre-fetched core memory string (avoids redundant DB call).
+        habits: Pre-fetched habit list (avoids redundant DB call).
     """
     from mochi.config import HEARTBEAT_INTERVAL_MINUTES, TIMEZONE_OFFSET_HOURS
     personality = get_prompt("system_chat/soul")
     agent_desc = get_prompt("system_chat/agent")
-    core_memory = get_core_memory(user_id)
 
     # Current local time (respects TIMEZONE_OFFSET_HOURS)
     tz = timezone(timedelta(hours=TIMEZONE_OFFSET_HOURS))
@@ -81,20 +84,15 @@ def _build_system_prompt(user_id: int, usage_rules: str = "",
         parts.append(f"## Tool usage rules\n{usage_rules}")
 
     # Active habits (only when habit tools are available this turn)
-    if user_id and tool_names:
+    if user_id and tool_names and habits:
         habit_tool_names = {"query_habit", "checkin_habit", "edit_habit"}
         if habit_tool_names & set(tool_names):
-            try:
-                from mochi.db import list_habits
-                active_habits = list_habits(user_id)
-                if active_habits:
-                    habit_lines = "  ".join(
-                        f"#{h['id']} {h['name']} ({h['frequency']})"
-                        for h in active_habits
-                    )
-                    parts.append(f"## 习惯列表 (打卡用)\n{habit_lines}")
-            except Exception:
-                pass
+            habit_lines = "  ".join(
+                f"#{h['id']} {h['name']} ({h['frequency']})"
+                for h in habits
+            )
+            if habit_lines:
+                parts.append(f"## 习惯列表 (打卡用)\n{habit_lines}")
 
     return "\n\n".join(parts) if parts else "You are a friendly AI companion."
 
@@ -151,14 +149,23 @@ async def chat(message: IncomingMessage) -> ChatResult:
     # Save user message
     save_message(user_id, "user", text)
 
-    # ── Route: determine which tools to inject ──
+    # ── Parallel pre-fetch: router classification + DB queries ──
     usage_rules = ""
     tier = "chat"  # default tier
+
+    # Pre-fetch habits (fast sync DB) — shared by router hint + system prompt
+    habits = await asyncio.to_thread(list_habits, user_id)
+
     if TOOL_ROUTER_ENABLED:
         from mochi.tool_router import (
             classify_skills, resolve_tier, REQUEST_TOOLS_DEF, validate_escalation,
         )
-        skill_names = await classify_skills(text, user_id=user_id)
+        # Launch router (with habits hint) + remaining DB fetches concurrently
+        skill_names, core_memory, history = await asyncio.gather(
+            classify_skills(text, user_id=user_id, habits=habits),
+            asyncio.to_thread(get_core_memory, user_id),
+            asyncio.to_thread(get_recent_messages, user_id, 20),
+        )
         if skill_names:
             tools = skill_registry.get_tools_by_names(skill_names)
             # Resolve model tier from classified skills
@@ -176,6 +183,11 @@ async def chat(message: IncomingMessage) -> ChatResult:
             tools.append(REQUEST_TOOLS_DEF)
     else:
         tools = skill_registry.get_tools()
+        # Parallel DB fetches even when router is off
+        core_memory, history = await asyncio.gather(
+            asyncio.to_thread(get_core_memory, user_id),
+            asyncio.to_thread(get_recent_messages, user_id, 20),
+        )
 
     # ── Policy: filter denied tools before LLM sees them ──
     from mochi.tool_policy import filter_tools, check as policy_check
@@ -185,8 +197,8 @@ async def chat(message: IncomingMessage) -> ChatResult:
     active_tool_names = [t["function"]["name"] for t in tools if "function" in t]
     system_prompt = _build_system_prompt(
         user_id, usage_rules=usage_rules, tool_names=active_tool_names,
+        core_memory=core_memory, habits=habits,
     )
-    history = get_recent_messages(user_id, limit=20)
 
     # Build messages array
     messages = [{"role": "system", "content": system_prompt}]
@@ -335,7 +347,8 @@ async def chat_proactive(findings: list[dict], user_id: int) -> str | None:
 
     try:
         # Build system prompt (personality + core memory + time, no tools)
-        system_prompt = _build_system_prompt(user_id)
+        core_memory = get_core_memory(user_id)
+        system_prompt = _build_system_prompt(user_id, core_memory=core_memory)
 
         # Load conversation history (shorter window than regular chat)
         history = get_recent_messages(user_id, limit=PROACTIVE_CHAT_HISTORY_TURNS)

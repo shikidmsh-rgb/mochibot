@@ -220,7 +220,8 @@ def _build_habit_hint(active_habits: list[str] | None) -> str:
     )
 
 
-async def classify_skills_llm(message: str, user_id: int | None = None) -> Optional[list[str]]:
+async def classify_skills_llm(message: str, user_id: int | None = None,
+                              habits: list[dict] | None = None) -> Optional[list[str]]:
     """Classify which skills a message needs using LITE tier LLM.
 
     Returns list of skill names, or None on failure (triggers keyword fallback).
@@ -236,13 +237,15 @@ async def classify_skills_llm(message: str, user_id: int | None = None) -> Optio
     if not descriptions:
         return None
 
-    # Fetch active habit names for dynamic hint
+    # Use pre-fetched habits if provided, otherwise fetch
     active_habits: list[str] | None = None
-    if user_id:
+    if habits is not None:
+        active_habits = [h["name"] for h in habits if _is_habit_active_today(h)] or None
+    elif user_id:
         try:
             from mochi.db import list_habits
-            habits = list_habits(user_id)
-            active_habits = [h["name"] for h in habits if _is_habit_active_today(h)] or None
+            raw = list_habits(user_id)
+            active_habits = [h["name"] for h in raw if _is_habit_active_today(h)] or None
         except Exception as e:
             log.warning("Failed to fetch habit hints for pre-router: %s", e)
 
@@ -295,12 +298,13 @@ def keyword_fallback(message: str) -> list[str]:
     return matched
 
 
-async def classify_skills(message: str, user_id: int | None = None) -> list[str]:
+async def classify_skills(message: str, user_id: int | None = None,
+                          habits: list[dict] | None = None) -> list[str]:
     """Main entry point: classify skills for a message.
 
     LLM first, keyword fallback ONLY when LLM fails or returns empty.
     """
-    skills = await classify_skills_llm(message, user_id=user_id)
+    skills = await classify_skills_llm(message, user_id=user_id, habits=habits)
     if skills is not None and len(skills) > 0:
         return skills
     # LLM failed or returned empty — fall back to keywords
