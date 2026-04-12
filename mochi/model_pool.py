@@ -220,6 +220,11 @@ class ModelPool:
             if tier not in self._tiers:
                 log.warning("Unknown tier '%s', falling back to 'chat'", tier)
                 tier = "chat"
+        if tier not in self._tiers:
+            raise ValueError(
+                "No model configured for any tier. "
+                "Add a model via the admin portal or set CHAT_MODEL in .env."
+            )
         return self._tiers[tier]
 
     def get_tier_model(self, tier: str) -> str:

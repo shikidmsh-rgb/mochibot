@@ -32,7 +32,7 @@ from mochi.config import (
     TZ,
     OWNER_USER_ID,
 )
-from mochi.llm import get_client
+from mochi.llm import get_client_for_tier
 from mochi.prompt_loader import get_prompt
 from mochi.db import (
     log_heartbeat,
@@ -625,7 +625,7 @@ async def _think(observation: dict, user_id: int) -> dict | None:
 
     obs_text = _build_observation_text(observation)
 
-    client = get_client(purpose="think")
+    client = get_client_for_tier("deep")
     response = await asyncio.to_thread(
         client.chat,
         messages=[

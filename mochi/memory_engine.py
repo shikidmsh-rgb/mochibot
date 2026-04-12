@@ -27,7 +27,7 @@ from mochi.config import (
     MEMORY_DEMOTE_AFTER_DAYS,
     MEMORY_DEMOTE_MIN_ACCESS,
 )
-from mochi.llm import get_client
+from mochi.llm import get_client_for_tier
 from mochi.prompt_loader import get_prompt
 from mochi.db import (
     get_core_memory, update_core_memory,
@@ -116,7 +116,7 @@ def extract_memories(user_id: int = 0) -> int:
         log.warning("memory_extract prompt not found, skipping extraction")
         return 0
 
-    client = get_client(purpose="think")
+    client = get_client_for_tier("deep")
     response = client.chat(
         messages=[
             {"role": "system", "content": prompt},
@@ -189,7 +189,7 @@ def deduplicate_memories(user_id: int = 0) -> int:
         by_cat[item["category"]].append(item)
 
     total_merged = 0
-    client = get_client(purpose="think")
+    client = get_client_for_tier("deep")
 
     for cat, cat_items in by_cat.items():
         if len(cat_items) < 2:
@@ -275,7 +275,7 @@ def remove_outdated_memories(user_id: int = 0) -> dict:
     errors = 0
     BATCH_SIZE = 200
 
-    client = get_client(purpose="think")
+    client = get_client_for_tier("deep")
 
     for i in range(0, len(items), BATCH_SIZE):
         batch = items[i:i + BATCH_SIZE]
@@ -431,7 +431,7 @@ def rebalance_salience(user_id: int = 0) -> dict:
     current_date = datetime.now(TZ).strftime("%Y-%m-%d %A")
 
     try:
-        client = get_client(purpose="think")
+        client = get_client_for_tier("deep")
         response = client.chat(
             messages=[
                 {"role": "system", "content": SALIENCE_PROMPT.format(current_date=current_date)},
