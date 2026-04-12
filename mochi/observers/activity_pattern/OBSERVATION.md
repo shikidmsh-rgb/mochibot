@@ -1,6 +1,7 @@
 ---
 name: activity_pattern
 interval: 60
+type: context
 enabled: true
 requires_config: []
 ---

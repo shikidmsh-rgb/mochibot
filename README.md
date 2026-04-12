@@ -4,7 +4,7 @@
 
 **一个有记忆、会主动找你、能催你吃药的 AI 陪伴 bot。**
 
-轻量自托管 · SQLite · 任意 OpenAI 兼容 API
+轻量自托管 · SQLite · 支持 OpenAI / Azure / Anthropic
 
 </div>
 <img width="1110" height="544" alt="image" src="https://github.com/user-attachments/assets/3e81dc4d-b517-43a9-ac37-9899b73e5fea" />
@@ -46,6 +46,7 @@
 ### 🔍 信息搜索
 
 - **联网搜索**——问当前事件、新闻、价格，自动用 DuckDuckGo 搜索并总结（无需 API key）
+- **天气查询**——配置城市后自动获取天气，心跳中也会带天气上下文
 
 ### 💰 省钱
 
@@ -81,14 +82,16 @@ cd mochibot
 
 第一个给 bot 发消息的人自动成为 owner。
 
-> **任何 OpenAI 兼容 API 都可以。** 设置 `CHAT_BASE_URL` 指向你的服务商：
+> **支持三种 API 提供商：**
 >
-> | 服务商 | `CHAT_BASE_URL` | `CHAT_MODEL` 示例 |
-> |--------|-----------------|-------------------|
-> | OpenAI（默认） | *（不需要）* | `gpt-4o` |
-> | DeepSeek | `https://api.deepseek.com/v1` | `deepseek-chat` |
-> | Groq | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile` |
-> | Ollama（本地） | `http://localhost:11434/v1` | `llama3` |
+> | 提供商 | `CHAT_PROVIDER` | `CHAT_BASE_URL` | `CHAT_MODEL` 示例 |
+> |--------|-----------------|-----------------|-------------------|
+> | OpenAI（默认） | `openai` | *（不需要）* | `gpt-4o` |
+> | DeepSeek | `openai` | `https://api.deepseek.com/v1` | `deepseek-chat` |
+> | Groq | `openai` | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile` |
+> | Ollama（本地） | `openai` | `http://localhost:11434/v1` | `llama3` |
+> | Azure OpenAI | `azure_openai` | *（你的 Azure 端点）* | `gpt-4o` |
+> | Anthropic Claude | `anthropic` | *（不需要）* | `claude-sonnet-4-20250514` |
 
 ---
 
@@ -271,7 +274,7 @@ THINK_MODEL=gpt-4o-mini      # 心跳 + 维护
 
 ## 路线图
 
-- [x] 任意 OpenAI 兼容 API（DeepSeek、Ollama、Groq 等）
+- [x] 多 API 提供商（OpenAI 兼容 / Azure OpenAI / Anthropic）
 - [x] 双模型架构（Chat + Think）
 - [x] 3 级模型路由 + Pre-Router
 - [x] 持久记忆（三层 + 8 工具 + 夜间维护）

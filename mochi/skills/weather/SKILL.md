@@ -5,7 +5,8 @@ type: hybrid
 expose_as_tool: true
 requires:
   env: [WEATHER_CITY]
-observer: true
+sense:
+  interval: 60
 config:
   WEATHER_CITY:
     type: str

@@ -1,6 +1,7 @@
 ---
 name: oura
 interval: 30
+type: source
 enabled: true
 requires_config: [OURA_CLIENT_ID, OURA_CLIENT_SECRET, OURA_REFRESH_TOKEN]
 skill_name: oura

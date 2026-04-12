@@ -99,25 +99,26 @@ class TestSkillMdParserV2:
     """Tests for v2 SKILL.md format."""
 
     def test_parse_sense_field(self, tmp_path):
-        """observer: true should be parsed as boolean."""
+        """sense: block should set has_sense=True."""
         md = tmp_path / "SKILL.md"
         md.write_text("""---
 name: sensor_skill
-observer: true
+sense:
+  interval: 30
 ---
 """)
         result = _parse_skill_md(str(md))
-        assert result["observer"] is True
+        assert result["has_sense"] is True
 
     def test_parse_sense_false_by_default(self, tmp_path):
-        """Skills without observer: should default to False."""
+        """Skills without sense: should default to False."""
         md = tmp_path / "SKILL.md"
         md.write_text("""---
 name: no_sense
 ---
 """)
         result = _parse_skill_md(str(md))
-        assert result["observer"] is False
+        assert result["has_sense"] is False
 
     def test_parse_diary_tags(self, tmp_path):
         """diary: [journal, today_ctx] should be parsed as list."""
@@ -251,7 +252,7 @@ class TestSkillV2Attributes:
     """Test v2 Skill class attributes and methods."""
 
     def test_has_sense_populated(self):
-        """Skills with observer: true should have has_observer=True."""
+        """Skills with sense: block should have has_observer=True."""
         import mochi.skills as skill_registry
         skill_registry._skills.clear()
         skill_registry._tool_map.clear()

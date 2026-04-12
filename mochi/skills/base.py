@@ -99,6 +99,7 @@ class SkillMeta:
     nudge_meta: NudgeMeta | None = None
     writes_meta: WritesMeta | None = None
     triggers: list[dict] = field(default_factory=list)
+    has_sense: bool = False  # whether skill declares sense: block
 
 
 # ---------------------------------------------------------------------------
@@ -151,7 +152,7 @@ def _parse_skill_md(md_path: str) -> dict:
         "multi_turn": False,
         "requires_config": [],
         "requires_env": [],
-        "observer": False,
+        "has_sense": False,
         "core": False,
         "diary": [],
         "config_schema": [],
@@ -176,6 +177,7 @@ def _parse_skill_md(md_path: str) -> dict:
         _in_nudge = False
         _in_writes = False
         _in_nested_block = False  # for blocks we skip (sense:, etc.)
+        _has_sense = False        # track if sense: block is present
 
         # Accumulators for multi-line blocks
         _config_key = ""
@@ -206,6 +208,7 @@ def _parse_skill_md(md_path: str) -> dict:
 
             if stripped == "sense:" or (stripped.startswith("sense:") and not stripped.split(":", 1)[1].strip()):
                 _in_nested_block = True
+                _has_sense = True
                 _in_sub_skills = _in_requires = _in_config = _in_nudge = _in_writes = False
                 continue
 
@@ -326,8 +329,6 @@ def _parse_skill_md(md_path: str) -> dict:
             elif key == "requires_config":
                 keys = re.findall(r"[A-Z_][A-Z0-9_]+", val)
                 result["requires_config"] = keys
-            elif key == "observer":
-                result["observer"] = val.lower() in ("true", "yes", "1")
             elif key == "core":
                 result["core"] = val.lower() in ("true", "yes", "1")
             elif key == "diary":
@@ -360,6 +361,9 @@ def _parse_skill_md(md_path: str) -> dict:
             )
         if _writes_diary or _writes_db or _in_writes:
             result["writes_meta"] = WritesMeta(diary=_writes_diary, db=_writes_db)
+
+        # Track sense: block presence
+        result["has_sense"] = _has_sense
 
     # ── Extract usage rules ──
     result["usage_rules"] = _extract_usage_rules(content)
@@ -664,7 +668,7 @@ class Skill(ABC):
         self.tier = parsed.get("tier", "chat")
         self.multi_turn = parsed.get("multi_turn", False)
         self.usage_rules = parsed.get("usage_rules", "")
-        self.has_observer = parsed.get("observer", False)
+        self.has_observer = parsed.get("has_sense", False)
         self.core = parsed.get("core", False)
         self.diary_tags = parsed.get("diary", [])
         self.sub_skills = parsed.get("sub_skills", {})
@@ -886,6 +890,7 @@ def scan_skill_metadata(skills_dir: str | None = None) -> list[SkillMeta]:
             nudge_meta=parsed.get("nudge_meta"),
             writes_meta=parsed.get("writes_meta"),
             triggers=parsed.get("triggers", []),
+            has_sense=parsed.get("has_sense", False),
         ))
 
     # ── Startup lint validation ──
@@ -896,6 +901,8 @@ def scan_skill_metadata(skills_dir: str | None = None) -> list[SkillMeta]:
             log.warning("[SkillLint] %s: type=%s but no tools declared", m.name, m.skill_type)
         if m.skill_type == "automation" and not m.triggers:
             log.warning("[SkillLint] %s: type=automation but no triggers declared", m.name)
+        if m.has_sense and not os.path.isfile(os.path.join(skills_dir, m.name, "observer.py")):
+            log.warning("[SkillLint] %s: declares sense: but no observer.py found in skill directory", m.name)
 
     log.info("[SkillMeta] Scanned %d SKILL.md files from %s", len(result), skills_dir)
     return result

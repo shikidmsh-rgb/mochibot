@@ -5,7 +5,8 @@ type: tool
 expose_as_tool: true
 requires:
   env: [OURA_CLIENT_ID, OURA_CLIENT_SECRET, OURA_REFRESH_TOKEN]
-observer: true
+sense:
+  interval: 30
 writes:
   diary: [journal, today_ctx]
   db: [health_log]

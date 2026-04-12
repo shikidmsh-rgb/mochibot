@@ -1,6 +1,7 @@
 ---
 name: weather
 interval: 60
+type: source
 enabled: true
 requires_config: [WEATHER_CITY]
 skill_name: weather

@@ -1,6 +1,7 @@
 ---
 name: recent_conversation
 interval: 20
+type: context
 enabled: true
 requires_config: []
 ---

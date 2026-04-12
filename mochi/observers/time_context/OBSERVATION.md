@@ -1,6 +1,7 @@
 ---
 name: time_context
 interval: 20
+type: context
 enabled: true
 requires_config: []
 ---
