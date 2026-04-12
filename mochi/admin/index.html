@@ -1100,8 +1100,9 @@ async function loadSkills() {
       let toggleHtml;
       if (s.core) {
         toggleHtml = '<span class="badge" style="background:var(--text-soft);color:#fff;font-size:11px">🔒 核心</span>';
-      } else if (!s.enabled && configMissing) {
-        toggleHtml = '<label class="toggle" title="需要先配置必填项"><input type="checkbox" disabled><span class="slider"></span></label>';
+      } else if (s.auto_disabled) {
+        toggleHtml = '<label class="toggle" title="需要先配置必填项"><input type="checkbox" disabled><span class="slider"></span></label>'
+          + ' <span style="font-size:11px;color:var(--danger)">需要配置</span>';
       } else {
         toggleHtml = `<label class="toggle"><input type="checkbox" ${s.enabled?'checked':''} onchange="toggleSkill('${esc(s.name)}',this.checked)"><span class="slider"></span></label>`;
       }
@@ -1130,7 +1131,7 @@ async function loadSkills() {
         }
         const keysJson = JSON.stringify(configKeys.map(c=>({key:c.key,secret:c.secret}))).replace(/"/g,'&quot;');
         html += `<button class="btn btn-ghost btn-sm" style="margin-top:6px" onclick="toggleSkillConfig('${esc(s.name)}')">配置</button>`;
-        html += `<div id="skill-cfg-${esc(s.name)}" style="display:none;margin-top:8px">`;
+        html += `<div id="skill-cfg-${esc(s.name)}" style="display:${configMissing?'block':'none'};margin-top:8px">`;
         for (const c of configKeys) {
           const inputType = c.secret ? 'password' : 'text';
           html += `<div class="form-group"><label class="form-label">${esc(c.key)}</label><input class="form-input" id="scfg-${esc(s.name)}-${esc(c.key)}" type="${inputType}" autocomplete="off" placeholder="${esc(c.desc||c.key)}"></div>`;

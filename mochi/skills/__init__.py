@@ -154,12 +154,15 @@ def get_tools_by_names(skill_names: list[str]) -> list[dict]:
     """Get tool definitions for tools belonging to named skills.
 
     Invalid names are silently skipped (logged at debug level).
+    Skips skills with missing required config.
     """
     tools = []
     for name in skill_names:
         skill = _skills.get(name)
         if not skill:
             log.debug("get_tools_by_names: unknown skill %s, skipped", name)
+            continue
+        if getattr(skill, "_config_missing", None):
             continue
         if skill.expose_as_tool:
             tools.extend(skill.get_tools())
@@ -188,6 +191,9 @@ async def dispatch(tool_name: str, args: dict, user_id: int = 0,
     skill = _skills.get(skill_name)
     if not skill:
         return SkillResult(output=f"Skill not found: {skill_name}", success=False)
+
+    if getattr(skill, "_config_missing", None):
+        return SkillResult(output=f"Skill '{skill_name}' is unavailable (missing config).", success=False)
 
     context = SkillContext(
         trigger="tool_call",
@@ -250,8 +256,12 @@ def get_cron_skills() -> list[tuple[Skill, str]]:
 def get_skill_info_all() -> list[dict]:
     """Return metadata for all registered skills (for admin display)."""
     disabled = get_disabled_skills()
-    return [
-        {
+    result = []
+    for s in _skills.values():
+        config_missing = getattr(s, "_config_missing", [])
+        admin_disabled = s.name in disabled
+        auto_disabled = bool(config_missing)
+        result.append({
             "name": s.name,
             "description": s.description,
             "type": s.skill_type,
@@ -262,7 +272,9 @@ def get_skill_info_all() -> list[dict]:
             "tools": [t["function"]["name"] for t in s.get_tools()] if s.get_tools() else [],
             "has_usage_rules": bool(s.usage_rules),
             "requires_config": getattr(s, "requires_config", []),
-            "enabled": s.name not in disabled,
+            "enabled": not admin_disabled and not auto_disabled,
+            "admin_disabled": admin_disabled,
+            "auto_disabled": auto_disabled,
             "config_status": {
                 **{key: bool(os.getenv(key))
                    for key in getattr(s, "requires_config", [])},
@@ -272,12 +284,11 @@ def get_skill_info_all() -> list[dict]:
             "has_observer": s.has_observer,
             "core": getattr(s, "core", False),
             "diary_tags": s.diary_tags,
-            "config_missing": getattr(s, "_config_missing", []),
+            "config_missing": config_missing,
             "config_schema": s.config_schema,
             "sub_skills": s.sub_skills,
-        }
-        for s in _skills.values()
-    ]
+        })
+    return result
 
 
 def list_skills() -> list[dict]:

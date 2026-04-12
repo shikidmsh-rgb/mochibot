@@ -815,12 +815,17 @@ if HAS_FASTAPI:
     async def api_set_skill_enabled(name: str, request: Request):
         body = await request.json()
         enabled = body.get("enabled", True)
+        from mochi.skills import get_skill
+        skill = get_skill(name)
         # Block disabling core skills
         if not enabled:
-            from mochi.skills import get_skill
-            skill = get_skill(name)
             if skill and getattr(skill, "core", False):
                 return {"ok": False, "error": f"核心技能 {name} 不能关闭"}
+        # Block enabling skills with missing required config
+        if enabled:
+            if skill and getattr(skill, "_config_missing", []):
+                missing = ", ".join(skill._config_missing)
+                return {"ok": False, "error": f"需要先配置: {missing}"}
         from mochi.db import set_skill_enabled
         set_skill_enabled(name, enabled)
         return {"ok": True, "skill": name, "enabled": enabled}
@@ -859,6 +864,11 @@ if HAS_FASTAPI:
         # Hot-reload resolved config
         if written:
             skill.refresh_config()
+            # Recheck required env vars (config may now be satisfied)
+            skill._config_missing = [
+                key for key in skill.requires_config
+                if not os.getenv(key)
+            ]
 
         return {"ok": len(errors) == 0, "written": written, "errors": errors}
 
