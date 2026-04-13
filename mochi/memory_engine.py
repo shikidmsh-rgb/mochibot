@@ -158,21 +158,21 @@ def extract_memories(user_id: int = 0) -> int:
 # Memory Deduplication
 # ═══════════════════════════════════════════════════════════════════════════
 
-DEDUP_PROMPT = """You are a memory maintenance system. Analyze the memory items below and identify duplicates or near-duplicates that should be merged.
+DEDUP_PROMPT = """你是一个记忆维护系统。分析以下记忆条目，找出应该合并的重复或近似重复项。
 
-## Rules
-- Items in the SAME category with very similar content should be merged
-- Keep the HIGHEST importance level when merging
-- If items are related but NOT duplicates (different facts), DON'T merge
-- Be conservative: when in doubt, DON'T merge
+## 规则
+- 同一类别中内容高度相似的条目应合并
+- 合并时保留最高的重要级别
+- 有关联但不是重复的条目（不同事实）不要合并
+- 保守判断：不确定时不合并
 
-## Output Format
-Return a JSON object:
-{"operations": [{"keep": <id_to_keep>, "delete": [<ids_to_delete>], "merged_content": "combined text", "importance": <highest_importance>}]}
+## 输出格式
+返回 JSON 对象：
+{"operations": [{"keep": <保留的id>, "delete": [<删除的id列表>], "merged_content": "合并后的文本", "importance": <最高重要级别>}]}
 
-Return {"operations": []} if no merges needed.
+无需合并时返回：{"operations": []}
 
-## Memory Items
+## 记忆条目
 """
 
 
@@ -233,29 +233,29 @@ def deduplicate_memories(user_id: int = 0) -> int:
 # Outdated Memory Removal
 # ═══════════════════════════════════════════════════════════════════════════
 
-MEMORY_OUTDATED_PROMPT = """You are a memory maintenance system. Analyze the memory items below and identify outdated items that should be deleted.
+MEMORY_OUTDATED_PROMPT = """你是一个记忆维护系统。分析以下记忆条目，找出已过时应删除的条目。
 
-## Current Date
+## 当前日期
 {current_date}
 
-## Rules for outdated detection
-- **Events with deadlines passed**: "meeting next week" but it's now weeks later → delete
-- **Resolved issues**: "has a cold" but that was 3 months ago and no follow-up → delete
-- **Temporary moods**: "feeling down today" from 2 months ago → delete (unless it's a pattern)
-- **DO NOT touch**: Chronic conditions, preferences, long-term facts, recurring patterns
-- Be conservative: when in doubt, keep it
+## 过时判断规则
+- **已过期的事件**："下周有会议"但已过去数周 → 删除
+- **已解决的问题**："感冒了"但那是3个月前且无后续 → 删除
+- **临时情绪**：2个月前的"今天心情不好" → 删除（除非是反复出现的模式）
+- **不要删除**：慢性病情、偏好、长期事实、反复出现的模式
+- 保守判断：不确定时保留
 
-## Response format
-Return a JSON object:
+## 输出格式
+返回 JSON 对象：
 {{"operations": [
   {{
     "item_id": 123,
     "action": "delete",
-    "reason": "brief reason for deletion"
+    "reason": "删除原因简述"
   }}
 ]}}
 
-If nothing is outdated, return: {{"operations": []}}
+无过时内容时返回：{{"operations": []}}
 """
 
 
@@ -325,30 +325,30 @@ def remove_outdated_memories(user_id: int = 0) -> dict:
 # Salience Rebalancing
 # ═══════════════════════════════════════════════════════════════════════════
 
-SALIENCE_PROMPT = """You are a memory salience evaluator. Review candidate memories whose importance may need adjustment based on how frequently they appear in conversations.
+SALIENCE_PROMPT = """你是一个记忆重要度评估器。审查以下候选记忆，根据对话中的访问频率判断是否需要调整重要度。
 
-## Current Date
+## 当前日期
 {current_date}
 
-## Rules
-- You receive CANDIDATE memories that were pre-filtered by access frequency
-- For PROMOTE candidates (importance 1→2): these are frequently accessed memories currently rated as routine (★1). Promote if the topic genuinely matters to the user (repeated mentions = real interest), NOT if it's just background noise (e.g. weather queries, routine greetings)
-- For DEMOTE candidates (importance 2→1): these are memories rated as important (★2) but not accessed for a long time. Demote only if the topic seems truly abandoned, NOT if it's a stable long-term fact (health conditions, preferences, etc.)
-- NEVER touch importance=3 items (critical, human-designated)
-- Be conservative: when in doubt, do NOT change
-- Consider the content semantics, not just the numbers
+## 规则
+- 你收到的是经过规则预筛选的候选记忆
+- **提升候选**（importance 1→2）：这些是频繁被访问但当前评级为日常（★1）的记忆。如果主题确实对用户重要（反复提及=真正关心），则提升；如果只是背景噪音（如天气查询、日常问候），则不提升
+- **降级候选**（importance 2→1）：这些是评级为重要（★2）但长期未被访问的记忆。仅在主题确实被放弃时降级；如果是稳定的长期事实（健康状况、偏好等），则不降级
+- **绝不触碰** importance=3 的条目（关键，人工指定）
+- 保守判断：不确定时不修改
+- 综合考虑内容语义，不只看数字
 
-## Output Format (JSON)
+## 输出格式 (JSON)
 {{"operations": [
   {{
     "item_id": 123,
     "action": "promote",
     "new_importance": 2,
-    "reason": "brief reason"
+    "reason": "原因简述"
   }}
 ]}}
 
-If no changes needed, return: {{"operations": []}}
+无需修改时返回：{{"operations": []}}
 """
 
 
