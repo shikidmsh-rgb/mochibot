@@ -58,11 +58,12 @@ class WeatherObserver(Observer):
         summary = f"{temp_c}°C, {description}"
 
         return {
+            "city": city,
             "temperature_c": temp_c,
             "feels_like_c": feels_like,
             "condition": condition,
             "description": description,
             "humidity": humidity,
             "wind_kph": wind_kph,
-            "summary": summary,
+            "summary": f"{city}: {summary}",
         }
