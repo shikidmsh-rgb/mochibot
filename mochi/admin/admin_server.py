@@ -11,6 +11,7 @@ import hmac
 import logging
 import os
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -153,6 +154,110 @@ def _kill_orphaned_bots():
                             pass
     except (subprocess.CalledProcessError, FileNotFoundError):
         pass  # no matching processes or command not available
+
+
+def _check_port(host: str, port: int) -> None:
+    """Best-effort check: if port is held by a stale mochi process, kill it.
+
+    If the port is held by a foreign process (or detection fails), this
+    function returns silently — the caller's OSError handler will catch
+    the actual bind failure from uvicorn.
+    """
+    # 1. Quick socket probe
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind((host, port))
+        sock.close()
+        return  # port is free
+    except OSError:
+        sock.close()
+
+    # 2. Find PID holding the port
+    pid = _find_port_owner(port)
+    if pid is None or pid == os.getpid():
+        return  # can't identify owner — let uvicorn error handle it
+
+    # 3. Check if it's a mochi process
+    cmdline = _get_process_cmdline(pid)
+    if cmdline and ("mochi.admin" in cmdline or "mochi.main" in cmdline):
+        log.warning("发现旧的 MochiBot 进程 (PID %d)，正在关闭...", pid)
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            return
+        # Wait up to 3s for port to free
+        for _ in range(6):
+            time.sleep(0.5)
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.bind((host, port))
+                s.close()
+                log.info("旧进程已关闭，端口 %d 已释放", port)
+                return
+            except OSError:
+                s.close()
+        log.warning("旧进程未能及时退出，继续尝试启动...")
+
+
+def _find_port_owner(port: int) -> int | None:
+    """Return PID of the process holding the given port, or None."""
+    try:
+        if sys.platform == "win32":
+            out = subprocess.check_output(
+                ["netstat", "-ano", "-p", "TCP"],
+                text=True, stderr=subprocess.DEVNULL,
+            )
+            for line in out.splitlines():
+                parts = line.split()
+                if len(parts) >= 5 and f":{port}" in parts[1] and parts[3] == "LISTENING":
+                    return int(parts[4])
+        else:
+            # Try lsof first, fall back to ss
+            for cmd in [["lsof", "-ti", f":{port}"], ["ss", "-tlnp", f"sport = :{port}"]]:
+                try:
+                    out = subprocess.check_output(
+                        cmd, text=True, stderr=subprocess.DEVNULL,
+                    )
+                    if "lsof" in cmd[0]:
+                        for line in out.strip().splitlines():
+                            if line.strip().isdigit():
+                                return int(line.strip())
+                    else:
+                        # ss output: parse pid= from the line
+                        import re
+                        m = re.search(r"pid=(\d+)", out)
+                        if m:
+                            return int(m.group(1))
+                except (subprocess.CalledProcessError, FileNotFoundError):
+                    continue
+    except Exception:
+        pass
+    return None
+
+
+def _get_process_cmdline(pid: int) -> str | None:
+    """Return the command line of a process by PID, or None."""
+    try:
+        if sys.platform == "win32":
+            out = subprocess.check_output(
+                ["wmic", "process", "where", f"ProcessId={pid}",
+                 "get", "CommandLine"],
+                text=True, stderr=subprocess.DEVNULL,
+            )
+            lines = [l.strip() for l in out.strip().splitlines()[1:] if l.strip()]
+            return lines[0] if lines else None
+        else:
+            # /proc is most reliable on Linux
+            try:
+                return Path(f"/proc/{pid}/cmdline").read_text().replace("\x00", " ")
+            except OSError:
+                out = subprocess.check_output(
+                    ["ps", "-p", str(pid), "-o", "args="],
+                    text=True, stderr=subprocess.DEVNULL,
+                )
+                return out.strip() or None
+    except Exception:
+        return None
 
 
 atexit.register(_kill_bot)
@@ -1472,6 +1577,8 @@ async def start_admin_server(port: int = 8080, bind: str = "127.0.0.1"):
     if not HAS_FASTAPI:
         raise ImportError("fastapi/uvicorn not installed")
 
+    _check_port(bind, port)
+
     _LOCALHOST = {"127.0.0.1", "localhost", "::1"}
     if bind not in _LOCALHOST:
         log.warning(
@@ -1485,4 +1592,10 @@ async def start_admin_server(port: int = 8080, bind: str = "127.0.0.1"):
         log_level="warning",  # don't spam bot logs with HTTP access logs
     )
     server = uvicorn.Server(config)
-    await server.serve()
+    try:
+        await server.serve()
+    except OSError as e:
+        if "address" in str(e).lower() or getattr(e, "errno", 0) in (98, 10048):
+            log.warning("Admin portal 端口 %d 被占用，跳过启动 (bot 不受影响)", port)
+            return
+        raise
