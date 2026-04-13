@@ -55,7 +55,7 @@ fi
 
 # ── Install dependencies ──
 echo "  Installing dependencies..."
-.venv/bin/pip install -r requirements.txt fastapi uvicorn sqlite-vec aiohttp --quiet
+.venv/bin/pip install -r requirements.txt fastapi uvicorn cryptography sqlite-vec aiohttp --quiet
 echo "  [OK] Dependencies installed."
 
 # ── Detect desktop environment ──

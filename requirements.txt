@@ -8,9 +8,12 @@ httpx>=0.27.0
 tiktoken>=0.7.0
 ddgs>=8.0.0
 
-# Optional: Admin Portal (web UI for setup & config)
-# fastapi>=0.100.0
-# uvicorn>=0.20.0
+# Admin Portal (web UI for setup & config)
+fastapi>=0.100.0
+uvicorn>=0.20.0
+
+# API key encryption at rest
+cryptography>=42.0.0
 
 # Optional: Anthropic provider
 # anthropic>=0.25.0

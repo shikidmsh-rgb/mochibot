@@ -110,7 +110,7 @@ cd mochibot
 ### Docker 部署（推荐）
 
 ```bash
-git clone https://github.com/mochi-bot/mochibot.git && cd mochibot
+git clone https://github.com/shikidmsh-rgb/mochibot.git && cd mochibot
 cp .env.example .env        # 填写 CHAT_API_KEY、CHAT_MODEL、TELEGRAM_BOT_TOKEN
 docker compose up -d         # 后台运行
 ```
@@ -127,7 +127,7 @@ docker compose up -d         # 后台运行
 <summary>展开步骤</summary>
 
 ```bash
-git clone https://github.com/mochi-bot/mochibot.git && cd mochibot
+git clone https://github.com/shikidmsh-rgb/mochibot.git && cd mochibot
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env        # 填写必要配置
@@ -228,7 +228,7 @@ server {
 | `HEARTBEAT_INTERVAL_MINUTES` | `20` | 心跳循环间隔 |
 | `AWAKE_HOUR_START` / `END` | `7` / `23` | 心跳在这些时间外休眠 |
 | `MAX_DAILY_PROACTIVE` | `10` | 每日主动消息上限 |
-| `TIMEZONE_OFFSET_HOURS` | `0` | 你的 UTC 偏移 |
+| `TIMEZONE_OFFSET_HOURS` | `8` | 你的 UTC 偏移 |
 
 <details>
 <summary>进阶：3 级路由、Pre-Router、向量嵌入、集成</summary>

@@ -21,13 +21,17 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "httpx>=0.27.0",
     "tiktoken>=0.7.0",
+    "ddgs>=8.0.0",
+    "fastapi>=0.100.0",
+    "uvicorn>=0.20.0",
+    "cryptography>=42.0.0",
 ]
 
 [project.optional-dependencies]
 anthropic = ["anthropic>=0.25.0"]
-search = ["tavily-python>=0.3.0"]
 vectordb = ["sqlite-vec>=0.1.6"]
-all = ["anthropic>=0.25.0", "tavily-python>=0.3.0", "sqlite-vec>=0.1.6"]
+wechat = ["aiohttp>=3.9"]
+all = ["anthropic>=0.25.0", "sqlite-vec>=0.1.6", "aiohttp>=3.9"]
 
 [project.urls]
 Homepage = "https://github.com/shikidmsh-rgb/mochibot"

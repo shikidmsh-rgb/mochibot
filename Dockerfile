@@ -4,11 +4,7 @@ WORKDIR /app
 
 # Install dependencies first (cache-friendly)
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt sqlite-vec
-
-# Optional: admin portal dependencies
-# Uncomment if you want the web UI
-# RUN pip install --no-cache-dir fastapi uvicorn
+RUN pip install --no-cache-dir -r requirements.txt sqlite-vec aiohttp
 
 COPY . .
 

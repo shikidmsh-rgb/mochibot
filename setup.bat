@@ -16,7 +16,16 @@ if %errorlevel% neq 0 (
     pause
     exit /b 1
 )
-echo  [OK] Python found
+
+REM Check Python version >= 3.11
+for /f "tokens=*" %%v in ('python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"') do set PY_VERSION=%%v
+for /f "tokens=*" %%v in ('python -c "import sys; print(1 if sys.version_info >= (3, 11) else 0)"') do set PY_OK=%%v
+if "%PY_OK%"=="0" (
+    echo  [ERROR] Python 3.11+ required, found %PY_VERSION%
+    pause
+    exit /b 1
+)
+echo  [OK] Python %PY_VERSION%
 
 REM Create venv (recreate if broken)
 if exist .venv\Scripts\activate.bat (

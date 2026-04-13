@@ -374,11 +374,11 @@ def validate_config() -> None:
     issues: list[tuple[str, str, str]] = []
 
     if not CHAT_MODEL:
-        issues.append(("WARN", "CHAT_MODEL",
-                        "No LLM model in .env — configure via admin portal or set CHAT_MODEL"))
+        issues.append(("CRITICAL", "CHAT_MODEL",
+                        "No LLM model configured — set CHAT_MODEL in .env or configure via admin portal"))
     if not CHAT_API_KEY and CHAT_PROVIDER != "ollama":
-        issues.append(("WARN", "CHAT_API_KEY",
-                        "No API key in .env — configure via admin portal or set CHAT_API_KEY"))
+        issues.append(("CRITICAL", "CHAT_API_KEY",
+                        "No API key configured — set CHAT_API_KEY in .env or configure via admin portal"))
     if not TELEGRAM_BOT_TOKEN and not WEIXIN_ENABLED:
         issues.append(("WARN", "TELEGRAM_BOT_TOKEN / WEIXIN_ENABLED",
                         "No transport configured — bot will not receive messages"))

@@ -14,6 +14,7 @@ from mochi.config import (
     TELEGRAM_BOT_TOKEN,
     OWNER_USER_ID,
     WEIXIN_ENABLED,
+    validate_config,
 )
 from mochi.db import init_db
 import mochi.skills as skill_registry
@@ -40,6 +41,9 @@ async def main():
     log.info("=" * 50)
     log.info("MochiBot starting up...")
     log.info("=" * 50)
+
+    # 0. Config validation
+    validate_config()
 
     # 1. Database
     init_db()
