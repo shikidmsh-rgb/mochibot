@@ -4,6 +4,7 @@ description: "长期记忆 — 保存、搜索、管理用户相关信息"
 type: tool
 expose_as_tool: true
 core: true
+keywords: [remember, 记住, forget, 忘记, recall, 回忆]
 ---
 
 ## Tools

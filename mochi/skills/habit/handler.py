@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from mochi.config import TZ, logical_today
 from mochi.skills.base import Skill, SkillContext, SkillResult
 from mochi.skills.habit.logic import parse_frequency, get_allowed_days
-from mochi.db import (
+from mochi.skills.habit.queries import (
     add_habit,
     list_habits,
     deactivate_habit,
@@ -56,6 +56,42 @@ def _is_paused(habit: dict) -> bool:
 
 
 class HabitSkill(Skill):
+
+    def init_schema(self, conn) -> None:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS habits (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id     INTEGER NOT NULL,
+                name        TEXT    NOT NULL,
+                description TEXT    NOT NULL DEFAULT '',
+                active      INTEGER NOT NULL DEFAULT 1,
+                created_at  TEXT    NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_habits_user_name
+                ON habits(user_id, name);
+
+            CREATE TABLE IF NOT EXISTS habit_logs (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                habit_id   INTEGER NOT NULL REFERENCES habits(id),
+                user_id    INTEGER NOT NULL,
+                logged_at  TEXT    NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_habit_logs_habit
+                ON habit_logs(habit_id, logged_at);
+        """)
+        from mochi.db import ensure_column
+        for col, typedef in [
+            ("frequency", "TEXT NOT NULL DEFAULT 'daily'"),
+            ("category", "TEXT NOT NULL DEFAULT ''"),
+            ("downstream", "TEXT NOT NULL DEFAULT ''"),
+            ("importance", "TEXT NOT NULL DEFAULT 'normal'"),
+            ("context", "TEXT NOT NULL DEFAULT ''"),
+            ("paused_until", "TEXT DEFAULT NULL"),
+            ("snoozed_until", "TEXT DEFAULT NULL"),
+        ]:
+            ensure_column(conn, "habits", col, typedef)
+        ensure_column(conn, "habit_logs", "note", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(conn, "habit_logs", "period", "TEXT NOT NULL DEFAULT ''")
 
     async def execute(self, context: SkillContext) -> SkillResult:
         """Dispatch by tool_name + action."""

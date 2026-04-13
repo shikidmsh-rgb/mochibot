@@ -66,6 +66,25 @@
 
 ---
 
+## 已支持的 Skill
+
+所有 Skill **即插即用**——在管理后台一键开关，或直接在 `mochi/skills/` 下添加/删除文件夹，重启即生效。不需要改主流程代码。
+
+| Skill | 说明 |
+|-------|------|
+| **habit** | 习惯追踪——打卡、暂停、催促，支持频率和重要度 |
+| **todo** | 一次性待办——追踪到完成为止 |
+| **reminder** | 定时提醒——到点触发，支持重复（每天/工作日/每周/每月） |
+| **meal** | 饮食记录——自然语言 → 热量估算 + 营养素拆解 + 历史查询 |
+| **oura** | Oura Ring 集成——睡眠、活动、准备度、压力、心率、血氧（需配置） |
+| **weather** | 天气查询——通过 wttr.in 获取，心跳中自动带入上下文 |
+| **web_search** | 联网搜索——DuckDuckGo，无需 API key |
+| **sticker** | 表情包——学习你转发的贴纸，聊天时自动发（仅 Telegram） |
+
+> **想加一个新 Skill？** 在 `mochi/skills/` 下新建文件夹，放入 `SKILL.md` + `handler.py`，重启 bot 就会自动注册。详见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+---
+
 ## 快速开始
 
 **准备好**：Python 3.11+、一个 LLM API key、一个消息平台（[Telegram bot token](https://core.telegram.org/bots#how-do-i-create-a-bot) 或 WeChat）

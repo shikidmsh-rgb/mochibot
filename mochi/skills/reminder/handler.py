@@ -3,10 +3,26 @@
 from datetime import datetime, date as date_type
 
 from mochi.skills.base import Skill, SkillContext, SkillResult
-from mochi.db import create_reminder, get_pending_reminders, mark_reminder_fired
+from mochi.skills.reminder.queries import create_reminder, get_pending_reminders, mark_reminder_fired
 
 
 class ReminderSkill(Skill):
+
+    def init_schema(self, conn) -> None:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS reminders (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id    INTEGER NOT NULL,
+                channel_id INTEGER NOT NULL DEFAULT 0,
+                message    TEXT    NOT NULL,
+                remind_at  TEXT    NOT NULL,
+                fired      INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_reminders_pending
+                ON reminders(fired, remind_at);
+        """)
+        from mochi.db import ensure_column
+        ensure_column(conn, "reminders", "recurrence", "TEXT DEFAULT NULL")
 
     async def execute(self, context: SkillContext) -> SkillResult:
         args = context.args

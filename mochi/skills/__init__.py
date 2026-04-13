@@ -24,15 +24,39 @@ from datetime import datetime
 from pathlib import Path
 
 from mochi.skills.base import Skill, SkillContext, SkillResult
-from mochi.db import get_disabled_skills
 
 log = logging.getLogger(__name__)
+
+
+def _get_disabled_skills() -> set[str]:
+    """Lazy wrapper to avoid circular import with mochi.db."""
+    from mochi.db import get_disabled_skills
+    return get_disabled_skills()
 
 _SKILLS_DIR = Path(__file__).parent
 
 # Registries
 _skills: dict[str, Skill] = {}           # name → skill instance
 _tool_map: dict[str, str] = {}           # tool_name → skill_name
+
+
+def init_all_skill_schemas() -> None:
+    """Call init_schema() on every registered skill.
+
+    Must be called after discover() so that _skills is populated, and
+    after init_db() so that framework tables exist.  Each skill gets its
+    own DB connection so a single failure doesn't affect others.
+    """
+    from mochi.db import _connect
+
+    for name, skill in _skills.items():
+        try:
+            conn = _connect()
+            skill.init_schema(conn)
+            conn.commit()
+            conn.close()
+        except Exception:
+            log.exception("init_schema failed for skill %s", name)
 
 
 def discover() -> list[str]:
@@ -146,7 +170,7 @@ def collect_diary_status(user_id: int, today: str, now: datetime) -> list[str]:
     """
     if not _skills:
         return []
-    disabled = get_disabled_skills()
+    disabled = _get_disabled_skills()
     ordered = sorted(
         _skills.values(),
         key=lambda s: (s.diary_status_order, s.name),
@@ -172,7 +196,7 @@ def get_tools(transport: str = "") -> list[dict]:
     Excludes tools from admin-disabled, config-missing, or
     transport-incompatible skills.
     """
-    disabled = get_disabled_skills()
+    disabled = _get_disabled_skills()
     tools = []
     for skill in _skills.values():
         if skill.name in disabled:
@@ -228,7 +252,7 @@ async def dispatch(tool_name: str, args: dict, user_id: int = 0,
     if not skill_name:
         return SkillResult(output=f"Unknown tool: {tool_name}", success=False)
 
-    if skill_name in get_disabled_skills():
+    if skill_name in _get_disabled_skills():
         return SkillResult(output=f"Skill '{skill_name}' is currently disabled.", success=False)
 
     skill = _skills.get(skill_name)
@@ -305,7 +329,7 @@ def get_cron_skills() -> list[tuple[Skill, str]]:
 
 def get_skill_info_all() -> list[dict]:
     """Return metadata for all registered skills (for admin display)."""
-    disabled = get_disabled_skills()
+    disabled = _get_disabled_skills()
     result = []
     for s in _skills.values():
         # Re-check config at call time (DB values may have been added since
@@ -381,7 +405,7 @@ def _build_capability_summary(transport: str = "") -> str:
     - Excludes type=automation (internal, e.g. maintenance)
     - Excludes skills incompatible with the given transport (noted separately)
     """
-    disabled = get_disabled_skills()
+    disabled = _get_disabled_skills()
     lines: list[str] = []
     excluded_names: list[str] = []
 

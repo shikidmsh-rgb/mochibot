@@ -4,6 +4,7 @@ description: "网络搜索 — 在线查找最新信息（无需 API 密钥）"
 type: tool
 tier: chat
 expose_as_tool: true
+keywords: [web search, google, look up, 查一下, 搜一下, duckduckgo, ddg]
 ---
 
 # Web Search Skill

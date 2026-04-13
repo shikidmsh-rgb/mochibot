@@ -33,6 +33,7 @@ log = logging.getLogger(__name__)
 TOOL_METADATA: dict[str, dict] = {}
 _SKILL_DESCRIPTIONS: dict[str, str] = {}
 _SKILL_DEFAULT_TIER: dict[str, str] = {}
+_SKILL_KEYWORDS: dict[str, tuple[str, ...]] = {}
 _SKILL_METAS: list = []
 _metadata_initialized = False
 
@@ -43,7 +44,7 @@ def _ensure_skill_metadata():
     Safe to call multiple times (idempotent). Uses file-only scan — no handler imports.
     """
     global TOOL_METADATA, _SKILL_DESCRIPTIONS, _SKILL_DEFAULT_TIER
-    global _SKILL_METAS, _metadata_initialized
+    global _SKILL_KEYWORDS, _SKILL_METAS, _metadata_initialized
 
     if _metadata_initialized:
         return
@@ -52,6 +53,7 @@ def _ensure_skill_metadata():
         from mochi.skills.base import (
             scan_skill_metadata, build_skill_descriptions,
             build_tool_metadata, build_tier_defaults,
+            build_skill_keywords,
         )
 
         metas = scan_skill_metadata()
@@ -59,6 +61,7 @@ def _ensure_skill_metadata():
         TOOL_METADATA = build_tool_metadata(metas)
         _SKILL_DESCRIPTIONS = build_skill_descriptions(metas)
         _SKILL_DEFAULT_TIER = build_tier_defaults(metas)
+        _SKILL_KEYWORDS = build_skill_keywords(metas)
 
         tool_count = len([t for t in TOOL_METADATA if t != "request_tools"])
         log.info("[SkillMeta] Auto-generated: %d router skills, %d tools, %d tier overrides",
@@ -131,16 +134,9 @@ def _get_skill_tier_override(skill_name: str) -> str | None:
 
 
 # ────────────────────────────────────────────────────────────────────────
-# Keyword map — high-precision only. Fallback when LLM classification fails.
+# Keyword map — auto-populated from SKILL.md 'keywords:' fields.
+# Fallback when LLM classification fails (zero LLM calls).
 # ────────────────────────────────────────────────────────────────────────
-
-_SKILL_KEYWORDS: dict[str, tuple[str, ...]] = {
-    "reminder": ("remind", "提醒", "alarm", "闹钟", "timer", "定时"),
-    "todo": ("todo", "待办", "task", "任务", "to-do", "checklist"),
-    "memory": ("remember", "记住", "forget", "忘记", "recall", "回忆"),
-    "oura": ("sleep", "睡眠", "heart rate", "心率", "hrv", "readiness", "stress", "oura"),
-    "web_search": ("web search", "google", "look up", "查一下", "搜一下", "duckduckgo", "ddg"),
-}
 
 
 def _build_skill_descriptions(transport: str = "") -> dict[str, str]:
@@ -253,7 +249,7 @@ async def classify_skills_llm(message: str, user_id: int | None = None,
         active_habits = [h["name"] for h in habits if _is_habit_active_today(h)] or None
     elif user_id:
         try:
-            from mochi.db import list_habits
+            from mochi.skills.habit.queries import list_habits
             raw = list_habits(user_id)
             active_habits = [h["name"] for h in raw if _is_habit_active_today(h)] or None
         except Exception as e:
@@ -297,7 +293,9 @@ def keyword_fallback(message: str) -> list[str]:
     """Detect skills from high-precision keywords. Zero LLM calls.
 
     ONLY called when classify_skills_llm() returns None.
+    Keywords are auto-populated from SKILL.md 'keywords:' fields.
     """
+    _ensure_skill_metadata()
     msg_lower = message.lower()
     matched = []
     for skill_name, keywords in _SKILL_KEYWORDS.items():

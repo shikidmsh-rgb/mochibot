@@ -7,7 +7,7 @@ from unittest.mock import patch, MagicMock
 
 from mochi.skills.base import SkillContext, SkillResult
 from mochi.skills.habit.handler import HabitSkill
-from mochi.db import add_habit, checkin_habit, list_habits, get_habit_checkins
+from mochi.skills.habit.queries import add_habit, checkin_habit, list_habits, get_habit_checkins
 
 
 def _ctx(tool_name, action, user_id=1, **extra):
@@ -179,7 +179,7 @@ class TestPauseResume:
     async def test_resume_success(self):
         """Resume clears paused_until."""
         hid = add_habit(1, "Piano", "daily:1")
-        from mochi.db import pause_habit
+        from mochi.skills.habit.queries import pause_habit
         pause_habit(1, hid, "2099-12-31")
         ctx = _ctx("edit_habit", "resume", habit_id=hid)
         result = await HabitSkill().execute(ctx)

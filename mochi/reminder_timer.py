@@ -10,12 +10,12 @@ import logging
 from datetime import datetime, timedelta
 
 from mochi.config import TZ
-from mochi.db import (
+from mochi.skills.reminder.queries import (
     get_next_pending_reminder,
     mark_reminder_fired,
     reschedule_reminder,
-    save_message,
 )
+from mochi.db import save_message
 
 log = logging.getLogger(__name__)
 

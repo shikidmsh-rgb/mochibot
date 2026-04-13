@@ -28,6 +28,13 @@ def reset_router(monkeypatch):
         "habit": "chat",
         "maintenance": "deep",
     })
+    monkeypatch.setattr(router, "_SKILL_KEYWORDS", {
+        "reminder": ("remind", "提醒", "alarm", "闹钟", "timer", "定时"),
+        "todo": ("todo", "待办", "task", "任务", "to-do", "checklist"),
+        "memory": ("remember", "记住", "forget", "忘记", "recall", "回忆"),
+        "oura": ("sleep", "睡眠", "heart rate", "心率", "hrv", "readiness", "stress", "oura"),
+        "web_search": ("web search", "google", "look up", "查一下", "搜一下", "duckduckgo", "ddg"),
+    })
 
 
 # ── resolve_tier ──
