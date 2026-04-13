@@ -75,5 +75,12 @@ echo    ssh -L 8080:localhost:8080 user@your-server-ip
 echo  Then open http://localhost:8080?token=YOUR_TOKEN
 echo.
 
+:admin_loop
 .venv\Scripts\python.exe -m mochi.admin
+if %errorlevel% equ 43 (
+    echo.
+    echo  [INFO] Admin server restarting...
+    echo.
+    goto admin_loop
+)
 pause

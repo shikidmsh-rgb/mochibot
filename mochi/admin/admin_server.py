@@ -36,6 +36,7 @@ _bot_process: subprocess.Popen | None = None
 _bot_log_lines: collections.deque = collections.deque(maxlen=500)
 _bot_lock = threading.Lock()
 _restart_enabled = True          # False after manual _kill_bot(); True on _start
+_EMBEDDED_MODE = False           # True when admin runs inside bot (start_admin_server)
 
 
 def _bot_reader_thread(proc: subprocess.Popen):
@@ -565,6 +566,21 @@ if HAS_FASTAPI:
                 "lines": list(_bot_log_lines),
             }
 
+    @app.post("/api/admin/restart", dependencies=[Depends(_verify_token)])
+    async def api_admin_restart():
+        """Restart the admin server process (picks up new code)."""
+        if _EMBEDDED_MODE:
+            # Admin is running inside the bot process — trigger full restart
+            from mochi.shutdown import request_restart
+            request_restart()
+            return {"ok": True, "message": "Bot+admin restarting..."}
+        # Standalone admin — stop bot, then exit with restart code
+        from mochi.shutdown import ADMIN_RESTART_EXIT_CODE
+        _kill_bot()
+        loop = asyncio.get_event_loop()
+        loop.call_later(0.5, lambda: os._exit(ADMIN_RESTART_EXIT_CODE))
+        return {"ok": True, "message": "Admin server restarting..."}
+
     # ═══════════════════════════════════════════════════════════════════════
     # Page 1: Models
     # ═══════════════════════════════════════════════════════════════════════
@@ -1069,7 +1085,7 @@ if HAS_FASTAPI:
     async def api_list_habit_habits():
         """Return current habit list for display in admin panel (read-only)."""
         from mochi.config import OWNER_USER_ID
-        from mochi.db import list_habits
+        from mochi.skills.habit.queries import list_habits
         if not OWNER_USER_ID:
             return {"habits": []}
         rows = list_habits(OWNER_USER_ID, active_only=False)
@@ -1450,6 +1466,9 @@ if HAS_FASTAPI:
 
 async def start_admin_server(port: int = 8080, bind: str = "127.0.0.1"):
     """Start the admin portal as an async task."""
+    global _EMBEDDED_MODE
+    _EMBEDDED_MODE = True
+
     if not HAS_FASTAPI:
         raise ImportError("fastapi/uvicorn not installed")
 
