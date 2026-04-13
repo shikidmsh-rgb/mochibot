@@ -116,6 +116,7 @@ WEIXIN_MSG_LIMIT = _env_int("WEIXIN_MSG_LIMIT", 4000)
 WEIXIN_BACKOFF_MIN_S = _env_int("WEIXIN_BACKOFF_MIN_S", 2)
 WEIXIN_BACKOFF_MAX_S = _env_int("WEIXIN_BACKOFF_MAX_S", 30)
 WEIXIN_MAX_CONSECUTIVE_FAILURES = _env_int("WEIXIN_MAX_CONSECUTIVE_FAILURES", 3)
+WEIXIN_SESSION_EXPIRED_RETRY_S = _env_int("WEIXIN_SESSION_EXPIRED_RETRY_S", 300)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Owner

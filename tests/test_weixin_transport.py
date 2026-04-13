@@ -18,6 +18,7 @@ from mochi.transport.weixin import (
     _ITEM_VOICE,
     _MSG_TYPE_USER,
     SESSION_EXPIRED_ERRCODE,
+    WEIXIN_SESSION_EXPIRED_RETRY_S,
 )
 from mochi.transport import IncomingMessage
 
@@ -157,6 +158,9 @@ class TestWeixinTransportInit:
         t = WeixinTransport()
         assert t._session is None
         assert t._poll_task is None
+        assert t._stopped is False
+        assert t._session_expired is False
+        assert t.session_expired is False
         assert t._owner_weixin_id is None
         assert t._context_tokens == {}
         assert t._typing_tickets == {}
@@ -420,7 +424,7 @@ class TestPollLoop:
 
     @pytest.mark.asyncio
     async def test_session_expired_stops_loop(self, monkeypatch):
-        """errcode -14 makes the poll loop exit."""
+        """errcode -14 makes the poll loop exit and sets session_expired flag."""
         t = WeixinTransport()
         t._session = MagicMock()
 
@@ -430,8 +434,10 @@ class TestPollLoop:
         t._weixin_get_updates = fake_get_updates
         monkeypatch.setattr(asyncio, "sleep", AsyncMock())
 
+        assert t._session_expired is False
         # Should return (not hang forever)
         await t._poll_loop()
+        assert t._session_expired is True
 
     @pytest.mark.asyncio
     async def test_filters_user_messages_only(self, monkeypatch):
@@ -575,3 +581,145 @@ class TestDispatchStateSignals:
 
         WeixinTransport._dispatch_state_signals()
         assert wake_calls == []
+
+
+# ── _supervised_poll_loop ──────────────────────────────────────────────────
+
+
+class TestSupervisedPollLoop:
+
+    @pytest.mark.asyncio
+    async def test_restarts_after_session_expiry(self, monkeypatch):
+        """Supervisor restarts poll_loop after session expiry + successful probe."""
+        t = WeixinTransport()
+        t._session = MagicMock()
+        monkeypatch.setattr(weixin_mod, "WEIXIN_SESSION_EXPIRED_RETRY_S", 0)
+        poll_calls = 0
+
+        async def fake_poll_loop(self_arg=None):
+            nonlocal poll_calls
+            poll_calls += 1
+            if poll_calls == 1:
+                t._session_expired = True
+                return  # first run: session expired
+            # second run: simulate normal CancelledError exit
+            raise asyncio.CancelledError
+
+        t._poll_loop = lambda: fake_poll_loop()
+
+        # Probe returns success (no expiry errcode)
+        async def fake_get_updates(buf, timeout_s):
+            return {"ret": 0, "errcode": 0, "msgs": []}
+
+        t._weixin_get_updates = fake_get_updates
+        monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+
+        # CancelledError from second poll_loop should propagate
+        with pytest.raises(asyncio.CancelledError):
+            await t._supervised_poll_loop()
+
+        assert poll_calls == 2
+        assert t._session_expired is False
+
+    @pytest.mark.asyncio
+    async def test_keeps_retrying_while_expired(self, monkeypatch):
+        """Supervisor retries probe multiple times before recovery."""
+        t = WeixinTransport()
+        t._session = MagicMock()
+        monkeypatch.setattr(weixin_mod, "WEIXIN_SESSION_EXPIRED_RETRY_S", 0)
+        probe_calls = 0
+        poll_calls = 0
+
+        async def fake_poll_loop():
+            nonlocal poll_calls
+            poll_calls += 1
+            if poll_calls == 1:
+                t._session_expired = True
+                return
+            # Second call after recovery — exit cleanly
+            return
+
+        t._poll_loop = fake_poll_loop
+
+        async def fake_get_updates(buf, timeout_s):
+            nonlocal probe_calls
+            probe_calls += 1
+            if probe_calls <= 2:
+                # Still expired
+                return {"ret": 0, "errcode": SESSION_EXPIRED_ERRCODE, "msgs": []}
+            # Recovered
+            return {"ret": 0, "errcode": 0, "msgs": []}
+
+        t._weixin_get_updates = fake_get_updates
+        monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+
+        await t._supervised_poll_loop()
+
+        assert probe_calls == 3
+        assert poll_calls == 2
+        assert t._session_expired is False
+
+    @pytest.mark.asyncio
+    async def test_exits_on_non_expiry(self, monkeypatch):
+        """Supervisor exits when poll_loop exits without session_expired."""
+        t = WeixinTransport()
+        t._session = MagicMock()
+
+        async def fake_poll_loop():
+            return  # exit without setting _session_expired
+
+        t._poll_loop = fake_poll_loop
+
+        await t._supervised_poll_loop()
+        assert t._session_expired is False
+
+    @pytest.mark.asyncio
+    async def test_exits_on_stopped(self, monkeypatch):
+        """Supervisor exits when _stopped is set."""
+        t = WeixinTransport()
+        t._session = MagicMock()
+        t._stopped = True
+
+        async def fake_poll_loop():
+            return
+
+        t._poll_loop = fake_poll_loop
+
+        await t._supervised_poll_loop()
+
+    @pytest.mark.asyncio
+    async def test_probe_exception_retries(self, monkeypatch):
+        """Supervisor retries if probe raises an exception."""
+        t = WeixinTransport()
+        t._session = MagicMock()
+        monkeypatch.setattr(weixin_mod, "WEIXIN_SESSION_EXPIRED_RETRY_S", 0)
+        probe_calls = 0
+        poll_calls = 0
+
+        async def fake_poll_loop():
+            nonlocal poll_calls
+            poll_calls += 1
+            if poll_calls == 1:
+                t._session_expired = True
+                return
+            # Second call after recovery — exit cleanly
+            return
+
+        t._poll_loop = fake_poll_loop
+
+        async def fake_get_updates(buf, timeout_s):
+            nonlocal probe_calls
+            probe_calls += 1
+            if probe_calls == 1:
+                raise ConnectionError("network down")
+            # Recovered
+            return {"ret": 0, "errcode": 0, "msgs": []}
+
+        t._weixin_get_updates = fake_get_updates
+        monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+
+        await t._supervised_poll_loop()
+
+        assert probe_calls == 2
+        assert poll_calls == 2
+        assert t._session_expired is False

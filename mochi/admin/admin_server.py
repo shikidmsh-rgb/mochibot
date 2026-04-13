@@ -519,16 +519,30 @@ if HAS_FASTAPI:
     @app.get("/api/bot/status", dependencies=[Depends(_verify_token)])
     async def api_bot_status():
         with _bot_lock:
+            # Scan log buffer for WeChat session expiry markers
+            weixin_session_expired = False
+            for line in reversed(_bot_log_lines):
+                if "[SESSION_RECOVERED]" in line:
+                    break
+                if "[SESSION_EXPIRED]" in line:
+                    weixin_session_expired = True
+                    break
+
             if _bot_process is None:
-                return {"running": False, "pid": None, "lines": list(_bot_log_lines)}
+                return {"running": False, "pid": None,
+                        "weixin_session_expired": weixin_session_expired,
+                        "lines": list(_bot_log_lines)}
             rc = _bot_process.poll()
             if rc is not None:
                 return {
                     "running": False, "pid": None,
-                    "exit_code": rc, "lines": list(_bot_log_lines),
+                    "exit_code": rc,
+                    "weixin_session_expired": weixin_session_expired,
+                    "lines": list(_bot_log_lines),
                 }
             return {
                 "running": True, "pid": _bot_process.pid,
+                "weixin_session_expired": weixin_session_expired,
                 "lines": list(_bot_log_lines),
             }
 

@@ -1146,12 +1146,18 @@ async function loadWelcome() {
       } else {
         statusBadge = '<span class="badge badge-warn">已配置</span>';
       }
+      if (botStatus.weixin_session_expired) {
+        statusBadge += ' <span class="badge badge-err">会话过期</span>';
+      }
       let nameLabel = '<strong style="font-size:13px">' + activeIcon + ' ' + activeTransport + '</strong>';
       if (_telegramBotInfo && tgConfigured) nameLabel += ' <span style="color:var(--text-soft);font-size:12px">@' + esc(_telegramBotInfo.username) + '</span>';
       transportStatus = '<div style="display:flex;align-items:center;gap:8px;margin-top:4px;flex-wrap:wrap">'
         + nameLabel + ' ' + statusBadge
         + ' <button class="btn btn-ghost btn-sm" style="padding:2px 8px;font-size:11px;color:var(--danger)" onclick="unbindTransport(\'' + activeTransport + '\')">解绑</button>'
         + '</div>';
+      if (botStatus.weixin_session_expired) {
+        transportStatus += '<div style="font-size:12px;color:var(--danger);margin-top:4px">⚠ 微信会话已过期 — 请重新扫码登录: <code style="font-size:11px;background:var(--primary-bg);padding:1px 5px;border-radius:4px">python weixin_auth.py</code></div>';
+      }
     }
 
     // Owner binding info (Telegram only)
