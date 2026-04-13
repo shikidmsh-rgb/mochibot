@@ -103,10 +103,8 @@ class TestCheckSleepEntry:
 
     @pytest.fixture(autouse=True)
     def _seed_sleep_config(self):
-        """Seed sleep config into DB for check_sleep_entry tests."""
+        """Seed sleep keywords config into DB for check_sleep_entry tests."""
         from mochi.admin.admin_db import set_system_override, invalidate_system_config_cache
-        set_system_override("SLEEP_KEYWORD_HOUR_START", "21")
-        set_system_override("SLEEP_KEYWORD_HOUR_END", "4")
         set_system_override("SLEEP_KEYWORDS", "晚安,睡了")
         invalidate_system_config_cache()
 
@@ -207,12 +205,8 @@ class TestCheckSilenceSleep:
 
     @pytest.fixture(autouse=True)
     def _seed_silence_config(self):
-        """Seed silence config into DB for check_silence_sleep tests."""
-        from mochi.admin.admin_db import set_system_override, invalidate_system_config_cache
-        set_system_override("SILENCE_SLEEP_AFTER_HOUR", "23")
-        set_system_override("SLEEP_KEYWORD_HOUR_END", "4")
-        set_system_override("SILENCE_SLEEP_THRESHOLD_HOURS", "1.0")
-        invalidate_system_config_cache()
+        """No DB seeding needed — check_silence_sleep reads config.py imports directly."""
+        pass
 
     def test_not_awake_returns_none(self):
         """check_silence_sleep returns None when SLEEPING."""

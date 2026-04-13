@@ -230,7 +230,8 @@ def check_sleep_entry(last_user_msg_text: str | None = None) -> bool:
     if _state != AWAKE or not last_user_msg_text:
         return False
 
-    if datetime.now(TZ).hour < SLEEP_AFTER_HOUR:
+    hour = datetime.now(TZ).hour
+    if not (hour >= SLEEP_AFTER_HOUR or hour < WAKE_EARLIEST_HOUR):
         return False
 
     text_lower = last_user_msg_text.lower().strip()
@@ -310,8 +311,8 @@ def check_silence_sleep() -> dict | None:
     now = datetime.now(TZ)
     hour = now.hour
 
-    # Only after SLEEP_AFTER_HOUR (default 21:00)
-    if hour < SLEEP_AFTER_HOUR:
+    # Only during night window: SLEEP_AFTER_HOUR..midnight..WAKE_EARLIEST_HOUR
+    if not (hour >= SLEEP_AFTER_HOUR or hour < WAKE_EARLIEST_HOUR):
         return None
 
     # Check silence duration
