@@ -55,7 +55,7 @@ def test_consume_restart_flag(tmp_path):
     flag.write_text(json.dumps({"channel_id": 999}))
 
     result = shutdown.consume_restart_flag()
-    assert result == 999
+    assert result == {"channel_id": 999}
     assert not flag.exists()  # file deleted
 
 

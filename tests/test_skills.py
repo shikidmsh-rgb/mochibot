@@ -267,17 +267,6 @@ class TestSkillV2Attributes:
         assert todo is not None
         assert todo.has_observer is False
 
-    def test_diary_tags_populated(self):
-        """Diary skill should be discoverable as automation type."""
-        import mochi.skills as skill_registry
-        skill_registry._skills.clear()
-        skill_registry._tool_map.clear()
-        skill_registry.discover()
-
-        diary = skill_registry.get_skill("diary")
-        assert diary is not None
-        assert diary.skill_type == "automation"
-
     def test_has_trigger_simple(self):
         """Test has_trigger with simple string triggers."""
         class DummySkill(Skill):

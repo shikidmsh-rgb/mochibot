@@ -417,6 +417,223 @@ class TestHandleMessage:
         assert "晚安" in called_with
 
 
+# ── System commands ────────────────────────────────────────────────────────
+
+
+class TestSystemCommands:
+    """Tests for /help /heartbeat /cost /notes /diary commands in WeChat."""
+
+    @pytest.fixture
+    def transport(self):
+        t = WeixinTransport()
+        t._session = MagicMock()
+        t._api_post = AsyncMock(return_value={"ret": 0, "typing_ticket": ""})
+        t._weixin_send_typing = AsyncMock()
+        t._weixin_send_message = AsyncMock(return_value={"ret": 0})
+        t._dispatch_state_signals = MagicMock()
+        return t
+
+    @pytest.mark.asyncio
+    async def test_help_returns_command_list(self, transport):
+        msg = _text_msg("/help")
+        await transport._handle_message(msg)
+
+        transport._weixin_send_message.assert_called_once()
+        text = transport._weixin_send_message.call_args[0][1]
+        for cmd in ["/help", "/heartbeat", "/cost", "/notes", "/diary", "/restart"]:
+            assert cmd in text
+
+    @pytest.mark.asyncio
+    async def test_help_does_not_enter_chat(self, transport, monkeypatch):
+        """Help command should return early, not trigger AI chat callback."""
+        callback = AsyncMock()
+        monkeypatch.setattr(weixin_mod, "_on_message_callback", callback)
+        msg = _text_msg("/help")
+        await transport._handle_message(msg)
+
+        callback.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_owner_only(self, transport, monkeypatch):
+        """Non-owner cannot use /heartbeat."""
+        transport._owner_weixin_id = "wx_real_owner"
+
+        msg = _text_msg("/heartbeat", from_user="wx_intruder")
+        await transport._handle_message(msg)
+
+        # Should not send any message (silently ignored)
+        transport._weixin_send_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_shows_stats(self, transport, monkeypatch):
+        transport._owner_weixin_id = "wx_owner_123"
+        stats = {
+            "state": "AWAKE",
+            "proactive_today": 3,
+            "proactive_limit": 5,
+            "last_think_at": "2026-04-13T10:00:00",
+        }
+        monkeypatch.setattr("mochi.heartbeat.get_stats", lambda: stats)
+        monkeypatch.setattr("mochi.db.get_last_heartbeat_log", lambda: None)
+
+        msg = _text_msg("/heartbeat")
+        await transport._handle_message(msg)
+
+        text = transport._weixin_send_message.call_args[0][1]
+        assert "AWAKE" in text
+        assert "3/5" in text
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_with_log_entry(self, transport, monkeypatch):
+        transport._owner_weixin_id = "wx_owner_123"
+        stats = {
+            "state": "SLEEPING",
+            "proactive_today": 0,
+            "proactive_limit": 5,
+            "last_think_at": None,
+        }
+        entry = {
+            "created_at": "2026-04-13T09:00:00",
+            "state": "AWAKE",
+            "action": "think",
+            "summary": "Checked reminders",
+        }
+        monkeypatch.setattr("mochi.heartbeat.get_stats", lambda: stats)
+        monkeypatch.setattr("mochi.db.get_last_heartbeat_log", lambda: entry)
+
+        msg = _text_msg("/heartbeat")
+        await transport._handle_message(msg)
+
+        text = transport._weixin_send_message.call_args[0][1]
+        assert "最近一次心跳" in text
+        assert "Checked reminders" in text
+
+    @pytest.mark.asyncio
+    async def test_cost_owner_only(self, transport):
+        transport._owner_weixin_id = "wx_real_owner"
+
+        msg = _text_msg("/cost", from_user="wx_intruder")
+        await transport._handle_message(msg)
+
+        transport._weixin_send_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_cost_shows_usage(self, transport, monkeypatch):
+        transport._owner_weixin_id = "wx_owner_123"
+        summary = {
+            "today": {"by_model": {
+                "claude-3": {"prompt": 1000, "completion": 500},
+            }},
+            "month": {"by_model": {
+                "claude-3": {"prompt": 10000, "completion": 5000},
+            }},
+        }
+        monkeypatch.setattr("mochi.db.get_usage_summary", lambda: summary)
+
+        msg = _text_msg("/cost")
+        await transport._handle_message(msg)
+
+        text = transport._weixin_send_message.call_args[0][1]
+        assert "claude-3" in text
+        assert "1,000" in text
+
+    @pytest.mark.asyncio
+    async def test_notes_owner_only(self, transport):
+        transport._owner_weixin_id = "wx_real_owner"
+
+        msg = _text_msg("/notes", from_user="wx_intruder")
+        await transport._handle_message(msg)
+
+        transport._weixin_send_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_notes_shows_list(self, transport):
+        transport._owner_weixin_id = "wx_owner_123"
+
+        with patch("pathlib.Path.exists", return_value=True), \
+             patch("pathlib.Path.read_text", return_value=(
+                 "# Notes\n\n## Notes\n"
+                 "- Buy groceries (2026-04-12)\n"
+                 "- Call dentist (2026-04-13)\n"
+             )):
+            msg = _text_msg("/notes")
+            await transport._handle_message(msg)
+
+        text = transport._weixin_send_message.call_args[0][1]
+        assert "📝 Notes" in text
+        assert "1. Buy groceries (2026-04-12)" in text
+        assert "2. Call dentist (2026-04-13)" in text
+
+    @pytest.mark.asyncio
+    async def test_notes_empty(self, transport):
+        transport._owner_weixin_id = "wx_owner_123"
+
+        with patch("pathlib.Path.exists", return_value=False):
+            msg = _text_msg("/notes")
+            await transport._handle_message(msg)
+
+        text = transport._weixin_send_message.call_args[0][1]
+        assert text == "No notes."
+
+    @pytest.mark.asyncio
+    async def test_diary_owner_only(self, transport):
+        transport._owner_weixin_id = "wx_real_owner"
+
+        msg = _text_msg("/diary", from_user="wx_intruder")
+        await transport._handle_message(msg)
+
+        transport._weixin_send_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_diary_shows_sections(self, transport, monkeypatch):
+        transport._owner_weixin_id = "wx_owner_123"
+        monkeypatch.setattr(
+            "mochi.diary.diary.read",
+            lambda section=None: {
+                "今日状態": "- habit1: done",
+                "今日日記": "- [10:00] had coffee",
+            }.get(section, ""),
+        )
+        monkeypatch.setattr("mochi.config.logical_today", lambda: "2026-04-13")
+
+        msg = _text_msg("/diary")
+        await transport._handle_message(msg)
+
+        text = transport._weixin_send_message.call_args[0][1]
+        assert "📖 今日日記 (2026-04-13)" in text
+        assert "今日状態" in text
+        assert "habit1: done" in text
+        assert "had coffee" in text
+
+    @pytest.mark.asyncio
+    async def test_diary_empty_sections(self, transport, monkeypatch):
+        transport._owner_weixin_id = "wx_owner_123"
+        monkeypatch.setattr(
+            "mochi.diary.diary.read",
+            lambda section=None: "",
+        )
+        monkeypatch.setattr("mochi.config.logical_today", lambda: "2026-04-13")
+
+        msg = _text_msg("/diary")
+        await transport._handle_message(msg)
+
+        text = transport._weixin_send_message.call_args[0][1]
+        assert "(无)" in text
+
+    @pytest.mark.asyncio
+    async def test_commands_do_not_trigger_chat(self, transport, monkeypatch):
+        """All system commands should return before hitting the AI chat flow."""
+        callback = AsyncMock()
+        monkeypatch.setattr(weixin_mod, "_on_message_callback", callback)
+
+        for cmd in ["/help", "/restart"]:
+            transport._weixin_send_message.reset_mock()
+            callback.reset_mock()
+            msg = _text_msg(cmd)
+            await transport._handle_message(msg)
+            callback.assert_not_called()
+
+
 # ── _poll_loop ──────────────────────────────────────────────────────────────
 
 

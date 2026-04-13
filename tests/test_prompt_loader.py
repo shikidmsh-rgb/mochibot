@@ -13,7 +13,7 @@ class TestGetPrompt:
     def test_loads_subdirectory_prompt(self):
         content = get_prompt("system_chat/soul")
         assert content
-        assert "companion" in content.lower()
+        assert "Identity" in content or "陪伴" in content
 
     def test_missing_prompt_returns_empty(self):
         assert get_prompt("nonexistent_prompt_xyz") == ""

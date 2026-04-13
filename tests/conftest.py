@@ -40,6 +40,12 @@ def mock_config(monkeypatch):
     monkeypatch.setattr(cfg, "OWNER_USER_ID", 1)
     monkeypatch.setattr(cfg, "TIMEZONE_OFFSET_HOURS", 0)
     monkeypatch.setattr(cfg, "TZ", UTC)
+    # Also patch TZ in modules that imported it at module level
+    import mochi.db as db_module
+    monkeypatch.setattr(db_module, "TZ", UTC)
+    # Patch observer module-level TZ too
+    import mochi.observers.activity_pattern.observer as ap_obs
+    monkeypatch.setattr(ap_obs, "TZ", UTC)
     monkeypatch.setattr(cfg, "MAINTENANCE_HOUR", 3)
     monkeypatch.setattr(cfg, "TOOL_ROUTER_ENABLED", False)
     monkeypatch.setattr(cfg, "TOOL_ESCALATION_ENABLED", False)
