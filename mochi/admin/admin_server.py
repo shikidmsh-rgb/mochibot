@@ -438,8 +438,8 @@ if HAS_FASTAPI:
             "chat_api_key": {"set": has_model},
             "tier_models": tier_models,
             "chat_provider": {"set": bool(CHAT_PROVIDER), "value": CHAT_PROVIDER},
-            "telegram_bot_token": {"set": bool(TELEGRAM_BOT_TOKEN) or bool((read_env_value("TELEGRAM_BOT_TOKEN") or "").strip())},
-            "weixin_enabled": {"set": bool(WEIXIN_ENABLED) or (read_env_value("WEIXIN_ENABLED") or "").strip().lower() in ("1", "true", "yes")},
+            "telegram_bot_token": {"set": bool((read_env_value("TELEGRAM_BOT_TOKEN") or "").strip())},
+            "weixin_enabled": {"set": (read_env_value("WEIXIN_ENABLED") or "").strip().lower() in ("1", "true", "yes")},
             "weixin_bot_token": {"set": bool((read_env_value("WEIXIN_BOT_TOKEN") or "").strip())},
             "owner_user_id": {
                 "set": bool(OWNER_USER_ID) or bool((read_env_value("OWNER_USER_ID") or "").strip()),

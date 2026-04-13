@@ -62,13 +62,13 @@
 - **自托管**——数据留在你自己的机器上
 - **易扩展**——Skill 和 Observer 即插即用，放个文件夹重启就行
 - **管理后台**——Web UI 配置模型、调心跳参数、开关 skill、编辑人设 prompt
-- **目前只支持 Telegram**——Transport 层是抽象接口，可以自己扩展其他平台
+- **支持 Telegram 和 WeChat**——二选一，在管理后台配置。推荐 Telegram（支持表情包、语音等丰富交互）
 
 ---
 
 ## 快速开始
 
-**准备好**：Python 3.11+、一个 LLM API key、一个 [Telegram bot token](https://core.telegram.org/bots#how-do-i-create-a-bot)
+**准备好**：Python 3.11+、一个 LLM API key、一个消息平台（[Telegram bot token](https://core.telegram.org/bots#how-do-i-create-a-bot) 或 WeChat）
 
 ```bash
 git clone https://github.com/shikidmsh-rgb/mochibot.git
@@ -78,7 +78,7 @@ cd mochibot
 - **Windows**：双击 `setup.bat`
 - **macOS / Linux**：`bash setup.sh`
 
-脚本会自动搞定环境和依赖，然后打开管理后台。在浏览器里配好 API key、模型、Telegram token，点 **「启动 Bot」** 就行了。
+脚本会自动搞定环境和依赖，然后打开管理后台。在浏览器里配好 API key、模型、消息平台（Telegram 或 WeChat），点 **「启动 Bot」** 就行了。
 
 第一个给 bot 发消息的人自动成为 owner。
 
@@ -111,7 +111,7 @@ cd mochibot
 
 ```bash
 git clone https://github.com/shikidmsh-rgb/mochibot.git && cd mochibot
-cp .env.example .env        # 填写 CHAT_API_KEY、CHAT_MODEL、TELEGRAM_BOT_TOKEN
+cp .env.example .env        # 填写 CHAT_API_KEY、CHAT_MODEL，以及 TELEGRAM_BOT_TOKEN 或 WEIXIN_ENABLED
 docker compose up -d         # 后台运行
 ```
 
@@ -224,7 +224,8 @@ server {
 | `CHAT_MODEL` | — | 对话模型（必填） |
 | `CHAT_BASE_URL` | — | OpenAI 兼容 API 的自定义端点 |
 | `THINK_MODEL` | *=CHAT* | 心跳 + 维护用的便宜模型（可选） |
-| `TELEGRAM_BOT_TOKEN` | — | 从 @BotFather 获取 |
+| `TELEGRAM_BOT_TOKEN` | — | 从 @BotFather 获取（Telegram 平台） |
+| `WEIXIN_ENABLED` | `false` | 启用 WeChat 平台（与 Telegram 二选一） |
 | `HEARTBEAT_INTERVAL_MINUTES` | `20` | 心跳循环间隔 |
 | `AWAKE_HOUR_START` / `END` | `7` / `23` | 心跳在这些时间外休眠 |
 | `MAX_DAILY_PROACTIVE` | `10` | 每日主动消息上限 |

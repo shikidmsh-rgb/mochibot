@@ -358,19 +358,18 @@ function showTransportConfig(type) {
   if (wxBtn) wxBtn.className = 'tp-cfg-btn' + (_openTransportCfg === 'weixin' ? ' active' : '');
 }
 
-async function unbindTransport() {
-  const which = _telegramBotInfo ? 'Telegram' : (_weixinConnected ? 'WeChat' : null);
-  if (!which) return;
-  if (!confirm('确定要解绑 ' + which + ' 吗？Bot 将停止运行。')) return;
+async function unbindTransport(platform) {
+  if (!platform) return;
+  if (!confirm('确定要解绑 ' + platform + ' 吗？Bot 将停止运行。')) return;
   try {
-    if (_telegramBotInfo) {
+    if (platform === 'Telegram') {
       await api('PUT', '/env', {'TELEGRAM_BOT_TOKEN': ''});
       _telegramBotInfo = null;
     } else {
       await api('PUT', '/env', {'WEIXIN_ENABLED': 'false', 'WEIXIN_BOT_TOKEN': ''});
       _weixinConnected = false;
     }
-    showToast('已解绑 ' + which);
+    showToast('已解绑 ' + platform);
     await api('POST', '/bot/stop').catch(() => {});
     loaded.welcome = false;
     loadWelcome();
@@ -1151,7 +1150,7 @@ async function loadWelcome() {
       if (_telegramBotInfo && tgConfigured) nameLabel += ' <span style="color:var(--text-soft);font-size:12px">@' + esc(_telegramBotInfo.username) + '</span>';
       transportStatus = '<div style="display:flex;align-items:center;gap:8px;margin-top:4px;flex-wrap:wrap">'
         + nameLabel + ' ' + statusBadge
-        + ' <button class="btn btn-ghost btn-sm" style="padding:2px 8px;font-size:11px;color:var(--danger)" onclick="unbindTransport()">解绑</button>'
+        + ' <button class="btn btn-ghost btn-sm" style="padding:2px 8px;font-size:11px;color:var(--danger)" onclick="unbindTransport(\'' + activeTransport + '\')">解绑</button>'
         + '</div>';
     }
 
@@ -1186,7 +1185,7 @@ async function loadWelcome() {
         ${transportStatus}
         ${ownerLine}
         ${transportConfigArea}
-        <div id="transport-cfg" style="display:${_openTransportCfg==='telegram'?'block':'none'};margin-top:10px">
+        ${!hasTransport ? `<div id="transport-cfg" style="display:${_openTransportCfg==='telegram'?'block':'none'};margin-top:10px">
           <div style="border:1px solid var(--border);border-radius:8px;padding:14px;background:var(--bg)">
             <div style="font-weight:600;margin-bottom:8px">Telegram 配置</div>
             <div class="form-group"><label class="form-label">Bot Token</label>
@@ -1221,7 +1220,7 @@ async function loadWelcome() {
             <div id="wx-connect-status" style="margin-top:10px"></div>
             </div>
           </div>
-        </div>
+        </div>` : ''}
       </div>
     </div>`;
 
