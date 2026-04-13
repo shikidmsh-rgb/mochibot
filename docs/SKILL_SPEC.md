@@ -52,7 +52,10 @@ writes:
   db: [my_table]                  # 此 skill 写入的 DB 表
 
 # 配置（需要外部凭据/设置的 skill）
-requires_config: [MY_API_KEY]     # 必需的环境变量或 DB 配置
+requires_config: [MY_API_KEY]     # 必需的环境变量或 DB 配置（简写）
+# 也支持嵌套写法（等价）：
+# requires:
+#   env: [MY_API_KEY]
 config:
   MY_API_KEY:
     type: str
@@ -92,8 +95,9 @@ sense:
 
 **风险等级**（追加在工具名后）：
 - `L0` — 只读，无副作用
-- `L1` — 创建或修改数据（默认）
-- `L2` — 破坏性或高开销操作
+- `L1` — 内部状态写入（创建/修改数据，默认）
+- `L2` — 外部写入（有副作用），暂保留
+- `L3` — 事务性操作（支付/订单），暂保留
 
 ### Usage Rules 区段
 
@@ -121,6 +125,33 @@ keywords: [remind, 提醒, alarm, 闹钟, timer, 定时]
 - 支持多词短语（如 `web search`）
 - 列表保持精简（5-10 个关键词）
 - **不要去改 `tool_router.py`** — 框架会自动从 SKILL.md 读取
+
+### 平台兼容性（`exclude_transports`）
+
+MochiBot 支持多个消息平台（transport）。部分 skill 可能只在特定平台上才有意义，或因平台限制无法正常工作。用 `exclude_transports` 声明不兼容的平台：
+
+```yaml
+exclude_transports: [wechat]
+```
+
+**当前支持的 transport 值**：`telegram`、`wechat`
+
+**框架行为**：被排除平台上，该 skill 的工具：
+- 不出现在 LLM 工具列表中（`get_tools()` 过滤）
+- 不出现在能力摘要中（`_build_capability_summary()` 过滤）
+- 即使被直接调用也会被拒绝（`dispatch()` 返回 "not available on this platform"）
+
+**实际示例** — `sticker` skill 排除 wechat：
+```yaml
+# mochi/skills/sticker/SKILL.md
+exclude_transports: [wechat]
+```
+原因：sticker 使用 Telegram 的 `file_id` 机制存储和发送贴纸，这个机制在 WeChat 上不存在。
+
+**注意事项**：
+- 大多数 skill 不需要此字段 — 默认在所有平台可用
+- 只在技术上确实不兼容时才排除，不要仅因为"没测过"就排除
+- 可排除多个平台：`exclude_transports: [wechat, telegram]`
 
 ## Handler 类
 
@@ -162,6 +193,7 @@ class MySkill(Skill):
 | `transport` | str | 平台标识（`"telegram"`、`"wechat"` 等） |
 | `tool_name` | str | 被调用的工具名称 |
 | `args` | dict | 传给工具的参数 |
+| `observation` | dict \| None | 仅 heartbeat 触发时有值，包含 observer 数据。普通 tool 类 skill 不用关心 |
 
 ### SkillResult
 
@@ -170,8 +202,8 @@ class MySkill(Skill):
 | 属性 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `output` | str | `""` | 返回给用户的文本 |
+| `actions` | list[dict] | `[]` | heartbeat 风格的动作列表（如 `[{"type": "message", "content": "..."}]`），普通 skill 一般不用 |
 | `success` | bool | `True` | 操作是否成功 |
-| `data` | dict | `{}` | 供框架使用的结构化数据 |
 
 ### 可选方法
 

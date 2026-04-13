@@ -57,7 +57,7 @@ keywords: [my_keyword, 我的关键词]
 | item | string | | Item content (action=add) |
 ```
 
-风险等级：`L0` 只读、`L1` 创建/修改数据（默认）、`L2` 破坏性或高开销操作。
+风险等级：`L0` 只读、`L1` 内部状态写入（默认）、`L2` 外部写入（暂保留）、`L3` 事务性（暂保留）。
 
 ### handler.py
 
@@ -95,7 +95,8 @@ class MySkill(Skill):
 5. **禁止跨 skill 外键** — 每个 skill 只拥有自己的表
 6. **用 `ensure_column()` 做 schema 迁移**（从 `mochi.db` 导入）
 7. **`keywords` 必须高精度** — 只放能明确指向该 skill 的关键词
-8. **代码全英文** — 变量名、函数名、注释、docstring 一律英文
+8. **平台不兼容时声明 `exclude_transports`** — 如果 skill 依赖特定平台特性（如 Telegram file_id），在 SKILL.md 中用 `exclude_transports: [wechat]` 排除不兼容平台。不确定时不要排除
+9. **代码全英文** — 变量名、函数名、注释、docstring 一律英文
 
 重启 MochiBot → 日志中看到 `Registered skill: my_skill` 即成功。
 

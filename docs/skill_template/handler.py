@@ -1,6 +1,7 @@
 """My skill handler — execute logic only. Tool defs in SKILL.md."""
 
 from mochi.skills.base import Skill, SkillContext, SkillResult
+from mochi.skills.my_skill.queries import create_item, get_items, delete_item
 
 
 class MySkill(Skill):
@@ -25,12 +26,10 @@ class MySkill(Skill):
             content = args.get("content", "")
             if not content:
                 return SkillResult(output="Error: 'content' is required.", success=False)
-            from mochi.skills.my_skill.queries import create_item
             item_id = create_item(uid, content)
             return SkillResult(output=f"Item #{item_id} added: '{content}'.")
 
         elif action == "list":
-            from mochi.skills.my_skill.queries import get_items
             items = get_items(uid)
             if not items:
                 return SkillResult(output="No items found.")
@@ -41,7 +40,6 @@ class MySkill(Skill):
             item_id = args.get("item_id")
             if not item_id:
                 return SkillResult(output="Error: 'item_id' is required.", success=False)
-            from mochi.skills.my_skill.queries import delete_item
             ok = delete_item(uid, item_id)
             if ok:
                 return SkillResult(output=f"Item #{item_id} deleted.")

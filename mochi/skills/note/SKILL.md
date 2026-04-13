@@ -4,6 +4,7 @@ description: "工作笔记/备忘 — 不是定时的，不是打卡的，只是
 type: tool
 tier: lite
 expose_as_tool: true
+core: true
 ---
 
 # Note Skill
