@@ -25,6 +25,7 @@ from mochi.config import (
     WEIXIN_MAX_CONSECUTIVE_FAILURES,
     WEIXIN_MSG_LIMIT,
     WEIXIN_POLL_TIMEOUT_S,
+    WEIXIN_SESSION_EXPIRED_RETRY_S,
 )
 
 log = logging.getLogger(__name__)
@@ -115,6 +116,8 @@ class WeixinTransport(Transport):
     def __init__(self):
         self._session = None  # aiohttp.ClientSession
         self._poll_task: asyncio.Task | None = None
+        self._stopped = False
+        self._session_expired = False
         # WeChat user ID of the owner (learned from first inbound message)
         self._owner_weixin_id: str | None = None
         # context_token cache: weixin_user_id → latest context_token
@@ -125,6 +128,11 @@ class WeixinTransport(Transport):
     @property
     def name(self) -> str:
         return "wechat"
+
+    @property
+    def session_expired(self) -> bool:
+        """True when iLink session is expired and awaiting QR re-scan."""
+        return self._session_expired
 
     async def start(self) -> None:
         try:
@@ -142,10 +150,13 @@ class WeixinTransport(Transport):
 
         import aiohttp
         self._session = aiohttp.ClientSession()
-        self._poll_task = asyncio.create_task(self._poll_loop())
+        self._stopped = False
+        self._session_expired = False
+        self._poll_task = asyncio.create_task(self._supervised_poll_loop())
         log.info("WeChat transport started (base=%s)", WEIXIN_BASE_URL)
 
     async def stop(self) -> None:
+        self._stopped = True
         if self._poll_task:
             self._poll_task.cancel()
             try:
@@ -377,6 +388,58 @@ class WeixinTransport(Transport):
 
     # ── Long-poll loop ───────────────────────────────────────────────────
 
+    async def _supervised_poll_loop(self) -> None:
+        """Restart _poll_loop on session expiry with backoff.
+
+        If _poll_loop exits due to session expiry (errcode -14), the
+        supervisor retries periodically until the session recovers
+        (user re-scans QR code) or the transport is stopped.
+        """
+        while True:
+            self._session_expired = False
+            await self._poll_loop()
+
+            if self._stopped:
+                break
+
+            if not self._session_expired:
+                break
+
+            # Session expired — retry after delay
+            log.warning(
+                "Poll loop exited (session expired). "
+                "Retrying in %ds... Re-login: python weixin_auth.py",
+                WEIXIN_SESSION_EXPIRED_RETRY_S,
+            )
+
+            while self._session_expired and not self._stopped:
+                await asyncio.sleep(WEIXIN_SESSION_EXPIRED_RETRY_S)
+                if self._stopped:
+                    break
+                log.info("Probing WeChat session recovery...")
+                try:
+                    probe = await self._weixin_get_updates("", timeout_s=5)
+                    probe_err = probe.get("errcode", 0)
+                    probe_ret = probe.get("ret", 0)
+                    if (probe_err == SESSION_EXPIRED_ERRCODE
+                            or probe_ret == SESSION_EXPIRED_ERRCODE):
+                        log.warning(
+                            "Session still expired, will retry in %ds",
+                            WEIXIN_SESSION_EXPIRED_RETRY_S,
+                        )
+                        continue
+                    # Recovered!
+                    log.info("[SESSION_RECOVERED] WeChat session recovered!")
+                    self._session_expired = False
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    log.warning(
+                        "Retry probe failed: %s — will retry in %ds",
+                        e, WEIXIN_SESSION_EXPIRED_RETRY_S,
+                    )
+                    continue
+
     async def _poll_loop(self) -> None:
         """Main long-poll loop for WeChat messages."""
         get_updates_buf = ""
@@ -399,11 +462,13 @@ class WeixinTransport(Transport):
                     if (errcode == SESSION_EXPIRED_ERRCODE
                             or ret == SESSION_EXPIRED_ERRCODE):
                         log.error(
-                            "WeChat session expired (errcode %s). "
-                            "Re-login required: python weixin_auth.py",
+                            "[SESSION_EXPIRED] WeChat session expired "
+                            "(errcode %s). Re-login required: "
+                            "python weixin_auth.py",
                             errcode,
                         )
-                        return
+                        self._session_expired = True
+                        return  # supervisor will handle retry
 
                     consecutive_failures += 1
                     log.warning(
