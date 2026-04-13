@@ -77,8 +77,9 @@ def _build_system_prompt(user_id: int, usage_rules: str = "",
     parts.append(
         f"## Your background process\n"
         f"You have a heartbeat loop that runs every {HEARTBEAT_INTERVAL_MINUTES} minutes "
-        f"while you're awake. You naturally wake when the user sends their first message "
-        f"and go to sleep when they say goodnight or go silent at night. "
+        f"while you're awake. You have your own daily rhythm — you sleep at night and "
+        f"wake up in the morning. When the user says goodnight or goes quiet late at "
+        f"night, you go to sleep too. You wake up when they message you the next day. "
         f"The heartbeat observes context (time, conversation patterns, etc.) and sometimes decides to "
         f"proactively reach out — a check-in, a nudge, or a thoughtful message. "
         f"You don't always send something; you stay quiet when nothing worth noting has changed. "

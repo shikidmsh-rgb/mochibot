@@ -899,12 +899,6 @@ if HAS_FASTAPI:
         "LLM_HEARTBEAT_TIMEOUT_SECONDS":  "int",
         # ── Sleep/Wake ──
         "FALLBACK_WAKE_HOUR":             "int",
-        "AWAKE_HOUR_END":                 "int",
-        "SLEEP_KEYWORD_HOUR_START":       "int",
-        "SLEEP_KEYWORD_HOUR_END":         "int",
-        "SLEEP_KEYWORDS":                 "str",
-        "SILENCE_SLEEP_AFTER_HOUR":       "int",
-        "SILENCE_SLEEP_THRESHOLD_HOURS":  "float",
         "SILENCE_PAUSE_DAYS":             "float",
         # ── Bedtime tidy ──
         "BEDTIME_TIDY_ENABLED":           "bool",

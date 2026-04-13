@@ -21,7 +21,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 from mochi.config import (
-    AWAKE_HOUR_START, AWAKE_HOUR_END,
+    WAKE_EARLIEST_HOUR, SLEEP_AFTER_HOUR, SILENCE_THRESHOLD_HOURS,
     TZ,
     OWNER_USER_ID,
 )
@@ -115,7 +115,7 @@ def _init_state() -> str:
         log.debug("Failed to read persisted heartbeat state: %s", exc)
     # Fallback: hour heuristic
     hour = now.hour
-    if AWAKE_HOUR_START <= hour < AWAKE_HOUR_END:
+    if WAKE_EARLIEST_HOUR <= hour < 23:
         return AWAKE
     return SLEEPING
 
@@ -207,23 +207,30 @@ def clear_morning_hold() -> None:
         log.info("Morning hold cleared — proactive messages resumed")
 
 
+def should_wake_on_message() -> bool:
+    """Check if a user message should wake the bot.
+
+    Only wakes if current hour >= WAKE_EARLIEST_HOUR (default 6 AM).
+    Before that, user messages are received but don't trigger wake.
+    """
+    if _state != SLEEPING:
+        return False
+    return datetime.now(TZ).hour >= WAKE_EARLIEST_HOUR
+
+
 def check_sleep_entry(last_user_msg_text: str | None = None) -> bool:
     """Check if user is going to sleep via goodnight keywords.
 
     Called by transport AFTER the Chat model has already replied.
-    Only triggers during night hours to avoid false positives
-    (e.g. "昨天好困" during daytime).
+    Only triggers after SLEEP_AFTER_HOUR (default 21:00) to avoid
+    false positives (e.g. "昨天好困" during daytime).
 
     Returns True if sleep was triggered (caller should run bedtime tidy).
     """
     if _state != AWAKE or not last_user_msg_text:
         return False
 
-    now = datetime.now(TZ)
-    hour = now.hour
-    # Night window: SLEEP_KEYWORD_HOUR_START (21) to SLEEP_KEYWORD_HOUR_END (4)
-    is_night = hour >= _effective('SLEEP_KEYWORD_HOUR_START') or hour < _effective('SLEEP_KEYWORD_HOUR_END')
-    if not is_night:
+    if datetime.now(TZ).hour < SLEEP_AFTER_HOUR:
         return False
 
     text_lower = last_user_msg_text.lower().strip()
@@ -303,9 +310,8 @@ def check_silence_sleep() -> dict | None:
     now = datetime.now(TZ)
     hour = now.hour
 
-    # Only during night hours: >= SILENCE_SLEEP_AFTER_HOUR or < SLEEP_KEYWORD_HOUR_END
-    is_night = hour >= _effective('SILENCE_SLEEP_AFTER_HOUR') or hour < _effective('SLEEP_KEYWORD_HOUR_END')
-    if not is_night:
+    # Only after SLEEP_AFTER_HOUR (default 21:00)
+    if hour < SLEEP_AFTER_HOUR:
         return None
 
     # Check silence duration
@@ -324,7 +330,7 @@ def check_silence_sleep() -> dict | None:
     except (ValueError, TypeError):
         return None
 
-    if silence_hours < _effective('SILENCE_SLEEP_THRESHOLD_HOURS'):
+    if silence_hours < SILENCE_THRESHOLD_HOURS:
         return None
 
     # Distinguish first sleep vs re-sleep (woke mid-night and went silent again)
@@ -880,9 +886,9 @@ async def _dispatch_proactive(notify_actions: list[dict], user_id: int) -> None:
 
 async def heartbeat_loop() -> None:
     """Main heartbeat loop. Run as asyncio task."""
-    log.info("Heartbeat started: interval=%dm, awake=%d-%d, state=%s",
-             _effective('HEARTBEAT_INTERVAL_MINUTES'), AWAKE_HOUR_START,
-             _effective('AWAKE_HOUR_END'), _state)
+    log.info("Heartbeat started: interval=%dm, wake_after=%d, sleep_after=%d, state=%s",
+             _effective('HEARTBEAT_INTERVAL_MINUTES'), WAKE_EARLIEST_HOUR,
+             SLEEP_AFTER_HOUR, _state)
 
     while True:
         try:
@@ -901,8 +907,7 @@ async def heartbeat_loop() -> None:
             # ── 1. Fallback wake check (MUST be before SLEEPING continue) ──
             if _state == SLEEPING:
                 fallback_hour = _effective('FALLBACK_WAKE_HOUR')
-                awake_end = _effective('AWAKE_HOUR_END')
-                if fallback_hour <= hour < awake_end:
+                if fallback_hour <= hour < 23:
                     wake_up(f"fallback_{fallback_hour}:00")
                 else:
                     log_heartbeat(_state, "sleeping")
@@ -912,19 +917,19 @@ async def heartbeat_loop() -> None:
             # ── 2. Silence sleep check (AWAKE path) ──
             sleep_action = check_silence_sleep()
             if sleep_action:
-                # Run bedtime tidy before sleeping (includes goodnight message)
                 hint = sleep_action["context_hint"]
                 silence_h = sleep_action["silence_hours"]
                 re_tag = "再次" if hint == "re_sleep" else ""
-                await _run_bedtime_tidy(
-                    user_id,
-                    reason=f"silence_{silence_h}h_{re_tag}静默",
-                )
-                # If bedtime tidy didn't send a message, fall back to simple goodnight
+                # Send a natural goodnight via chat_proactive (no bedtime tidy —
+                # user didn't say goodnight, just went quiet)
                 if _send_callback and _state == AWAKE:
                     finding = {
                         "topic": "sleep_transition",
-                        "summary": f"用户已沉默{silence_h}小时，深夜{re_tag}静默，大概率睡着了",
+                        "summary": (
+                            f"用户已经{re_tag}沉默了{silence_h}小时，深夜了。"
+                            f"大概率睡着了或者不想聊了。"
+                            f"用你自己的方式随意地说一句晚安，就像朋友之间一样自然。"
+                        ),
                     }
                     from mochi.ai_client import chat_proactive
                     goodnight_msg = await _llm_with_timeout(

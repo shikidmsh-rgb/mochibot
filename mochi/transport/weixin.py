@@ -293,9 +293,9 @@ class WeixinTransport(Transport):
     def _dispatch_state_signals() -> None:
         """Dispatch heartbeat state transitions on user activity."""
         from mochi.heartbeat import (
-            get_state, wake_up, clear_morning_hold, clear_silent_pause,
+            should_wake_on_message, wake_up, clear_morning_hold, clear_silent_pause,
         )
-        if get_state() == "SLEEPING":
+        if should_wake_on_message():
             wake_up("user_message")
         clear_morning_hold()
         clear_silent_pause()
@@ -390,9 +390,9 @@ class WeixinTransport(Transport):
                                 log.error("WeChat: send error: %s", e)
 
             # Check sleep keywords after reply
-            from mochi.heartbeat import check_sleep_entry
+            from mochi.heartbeat import check_sleep_entry, handle_sleep_keyword
             if check_sleep_entry(text):
-                pass  # Heartbeat handles the state transition
+                await handle_sleep_keyword(user_id)
         else:
             # Cancel typing even if no callback
             if typing_ticket:
