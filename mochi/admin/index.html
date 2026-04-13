@@ -1812,11 +1812,26 @@ async function loadHeartbeat() {
     const hbLabels = {
       HEARTBEAT_INTERVAL_MINUTES:    ['心跳间隔（分钟）',    '每隔多久执行一次心跳循环'],
       MAX_DAILY_PROACTIVE:           ['每日上限',            'Bot 每天最多主动发多少条消息'],
+      PROACTIVE_COOLDOWN_SECONDS:    ['冷却时间（秒）',      '两次主动消息之间的最小间隔'],
+      THINK_FALLBACK_MINUTES:        ['思考回退（分钟）',    '没有事件时多久强制思考一次'],
+      LLM_HEARTBEAT_TIMEOUT_SECONDS: ['LLM 超时（秒）',      '心跳 LLM 调用超时上限'],
+      FALLBACK_WAKE_HOUR:            ['兜底唤醒时间',        '睡眠状态下到几点自动唤醒'],
+      AWAKE_HOUR_END:                ['活跃结束时间',        '几点后认为可能进入睡眠'],
+      SLEEP_KEYWORD_HOUR_START:      ['晚安关键词开始',      '几点后开始检测晚安关键词'],
+      SLEEP_KEYWORD_HOUR_END:        ['晚安关键词结束',      '几点前检测晚安关键词'],
+      SLEEP_KEYWORDS:                ['晚安关键词',          '触发睡眠的关键词，逗号分隔'],
+      SILENCE_SLEEP_AFTER_HOUR:      ['静默入睡时间',        '几点后开始检测静默入睡'],
+      SILENCE_SLEEP_THRESHOLD_HOURS: ['静默入睡阈值（小时）','沉默多久后判断为睡着了'],
+      SILENCE_PAUSE_DAYS:            ['静默暂停（天）',      '用户消失多少天后暂停主动消息'],
+      BEDTIME_TIDY_ENABLED:          ['启用睡前整理',        '睡觉前自动整理笔记和待办'],
+      BEDTIME_TIDY_TIMEOUT_S:        ['睡前整理超时（秒）',  '睡前整理的 LLM 调用超时'],
     };
 
     // Config groups
     const groups = [
-      { title:'心跳配置', keys:['HEARTBEAT_INTERVAL_MINUTES','MAX_DAILY_PROACTIVE'] },
+      { title:'心跳配置', keys:['HEARTBEAT_INTERVAL_MINUTES','MAX_DAILY_PROACTIVE','PROACTIVE_COOLDOWN_SECONDS','THINK_FALLBACK_MINUTES','LLM_HEARTBEAT_TIMEOUT_SECONDS'] },
+      { title:'睡眠/唤醒', keys:['FALLBACK_WAKE_HOUR','AWAKE_HOUR_END','SLEEP_KEYWORD_HOUR_START','SLEEP_KEYWORD_HOUR_END','SLEEP_KEYWORDS','SILENCE_SLEEP_AFTER_HOUR','SILENCE_SLEEP_THRESHOLD_HOURS','SILENCE_PAUSE_DAYS'] },
+      { title:'睡前整理', keys:['BEDTIME_TIDY_ENABLED','BEDTIME_TIDY_TIMEOUT_S'] },
     ];
 
     for (const g of groups) {
@@ -1824,21 +1839,30 @@ async function loadHeartbeat() {
       for (const key of g.keys) {
         const c = cfg[key];
         if (!c) continue;
-        const val = c.override !== null && c.override !== undefined ? c.override : c.env_default;
-        const hasOverride = c.override !== null && c.override !== undefined;
+        const val = c.value;
+        const isDefault = String(val) === String(c.default);
         const [label, tip] = hbLabels[key] || [key, ''];
+        const resetBtn = !isDefault ? `<button class="btn btn-ghost btn-sm" onclick="resetHBParam('${key}')">恢复默认</button>` : '';
         if (c.type === 'bool') {
           html += `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
             <label class="toggle"><input type="checkbox" ${val==='true'||val===true?'checked':''} onchange="setHBParam('${key}',this.checked)"><span class="slider"></span></label>
             <div style="flex:1"><div style="font-size:14px">${esc(label)}</div>${tip?`<div style="font-size:11px;color:var(--text-soft);margin-top:2px">${esc(tip)}</div>`:''}</div>
-            ${hasOverride?`<button class="btn btn-ghost btn-sm" onclick="resetHBParam('${key}')">重置</button>`:''}
+            ${resetBtn}
           </div>`;
-        } else {
+        } else if (c.type === 'str') {
           html += `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
             <div style="min-width:220px"><div style="font-size:13px">${esc(label)}</div>${tip?`<div style="font-size:11px;color:var(--text-soft);margin-top:2px">${esc(tip)}</div>`:''}</div>
-            <input class="form-input" style="width:100px" type="number" value="${esc(val)}" onchange="setHBParam('${key}',this.value)" data-key="${key}">
-            <span style="font-size:11px;color:var(--text-soft)">默认: ${c.env_default}</span>
-            ${hasOverride?`<button class="btn btn-ghost btn-sm" onclick="resetHBParam('${key}')">重置</button>`:''}
+            <input class="form-input" style="width:260px" type="text" value="${esc(val)}" onchange="setHBParam('${key}',this.value)" data-key="${key}">
+            <span style="font-size:11px;color:var(--text-soft)">默认: ${esc(c.default)}</span>
+            ${resetBtn}
+          </div>`;
+        } else {
+          const step = c.type === 'float' ? ' step="0.1"' : '';
+          html += `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
+            <div style="min-width:220px"><div style="font-size:13px">${esc(label)}</div>${tip?`<div style="font-size:11px;color:var(--text-soft);margin-top:2px">${esc(tip)}</div>`:''}</div>
+            <input class="form-input" style="width:100px" type="number"${step} value="${esc(val)}" onchange="setHBParam('${key}',this.value)" data-key="${key}">
+            <span style="font-size:11px;color:var(--text-soft)">默认: ${c.default}</span>
+            ${resetBtn}
           </div>`;
         }
       }
@@ -1896,7 +1920,7 @@ async function setHBParam(key, value) {
 async function resetHBParam(key) {
   try {
     await api('PUT','/heartbeat/config', {[key]: null});
-    showToast(key + ' 已重置为默认值');
+    showToast(key + ' 已恢复默认值');
     loaded.heartbeat = false;
     loadHeartbeat();
   } catch(e) { showToast('错误: ' + e.message); }
@@ -1926,10 +1950,10 @@ async function loadBasic() {
   try {
     const cfg = await api('GET','/basic/config');
 
-    // Auto-detect browser timezone and pre-fill if no override exists
+    // Auto-detect browser timezone and pre-fill if value equals default
     const browserTzOffset = -(new Date().getTimezoneOffset() / 60);
     const tzCfg = cfg['TIMEZONE_OFFSET_HOURS'];
-    if (tzCfg && (tzCfg.override === null || tzCfg.override === undefined) && tzCfg.env_default === 0) {
+    if (tzCfg && tzCfg.value === tzCfg.default) {
       tzCfg._autoDetected = browserTzOffset;
     }
 
@@ -1957,14 +1981,14 @@ async function loadBasic() {
       for (const key of g.keys) {
         const c = cfg[key];
         if (!c) continue;
-        const val = c.override !== null && c.override !== undefined ? c.override : c.env_default;
-        const hasOverride = c.override !== null && c.override !== undefined;
+        const val = c.value;
+        const isDefault = String(val) === String(c.default);
         const [label, tip] = basicLabels[key] || [key, ''];
         if (c.type === 'bool') {
           html += `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
             <label class="toggle"><input type="checkbox" data-basic-key="${key}" ${val==='true'||val===true?'checked':''} onchange="markBasicDirty()"><span class="slider"></span></label>
             <div style="flex:1"><div style="font-size:14px">${esc(label)}</div>${tip?`<div style="font-size:11px;color:var(--text-soft);margin-top:2px">${esc(tip)}</div>`:''}</div>
-            ${hasOverride?`<button class="btn btn-ghost btn-sm" onclick="resetBasicParam('${key}')">重置</button>`:''}
+            ${!isDefault?`<button class="btn btn-ghost btn-sm" onclick="resetBasicParam('${key}')">恢复默认</button>`:''}
           </div>`;
         } else {
           const step = c.type === 'float' ? ' step="0.1"' : '';
@@ -1973,8 +1997,8 @@ async function loadBasic() {
           html += `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
             <div style="min-width:220px"><div style="font-size:13px">${esc(label)}${autoTag}</div>${tip?`<div style="font-size:11px;color:var(--text-soft);margin-top:2px">${esc(tip)}</div>`:''}</div>
             <input class="form-input" style="width:100px" type="number"${step} data-basic-key="${key}" value="${esc(displayVal)}" oninput="markBasicDirty()">
-            <span style="font-size:11px;color:var(--text-soft)">默认: ${c.env_default}</span>
-            ${hasOverride?`<button class="btn btn-ghost btn-sm" onclick="resetBasicParam('${key}')">重置</button>`:''}
+            <span style="font-size:11px;color:var(--text-soft)">默认: ${c.default}</span>
+            ${!isDefault?`<button class="btn btn-ghost btn-sm" onclick="resetBasicParam('${key}')">恢复默认</button>`:''}
           </div>`;
         }
       }
@@ -2030,7 +2054,7 @@ async function saveAllBasic() {
 async function resetBasicParam(key) {
   try {
     await api('PUT','/basic/config', {[key]: null});
-    showToast(key + ' 已重置为默认值');
+    showToast(key + ' 已恢复默认值');
     loaded.basic = false;
     loadBasic();
   } catch(e) { showToast('错误: ' + e.message); }

@@ -27,6 +27,7 @@ def req(method, path, body=None):
     data = json.dumps(body).encode() if body else None
     rq = urllib.request.Request(f"{BASE}{path}", data=data, method=method)
     rq.add_header("Content-Type", "application/json")
+    rq.add_header("Origin", BASE)
     try:
         r = urllib.request.urlopen(rq, timeout=10)
         return json.loads(r.read()), r.status
@@ -126,20 +127,19 @@ def run_all_checks():
     print("=== Heartbeat Config ===")
     cfg = get("/api/heartbeat/config")
     check("has interval key", "HEARTBEAT_INTERVAL_MINUTES" in cfg)
-    check("env_default=20", cfg["HEARTBEAT_INTERVAL_MINUTES"]["env_default"] == 20)
-    check("no override", cfg["HEARTBEAT_INTERVAL_MINUTES"]["override"] is None)
+    check("has value field", "value" in cfg["HEARTBEAT_INTERVAL_MINUTES"])
+    check("has default field", "default" in cfg["HEARTBEAT_INTERVAL_MINUTES"])
+    check("default=20", cfg["HEARTBEAT_INTERVAL_MINUTES"]["default"] == 20)
 
     r, _ = req("PUT", "/api/heartbeat/config", {"HEARTBEAT_INTERVAL_MINUTES": "15"})
-    check("set override ok", r.get("ok") is True)
+    check("set value ok", r.get("ok") is True)
     cfg = get("/api/heartbeat/config")
-    check("override=15", cfg["HEARTBEAT_INTERVAL_MINUTES"]["override"] == "15")
-    check("effective=15", cfg["HEARTBEAT_INTERVAL_MINUTES"]["effective"] == 15)
+    check("value=15", cfg["HEARTBEAT_INTERVAL_MINUTES"]["value"] == 15)
 
     r, _ = req("PUT", "/api/heartbeat/config", {"HEARTBEAT_INTERVAL_MINUTES": None})
-    check("reset override ok", r.get("ok") is True)
+    check("reset value ok", r.get("ok") is True)
     cfg = get("/api/heartbeat/config")
-    check("override cleared", cfg["HEARTBEAT_INTERVAL_MINUTES"]["override"] is None)
-    check("effective=20", cfg["HEARTBEAT_INTERVAL_MINUTES"]["effective"] == 20)
+    check("value=20 after reset", cfg["HEARTBEAT_INTERVAL_MINUTES"]["value"] == 20)
 
     state = get("/api/heartbeat/state")
     check("state endpoint", "state" in state)
@@ -150,18 +150,18 @@ def run_all_checks():
     check("has timezone key", "TIMEZONE_OFFSET_HOURS" in bcfg)
     check("has token key", "AI_CHAT_MAX_COMPLETION_TOKENS" in bcfg)
     check("has maintenance key", "MAINTENANCE_HOUR" in bcfg)
-    check("timezone default=0", bcfg["TIMEZONE_OFFSET_HOURS"]["env_default"] == 0)
+    check("timezone has value", "value" in bcfg["TIMEZONE_OFFSET_HOURS"])
+    check("timezone has default", "default" in bcfg["TIMEZONE_OFFSET_HOURS"])
 
     r, _ = req("PUT", "/api/basic/config", {"MAINTENANCE_HOUR": "5"})
-    check("set basic override", r.get("ok") is True)
+    check("set basic value", r.get("ok") is True)
     bcfg = get("/api/basic/config")
-    check("basic override=5", bcfg["MAINTENANCE_HOUR"]["override"] == "5")
-    check("basic effective=5", bcfg["MAINTENANCE_HOUR"]["effective"] == 5)
+    check("basic value=5", bcfg["MAINTENANCE_HOUR"]["value"] == 5)
 
     r, _ = req("PUT", "/api/basic/config", {"MAINTENANCE_HOUR": None})
-    check("reset basic override", r.get("ok") is True)
+    check("reset basic value", r.get("ok") is True)
     bcfg = get("/api/basic/config")
-    check("basic override cleared", bcfg["MAINTENANCE_HOUR"]["override"] is None)
+    check("basic value=default after reset", bcfg["MAINTENANCE_HOUR"]["value"] == bcfg["MAINTENANCE_HOUR"]["default"])
 
     # ── Page 3: Skills ──
     print("=== Skills ===")
@@ -218,6 +218,13 @@ def run_all_checks():
 
 
 async def main():
+    import tempfile, pathlib
+    tmp_dir = tempfile.mkdtemp(prefix="mochibot_e2e_")
+    db_path = pathlib.Path(tmp_dir) / "e2e_admin_test.db"
+
+    import mochi.db as db_module
+    db_module.DB_PATH = db_path
+
     from mochi.db import init_db
     init_db()
 
