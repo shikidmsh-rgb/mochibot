@@ -31,10 +31,13 @@ _observers: dict[str, Observer] = {}
 
 def _register_observer(obs: Observer, registered: list[str]) -> None:
     """Validate config and register a single observer instance."""
+    # Check both os.environ AND DB skill config (admin portal saves to DB)
+    from mochi.db import get_skill_config
+    db_config = get_skill_config(obs.meta.skill_name or obs.name)
     missing = [
         key
         for key in obs.meta.requires_config
-        if not os.getenv(key)
+        if not os.getenv(key) and not db_config.get(key)
     ]
     if missing:
         log.info(
@@ -204,6 +207,7 @@ def get_observer_info_all() -> list[dict]:
     requires_config.  Co-located observers are already represented by their
     owning skill in get_skill_info_all().
     """
+    from mochi.db import get_skill_config
     result = []
     for obs in _observers.values():
         if not obs.meta.requires_config:
@@ -223,7 +227,7 @@ def get_observer_info_all() -> list[dict]:
             "requires_config": obs.meta.requires_config,
             "enabled": obs.meta.enabled,
             "config_status": {
-                key: bool(os.getenv(key))
+                key: bool(os.getenv(key) or get_skill_config(obs.name).get(key))
                 for key in obs.meta.requires_config
             },
         })
