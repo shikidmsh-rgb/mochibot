@@ -277,6 +277,16 @@ if HAS_FASTAPI:
 
     # ── Auth ──────────────────────────────────────────────────────────────
 
+    def _is_loopback(ip: str) -> bool:
+        """Check if an IP is loopback (handles all IPv4/IPv6 variants)."""
+        if ip in _LOCALHOST_HOSTS:
+            return True
+        try:
+            import ipaddress
+            return ipaddress.ip_address(ip).is_loopback
+        except ValueError:
+            return False
+
     _auth_failures: dict[str, list[float]] = {}  # {ip: [timestamps]}
     _AUTH_FAILURE_LIMIT = 10
     _AUTH_FAILURE_WINDOW = 300.0   # 5 minutes
@@ -292,7 +302,7 @@ if HAS_FASTAPI:
 
         # Localhost is trusted — no token needed
         client_ip = request.client.host if request.client else "unknown"
-        if client_ip in _LOCALHOST_HOSTS:
+        if _is_loopback(client_ip):
             return
 
         if not ADMIN_TOKEN:
@@ -1202,9 +1212,6 @@ if HAS_FASTAPI:
                 existing = read_env_value("WEIXIN_ALLOWED_USERS")
                 if not existing:
                     write_env_value("WEIXIN_ALLOWED_USERS", user_id)
-
-            # Clear Telegram (mutually exclusive transports)
-            write_env_value("TELEGRAM_BOT_TOKEN", "")
 
             log.info("WeChat QR auth: credentials saved to .env")
 
