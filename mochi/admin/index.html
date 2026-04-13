@@ -1192,7 +1192,8 @@ async function loadWelcome() {
         <div id="weixin-cfg" style="display:none;margin-top:10px">
           <div style="border:1px solid var(--border);border-radius:8px;padding:14px;background:var(--bg)">
             <div style="font-weight:600;margin-bottom:8px">WeChat 配置</div>
-            <div id="wx-qr-section">
+            ${wxConfigured ? '<div id="wx-connected-section" style="text-align:center;padding:8px 0"><span class="badge badge-ok" style="font-size:13px">✅ 已连接</span><div style="margin-top:8px;color:var(--text-soft);font-size:12px">Token 已配置，可通过上方重启按钮启动 Bot</div></div>' : ''}
+            <div id="wx-qr-section"${wxConfigured ? ' style="display:none"' : ''}>
             <p style="font-size:12px;color:var(--text-soft);margin-bottom:12px">用微信扫码即可完成配置，无需手动输入</p>
             <div style="text-align:center">
             <button class="btn btn-primary btn-sm" id="wx-qr-btn" onclick="startWeixinQR()">扫码登录</button>
@@ -1968,7 +1969,7 @@ async function loadBasic() {
           const autoTag = c._autoDetected !== undefined ? `<span style="font-size:11px;color:var(--accent);margin-left:4px">🌐 已自动检测</span>` : '';
           html += `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
             <div style="min-width:220px"><div style="font-size:13px">${esc(label)}${autoTag}</div>${tip?`<div style="font-size:11px;color:var(--text-soft);margin-top:2px">${esc(tip)}</div>`:''}</div>
-            <input class="form-input" style="width:100px" type="number"${step} data-basic-key="${key}" value="${esc(displayVal)}" onchange="markBasicDirty()">
+            <input class="form-input" style="width:100px" type="number"${step} data-basic-key="${key}" value="${esc(displayVal)}" oninput="markBasicDirty()">
             <span style="font-size:11px;color:var(--text-soft)">默认: ${c.env_default}</span>
             ${hasOverride?`<button class="btn btn-ghost btn-sm" onclick="resetBasicParam('${key}')">重置</button>`:''}
           </div>`;
@@ -2016,6 +2017,7 @@ async function saveAllBasic() {
     if (hint) hint.textContent = '';
     if (btn) btn.textContent = '保存';
     loaded.welcome = false; // refresh setup status so checkmark updates
+    loadWelcome(); // eagerly refresh so checkmark appears immediately
   } catch(e) {
     showToast('错误: ' + e.message);
     if (btn) { btn.disabled = false; btn.textContent = '保存'; }
