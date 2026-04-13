@@ -12,6 +12,7 @@ from telegram.ext import (
 )
 
 from mochi.transport import Transport, IncomingMessage
+from mochi.transport.utils import split_bubbles as _split_bubbles_util
 from mochi.config import (
     TELEGRAM_BOT_TOKEN, OWNER_USER_ID, set_owner_user_id,
     TG_BUBBLE_DELAY_S, TG_BUBBLE_MAX, TG_BUBBLE_DELIMITER,
@@ -24,31 +25,7 @@ log = logging.getLogger(__name__)
 def _split_bubbles(text: str, max_bubbles: int = 4,
                    delimiter: str = "|||",
                    min_chars: int = 8) -> list[str]:
-    """Split text into chat bubbles.
-
-    Primary split: explicit delimiter (LLM-controlled).
-    Fallback: double-newline split when no delimiter found.
-    Merge short fragments into previous bubble.
-    """
-    # Try explicit delimiter first
-    if delimiter and delimiter in text:
-        parts = [p.strip() for p in text.split(delimiter) if p.strip()]
-    else:
-        # Fallback: double-newline split
-        parts = [p.strip() for p in text.split("\n\n") if p.strip()]
-
-    if len(parts) <= 1:
-        return [text.strip()]
-
-    # Merge short fragments
-    bubbles: list[str] = [parts[0]]
-    for part in parts[1:]:
-        if len(part) < min_chars:
-            bubbles[-1] += "\n\n" + part
-        else:
-            bubbles.append(part)
-
-    return bubbles[:max_bubbles]
+    return _split_bubbles_util(text, max_bubbles, delimiter, min_chars)
 
 
 def _is_owner(user_id: int) -> bool:

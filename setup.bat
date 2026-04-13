@@ -41,7 +41,7 @@ call .venv\Scripts\activate.bat
 
 REM Install dependencies
 echo  Installing dependencies...
-.venv\Scripts\pip.exe install -r requirements.txt fastapi uvicorn cryptography --quiet
+.venv\Scripts\pip.exe install -r requirements.txt fastapi uvicorn cryptography sqlite-vec --quiet
 if %errorlevel% neq 0 (
     echo.
     echo  [ERROR] Dependency install failed.

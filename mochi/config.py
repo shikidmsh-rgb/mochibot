@@ -58,11 +58,9 @@ AZURE_API_VERSION = _env("AZURE_API_VERSION", "2024-12-01-preview")
 # ═══════════════════════════════════════════════════════════════════════════
 # Model Tier Routing (3-tier system: lite / chat / deep)
 # ═══════════════════════════════════════════════════════════════════════════
-# When TIER_ROUTING_ENABLED=true, each tier can use a different model/provider.
-# When false (default), all tiers fall back to CHAT_* / THINK_* config.
-# Zero-config = existing 2-model behavior.
-
-TIER_ROUTING_ENABLED = _env_bool("TIER_ROUTING_ENABLED", False)
+# Each tier can use a different model/provider via env vars or admin portal.
+# If tier-specific env vars are empty, they fall back to CHAT_* config.
+# DB tier assignments (admin portal) always take priority over env.
 
 TIER_LITE_PROVIDER = _env("TIER_LITE_PROVIDER")
 TIER_LITE_API_KEY = _env("TIER_LITE_API_KEY")
@@ -98,10 +96,26 @@ EMBEDDING_CACHE_MAX_SIZE = _env_int("EMBEDDING_CACHE_MAX_SIZE", 128)
 EMBEDDING_CACHE_TTL_S = _env_int("EMBEDDING_CACHE_TTL_S", 300)
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Transport
+# Transport — Telegram
 # ═══════════════════════════════════════════════════════════════════════════
 
 TELEGRAM_BOT_TOKEN = _env("TELEGRAM_BOT_TOKEN")
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Transport — WeChat (optional secondary transport)
+# ═══════════════════════════════════════════════════════════════════════════
+# Run `python weixin_auth.py` to scan QR code and get your token.
+
+WEIXIN_ENABLED = _env_bool("WEIXIN_ENABLED", False)
+WEIXIN_BOT_TOKEN = _env("WEIXIN_BOT_TOKEN")
+WEIXIN_BASE_URL = _env("WEIXIN_BASE_URL", "https://ilinkai.weixin.qq.com")
+WEIXIN_ALLOWED_USERS = [u.strip() for u in _env("WEIXIN_ALLOWED_USERS").split(",") if u.strip()]
+WEIXIN_POLL_TIMEOUT_S = _env_int("WEIXIN_POLL_TIMEOUT_S", 35)
+WEIXIN_BUBBLE_DELAY_S = _env_float("WEIXIN_BUBBLE_DELAY_S", 1.0)
+WEIXIN_MSG_LIMIT = _env_int("WEIXIN_MSG_LIMIT", 4000)
+WEIXIN_BACKOFF_MIN_S = _env_int("WEIXIN_BACKOFF_MIN_S", 2)
+WEIXIN_BACKOFF_MAX_S = _env_int("WEIXIN_BACKOFF_MAX_S", 30)
+WEIXIN_MAX_CONSECUTIVE_FAILURES = _env_int("WEIXIN_MAX_CONSECUTIVE_FAILURES", 3)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Owner
@@ -360,11 +374,13 @@ def validate_config() -> None:
     issues: list[tuple[str, str, str]] = []
 
     if not CHAT_MODEL:
-        issues.append(("CRITICAL", "CHAT_MODEL", "No LLM model configured"))
+        issues.append(("WARN", "CHAT_MODEL",
+                        "No LLM model in .env — configure via admin portal or set CHAT_MODEL"))
     if not CHAT_API_KEY and CHAT_PROVIDER != "ollama":
-        issues.append(("CRITICAL", "CHAT_API_KEY", "No API key for chat model"))
-    if not TELEGRAM_BOT_TOKEN:
-        issues.append(("WARN", "TELEGRAM_BOT_TOKEN",
+        issues.append(("WARN", "CHAT_API_KEY",
+                        "No API key in .env — configure via admin portal or set CHAT_API_KEY"))
+    if not TELEGRAM_BOT_TOKEN and not WEIXIN_ENABLED:
+        issues.append(("WARN", "TELEGRAM_BOT_TOKEN / WEIXIN_ENABLED",
                         "No transport configured — bot will not receive messages"))
 
     has_critical = False

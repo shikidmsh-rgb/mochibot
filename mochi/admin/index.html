@@ -146,6 +146,7 @@ select.form-input { cursor:pointer; }
     <button class="nav-item" data-page="basic"><span class="nav-icon">⚙️</span> 基本配置</button>
     <button class="nav-item" data-page="skills"><span class="nav-icon">⚡</span> 技能</button>
     <button class="nav-item" data-page="prompts"><span class="nav-icon">📝</span> 人格 & Prompts</button>
+    <button class="nav-item" data-page="memory"><span class="nav-icon">🧠</span> 记忆库</button>
   </nav>
 </aside>
 
@@ -185,6 +186,50 @@ select.form-input { cursor:pointer; }
   <h2 class="page-title">人格 & Prompts</h2>
   <div id="prompts-content"><div class="loading"><div class="spinner"></div> 加载中...</div></div>
 </section>
+
+<!-- ═══════ Page 5: Memory ═══════ -->
+<section id="page-memory" class="page">
+  <h2 class="page-title">记忆库</h2>
+
+  <!-- Core Memory -->
+  <div class="card" style="margin-bottom:20px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+      <div class="card-title" style="margin-bottom:0">Core Memory</div>
+      <span class="badge badge-info" id="memory-token-badge">-</span>
+    </div>
+    <div id="memory-content">
+      <div class="loading"><div class="spinner"></div> 加载中...</div>
+    </div>
+  </div>
+
+  <!-- L2 Memory Items -->
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+      <div class="card-title" style="margin-bottom:0">L2 Memory</div>
+      <button class="btn btn-ghost btn-sm" onclick="searchMemoryItems(1)">↻ 刷新</button>
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">
+      <input id="mi-q" type="text" placeholder="🔍 关键词搜索…"
+        class="form-input" style="flex:1;min-width:180px;border-radius:20px;padding:8px 14px;font-size:13px"
+        onkeydown="if(event.key==='Enter')searchMemoryItems(1)" />
+      <select id="mi-cat" class="form-input"
+        style="width:auto;border-radius:20px;padding:8px 14px;font-size:13px"
+        onchange="searchMemoryItems(1)">
+        <option value="">全部分类</option>
+      </select>
+      <select id="mi-sort" class="form-input"
+        style="width:auto;border-radius:20px;padding:8px 14px;font-size:13px"
+        onchange="searchMemoryItems(1)">
+        <option value="importance">按重要性</option>
+        <option value="updated">按更新时间</option>
+      </select>
+      <button class="btn btn-primary btn-sm" onclick="searchMemoryItems(1)">搜索</button>
+    </div>
+    <div id="l2memory-content">
+      <div class="loading"><div class="spinner"></div> 加载中...</div>
+    </div>
+  </div>
+</section>
 </main>
 
 <!-- Modal -->
@@ -210,6 +255,31 @@ select.form-input { cursor:pointer; }
 <!-- Toast -->
 <div class="toast" id="toast"></div>
 
+<!-- Memory Item Edit Modal -->
+<div class="modal-overlay" id="mi-modal" onclick="if(event.target===this)closeMiModal()">
+  <div class="modal">
+    <h3 id="mi-modal-title">编辑记忆</h3>
+    <input type="hidden" id="mi-edit-id" />
+    <div class="form-group"><label class="form-label">内容</label>
+      <textarea class="form-input" id="mi-edit-content" style="min-height:120px;resize:vertical;font-family:inherit"></textarea>
+    </div>
+    <div class="form-group"><label class="form-label">分类</label>
+      <input class="form-input" id="mi-edit-category" type="text" placeholder="e.g. preference, fact, event" />
+    </div>
+    <div class="form-group"><label class="form-label">重要性</label>
+      <select class="form-input" id="mi-edit-importance">
+        <option value="1">★ routine</option>
+        <option value="2">★★ important</option>
+        <option value="3">★★★ critical</option>
+      </select>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeMiModal()">取消</button>
+      <button class="btn btn-primary" onclick="saveMiEdit()">💾 保存</button>
+    </div>
+  </div>
+</div>
+
 <script>
 // Persist token across page refreshes via sessionStorage (cleared when tab closes)
 const _urlToken = new URLSearchParams(location.search).get('token') || '';
@@ -222,6 +292,7 @@ if (_urlToken) {
 }
 const authToken = _urlToken || sessionStorage.getItem('_admin_token') || '';
 let _telegramBotInfo = null; // {username, first_name} — set after successful token test
+let _weixinConnected = false; // set after successful WeChat token test
 
 async function api(method, path, body) {
   const opts = {method, headers:{'Content-Type':'application/json'}};
@@ -236,7 +307,7 @@ function showToast(msg) { const t=document.getElementById('toast'); t.textConten
 
 // ── Navigation ───────────────────────────
 const loaded = {};
-const loaders = { welcome:loadWelcome, models:loadModels, heartbeat:loadHeartbeat, basic:loadBasic, skills:loadSkills, prompts:loadPrompts };
+const loaders = { welcome:loadWelcome, models:loadModels, heartbeat:loadHeartbeat, basic:loadBasic, skills:loadSkills, prompts:loadPrompts, memory:loadMemory };
 
 document.getElementById('sidebar-nav').addEventListener('click', e => {
   const item = e.target.closest('.nav-item');
@@ -322,6 +393,66 @@ async function startBotAndRefresh() {
   setTimeout(() => { loaded.welcome = false; loadWelcome(); }, 2000);
 }
 
+function toggleWeixinConfig() {
+  const el = document.getElementById('weixin-cfg');
+  if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+
+async function saveWeixinConfig() {
+  const tokenInput = document.getElementById('cfg-WEIXIN_BOT_TOKEN');
+  if (!tokenInput || !tokenInput.value.trim()) return showToast('Bot Token 不能为空');
+  const token = tokenInput.value.trim();
+  const allowedInput = document.getElementById('cfg-WEIXIN_ALLOWED_USERS');
+  const allowed = allowedInput ? allowedInput.value.trim() : '';
+  const statusEl = document.getElementById('wx-connect-status');
+  const saveBtn = document.getElementById('wx-save-btn');
+
+  if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = '保存中...'; }
+  if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-soft)">⏳ 保存并验证中...</span>';
+
+  try {
+    // Step 1: Save to .env
+    const envData = {
+      'WEIXIN_ENABLED': 'true',
+      'WEIXIN_BOT_TOKEN': token,
+    };
+    if (allowed) envData['WEIXIN_ALLOWED_USERS'] = allowed;
+    const r = await api('PUT', '/env', envData);
+    if (r.errors && r.errors.length) {
+      if (statusEl) statusEl.innerHTML = '<span style="color:var(--danger)">❌ 保存失败: ' + r.errors.map(e=>esc(e.key)).join(', ') + '</span>';
+      return;
+    }
+
+    // Step 2: Test connection
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-soft)">⏳ 验证 Token...</span>';
+    const test = await api('POST', '/weixin/test', {token});
+
+    if (test.ok) {
+      _weixinConnected = true;
+      if (statusEl) statusEl.innerHTML = '<span class="badge badge-ok" style="font-size:13px">✅ Token 有效</span>'
+        + '<div style="margin-top:8px;color:var(--text-soft);font-size:13px">⏳ 重启 Bot 以启用 WeChat...</div>';
+      showToast('✅ WeChat Token 验证成功，正在重启...');
+      startBotAndRefresh();
+    } else {
+      _weixinConnected = false;
+      if (statusEl) statusEl.innerHTML = '<span style="color:var(--danger)">❌ Token 无效: ' + esc(test.error) + '</span>';
+    }
+  } catch(e) {
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--danger)">❌ 错误: ' + esc(e.message) + '</span>';
+  } finally {
+    if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '保存并连接'; }
+  }
+}
+
+async function disableWeixin() {
+  try {
+    await api('PUT', '/env', {'WEIXIN_ENABLED': 'false'});
+    _weixinConnected = false;
+    showToast('WeChat 已禁用，重启 Bot 生效');
+    startBotAndRefresh();
+  } catch(e) { showToast('操作失败: ' + e.message); }
+}
+
 // ── Welcome page bot-status polling ──────
 let _welcomePollTimer = null;
 let _welcomeLastRunning = null;
@@ -365,6 +496,8 @@ async function loadWelcome() {
 
     const hasModel = s.config_status.chat_model.set && s.config_status.chat_api_key.set;
     const hasTelegram = s.config_status.telegram_bot_token.set;
+    const hasWeixin = s.config_status.weixin_enabled && s.config_status.weixin_enabled.set
+                   && s.config_status.weixin_bot_token && s.config_status.weixin_bot_token.set;
 
     // Step 3: check soul.md exists with content
     const soulPrompt = (promptsData.prompts || []).find(p => p.name === 'system_chat/soul.md');
@@ -456,6 +589,25 @@ async function loadWelcome() {
       ${tgAction}
     </div>`;
 
+    // Step 2b: WeChat (optional secondary transport)
+    let wxBadges = '';
+    let wxAction = '';
+    if (wxConfigured) {
+      wxBadges = '<span class="badge badge-ok">已启用</span>';
+      wxAction = '<button class="btn btn-ghost btn-sm" onclick="toggleWeixinConfig()">重新配置</button>';
+    } else {
+      wxAction = '<button class="btn btn-ghost btn-sm" onclick="toggleWeixinConfig()">配置</button>';
+    }
+    html += `<div class="check-row" style="padding:10px 0;border-bottom:1px solid var(--border)">
+      <span class="check-icon" style="font-size:20px">${wxConfigured ? stepDone() : '<span style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;font-size:12px;color:var(--text-soft)">💬</span>'}</span>
+      <div style="flex:1">
+        <strong>配置 WeChat</strong> <span class="badge badge-gray" style="font-size:10px;vertical-align:middle">可选</span>
+        <div style="font-size:12px;color:var(--text-soft)">微信 iLink Bot，可与 Telegram 同时运行</div>
+        ${wxBadges?'<div style="display:flex;gap:6px;margin-top:4px;align-items:center">'+wxBadges+'</div>':''}
+      </div>
+      ${wxAction}
+    </div>`;
+
     // Step 3: Personality (required)
     html += `<div class="check-row" style="padding:10px 0;border-bottom:1px solid var(--border)">
       <span class="check-icon" style="font-size:20px">${hasPersonality?stepDone():stepCircle(3, tgConfigured)}</span>
@@ -505,6 +657,23 @@ async function loadWelcome() {
     html += '<button class="btn btn-primary btn-sm" id="tg-save-btn" onclick="saveTransportConfig()">保存并连接</button>';
     html += '</div>';
     html += '<div id="tg-connect-status" style="margin-top:10px"></div>';
+    html += '</div></div>';
+
+    // ── WeChat inline config (expandable) ──
+    const wxConfigured = hasWeixin || _weixinConnected;
+    html += '<div id="weixin-cfg" style="display:none">';
+    html += '<div class="card">';
+    html += '<div class="card-title">WeChat 配置</div>';
+    html += '<p style="font-size:12px;color:var(--text-soft);margin-bottom:12px">需要先运行 <code style="background:var(--primary-bg);padding:1px 5px;border-radius:4px">python weixin_auth.py</code> 扫描二维码获取 Token</p>';
+    html += '<div class="form-group"><label class="form-label">Bot Token</label>';
+    html += '<input class="form-input" id="cfg-WEIXIN_BOT_TOKEN" type="password" autocomplete="new-password" placeholder="' + (wxConfigured ? '（已配置，粘贴新 Token 可覆盖）' : '580ba3c1dc75@im.bot:...') + '"></div>';
+    html += '<div class="form-group"><label class="form-label">允许的用户 <span style="font-weight:400;color:var(--text-soft)">(可选，留空允许所有人)</span></label>';
+    html += '<input class="form-input" id="cfg-WEIXIN_ALLOWED_USERS" type="text" placeholder="user_id_1, user_id_2"></div>';
+    html += '<div style="display:flex;align-items:center;gap:8px;margin-top:4px">';
+    html += '<button class="btn btn-primary btn-sm" id="wx-save-btn" onclick="saveWeixinConfig()">保存并连接</button>';
+    if (wxConfigured) html += '<button class="btn btn-ghost btn-sm" onclick="disableWeixin()">禁用 WeChat</button>';
+    html += '</div>';
+    html += '<div id="wx-connect-status" style="margin-top:10px"></div>';
     html += '</div></div>';
 
     html += '</div>'; // close setup steps container
@@ -704,6 +873,182 @@ async function deleteModel(name) {
   if (!confirm('确定删除模型 "' + name + '"？')) return;
   try { await api('DELETE','/models/'+encodeURIComponent(name)); showToast('已删除'); loaded.models=false; loadModels(); }
   catch(e) { showToast('错误: ' + e.message); }
+}
+
+// ═══════ Memory ═══════
+async function loadMemory() {
+  loaded.memory = true;
+  const el = document.getElementById('memory-content');
+  const badge = document.getElementById('memory-token-badge');
+  el.innerHTML = '<div class="loading"><div class="spinner"></div> 加载中...</div>';
+  try {
+    const data = await api('GET', '/memory');
+    const approxTok = Math.round(data.chars / 2);
+    const tokClass = approxTok < 600 ? 'badge-ok' : approxTok < 800 ? 'badge-warn' : 'badge-err';
+    badge.className = 'badge ' + tokClass;
+    badge.textContent = '~' + approxTok + ' tokens';
+    el.innerHTML = `
+      <textarea class="form-input" id="memory-textarea" style="min-height:200px;resize:vertical;font-family:monospace;font-size:13px;line-height:1.6"
+        oninput="updateMemoryCount()">${esc(data.content)}</textarea>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
+        <span style="font-size:12px;color:var(--text-soft)" id="memory-char-count">~${approxTok} tokens（${data.chars.toLocaleString()} 字符）</span>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-ghost btn-sm" onclick="loadMemory()">↺ 重置</button>
+          <button class="btn btn-primary btn-sm" onclick="saveMemory()">💾 保存</button>
+        </div>
+      </div>
+    `;
+  } catch (e) {
+    el.innerHTML = '<div class="loading" style="color:var(--danger)">❌ ' + esc(e.message) + '</div>';
+  }
+  // Also load L2 memory
+  searchMemoryItems(1);
+}
+
+function updateMemoryCount() {
+  const ta = document.getElementById('memory-textarea');
+  const el = document.getElementById('memory-char-count');
+  const badge = document.getElementById('memory-token-badge');
+  if (!ta || !el) return;
+  const chars = ta.value.length;
+  const approxTok = Math.round(chars / 2);
+  el.textContent = '~' + approxTok.toLocaleString() + ' tokens（' + chars.toLocaleString() + ' 字符）';
+  if (badge) {
+    badge.className = 'badge ' + (approxTok < 600 ? 'badge-ok' : approxTok < 800 ? 'badge-warn' : 'badge-err');
+    badge.textContent = '~' + approxTok + ' tokens';
+  }
+}
+
+async function saveMemory() {
+  const ta = document.getElementById('memory-textarea');
+  if (!ta) return;
+  try {
+    await api('POST', '/memory', { content: ta.value });
+    showToast('✅ Core Memory 已更新');
+    loadMemory();
+  } catch (e) { showToast('❌ 保存失败: ' + e.message); }
+}
+
+// ── L2 Memory ──────────────────────────────
+const IMPORTANCE_STARS = ['', '★ routine', '★★ important', '★★★ critical'];
+let _miCurrentPage = 1;
+let _miCatsLoaded = false;
+
+async function searchMemoryItems(page) {
+  page = page || 1;
+  _miCurrentPage = page;
+  const el = document.getElementById('l2memory-content');
+  el.innerHTML = '<div class="loading"><div class="spinner"></div> 搜索中...</div>';
+  const q = (document.getElementById('mi-q').value || '').trim();
+  const cat = document.getElementById('mi-cat').value;
+  const sort = document.getElementById('mi-sort').value;
+  const limit = 20;
+  try {
+    const params = new URLSearchParams({ page, limit, sort });
+    if (q) params.set('q', q);
+    if (cat) params.set('category', cat);
+    const data = await api('GET', '/memory-items?' + params);
+
+    // Populate category dropdown once
+    if (!_miCatsLoaded && data.categories) {
+      const sel = document.getElementById('mi-cat');
+      const cur = sel.value;
+      sel.innerHTML = '<option value="">全部分类</option>' +
+        data.categories.map(c =>
+          '<option value="' + esc(c.name === '(无)' ? '' : c.name) + '"' +
+          (cur === c.name ? ' selected' : '') + '>' +
+          esc(c.name) + ' (' + c.count + ')</option>'
+        ).join('');
+      _miCatsLoaded = true;
+    }
+
+    if (!data.items.length) {
+      el.innerHTML = '<div class="loading" style="color:var(--text-soft)">没有匹配的记忆条目</div>';
+      return;
+    }
+
+    const rows = data.items.map(function(item) {
+      const stars = IMPORTANCE_STARS[item.importance] || item.importance;
+      const starsColor = item.importance >= 3 ? 'var(--danger)' : item.importance >= 2 ? 'var(--warning)' : 'var(--text-soft)';
+      const catBadge = item.category ? '<span class="badge badge-gray" style="font-size:10px">' + esc(item.category) + '</span>' : '';
+      const srcBadge = '<span class="badge badge-gray" style="font-size:10px">' + esc(item.source) + '</span>';
+      const ts = item.updated_at ? item.updated_at.slice(0, 16).replace('T', ' ') : '';
+      return '<tr>' +
+        '<td style="max-width:420px;word-break:break-all;white-space:pre-wrap;font-size:13px;line-height:1.5">' + esc(item.content) + '</td>' +
+        '<td style="white-space:nowrap">' + catBadge + '</td>' +
+        '<td style="color:' + starsColor + ';white-space:nowrap;font-size:12px">' + stars + '</td>' +
+        '<td style="color:var(--text-soft);font-size:11px;white-space:nowrap">' + srcBadge + '</td>' +
+        '<td style="color:var(--text-soft);font-size:11px;white-space:nowrap">' + item.access_count + '</td>' +
+        '<td style="color:var(--text-soft);font-size:11px;white-space:nowrap">' + ts + '</td>' +
+        '<td style="white-space:nowrap">' +
+          '<button class="btn btn-ghost btn-sm" onclick=\'openMiEdit(' + JSON.stringify(item).replace(/'/g,"&#39;") + ')\' title="编辑">✏️</button> ' +
+          '<button class="btn btn-danger btn-sm" onclick="deleteMi(' + item.id + ')" title="删除">🗑</button>' +
+        '</td>' +
+      '</tr>';
+    }).join('');
+
+    const pages = data.pages;
+    const pageNums = Array.from({length:pages},function(_,i){return i+1})
+      .filter(function(p){return p===1||p===pages||Math.abs(p-page)<=2});
+    const pageBtns = pageNums.reduce(function(acc,p,i,arr){
+      if(i>0 && p-arr[i-1]>1) acc.push('…');
+      acc.push(p);
+      return acc;
+    }, []).map(function(p){
+      return p==='…'
+        ? '<span style="padding:4px 8px;color:var(--text-soft)">…</span>'
+        : '<button class="btn '+(p===page?'btn-primary':'btn-ghost')+'" style="min-width:32px;padding:4px 10px;font-size:12px" onclick="searchMemoryItems('+p+')">'+p+'</button>';
+    }).join('');
+
+    el.innerHTML =
+      '<div style="margin-bottom:10px;font-size:13px;color:var(--text-soft)">共 ' + data.total.toLocaleString() + ' 条 · 第 ' + page + '/' + pages + ' 页</div>' +
+      '<div style="overflow-x:auto"><table class="tbl"><thead><tr>' +
+      '<th>内容</th><th>分类</th><th>重要性</th><th>来源</th><th>访问</th><th>更新时间</th><th>操作</th>' +
+      '</tr></thead><tbody>' + rows + '</tbody></table></div>' +
+      '<div style="display:flex;gap:6px;justify-content:center;margin-top:14px;flex-wrap:wrap">' +
+        (page > 1 ? '<button class="btn btn-ghost btn-sm" onclick="searchMemoryItems('+(page-1)+')">‹ 上一页</button>' : '') +
+        pageBtns +
+        (page < pages ? '<button class="btn btn-ghost btn-sm" onclick="searchMemoryItems('+(page+1)+')">下一页 ›</button>' : '') +
+      '</div>';
+  } catch (e) {
+    el.innerHTML = '<div class="loading" style="color:var(--danger)">❌ ' + esc(e.message) + '</div>';
+  }
+}
+
+function openMiEdit(item) {
+  document.getElementById('mi-edit-id').value = item.id;
+  document.getElementById('mi-edit-content').value = item.content;
+  document.getElementById('mi-edit-category').value = item.category || '';
+  document.getElementById('mi-edit-importance').value = item.importance;
+  document.getElementById('mi-modal-title').textContent = '编辑记忆 #' + item.id;
+  document.getElementById('mi-modal').classList.add('open');
+}
+
+function closeMiModal() {
+  document.getElementById('mi-modal').classList.remove('open');
+}
+
+async function saveMiEdit() {
+  const id = document.getElementById('mi-edit-id').value;
+  const content = document.getElementById('mi-edit-content').value.trim();
+  const category = document.getElementById('mi-edit-category').value.trim();
+  const importance = parseInt(document.getElementById('mi-edit-importance').value);
+  if (!content) { showToast('❌ 内容不能为空'); return; }
+  try {
+    await api('POST', '/memory-items/' + id, { content, category, importance });
+    showToast('✅ 记忆已更新');
+    closeMiModal();
+    searchMemoryItems(_miCurrentPage);
+  } catch (e) { showToast('❌ 更新失败: ' + e.message); }
+}
+
+async function deleteMi(id) {
+  if (!confirm('确定删除记忆 #' + id + '？\n（会移入回收站，不会永久丢失）')) return;
+  try {
+    await api('POST', '/memory-items/delete', { ids: [id] });
+    showToast('🗑 已删除');
+    searchMemoryItems(_miCurrentPage);
+  } catch (e) { showToast('❌ 删除失败: ' + e.message); }
 }
 
 async function testModel(name, btn) {

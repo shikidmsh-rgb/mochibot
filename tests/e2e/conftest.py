@@ -62,12 +62,7 @@ def mock_llm_factory(monkeypatch):
 
         # Patch the local binding in ai_client (import-time binding trap)
         import mochi.ai_client as ai_client_mod
-        monkeypatch.setattr(ai_client_mod, "get_client", lambda *a, **kw: mock)
         monkeypatch.setattr(ai_client_mod, "get_client_for_tier", lambda *a, **kw: mock)
-
-        # Also clear the LLM module cache to avoid cross-test leakage
-        import mochi.llm as llm_mod
-        monkeypatch.setattr(llm_mod, "_cached_clients", {})
 
         return mock
 

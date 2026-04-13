@@ -14,7 +14,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 
-from mochi.llm import get_client, get_client_for_tier, LLMResponse
+from mochi.llm import get_client_for_tier, LLMResponse
 from mochi.prompt_loader import get_prompt
 from mochi.db import (
     save_message, get_recent_messages, get_core_memory, list_habits, log_usage,

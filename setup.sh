@@ -55,7 +55,7 @@ fi
 
 # ── Install dependencies ──
 echo "  Installing dependencies..."
-.venv/bin/pip install -r requirements.txt fastapi uvicorn --quiet
+.venv/bin/pip install -r requirements.txt fastapi uvicorn sqlite-vec --quiet
 echo "  [OK] Dependencies installed."
 
 # ── Launch ──

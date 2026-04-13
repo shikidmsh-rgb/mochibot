@@ -14,3 +14,9 @@ ddgs>=8.0.0
 
 # Optional: Anthropic provider
 # anthropic>=0.25.0
+
+# Optional: Native vector search (faster memory recall when embedding is enabled)
+# sqlite-vec>=0.1.6
+
+# Optional: WeChat transport (iLink API)
+# aiohttp>=3.9

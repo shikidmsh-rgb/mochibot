@@ -1,12 +1,11 @@
 """LLM provider abstraction — provider-agnostic.
 
 Supports any OpenAI-compatible API, Azure OpenAI, and Anthropic.
-Chat and Think can use completely independent providers/models/endpoints.
 
 Usage:
-    from mochi.llm import get_client
-    client = get_client()            # chat model
-    client = get_client("think")     # think model (falls back to chat)
+    from mochi.llm import get_client_for_tier
+    client = get_client_for_tier()         # chat tier (default)
+    client = get_client_for_tier("deep")   # deep tier
     response = client.chat(messages, tools=...)
 """
 
@@ -366,8 +365,6 @@ class AnthropicProvider(LLMProvider):
 # Factory
 # ═══════════════════════════════════════════════════════════════════════════
 
-_cached_clients: dict[str, LLMProvider] = {}  # keyed by purpose
-
 
 def _resolve_config(purpose: str) -> tuple[str, str, str, str]:
     """Resolve (provider, api_key, model, base_url) for a given purpose.
@@ -407,51 +404,11 @@ def _make_client(provider: str, api_key: str, model: str, base_url: str) -> LLMP
         )
 
 
-def get_client(purpose: str = "chat") -> LLMProvider:
-    """Get (or create) the LLM client for a given purpose.
-
-    purpose:
-        "chat"  — main conversation (default)
-        "think" — heartbeat Think + maintenance (falls back to Chat config)
-    """
-    if purpose in _cached_clients:
-        return _cached_clients[purpose]
-
-    provider, api_key, model, base_url = _resolve_config(purpose)
-    client = _make_client(provider, api_key, model, base_url)
-
-    if purpose == "think" and (THINK_MODEL or THINK_PROVIDER):
-        log.info("LLM [%s]: provider=%s model=%s", purpose, provider, model)
-    else:
-        log.info("LLM [%s]: provider=%s model=%s", purpose, provider, model)
-
-    _cached_clients[purpose] = client
-    return client
-
-
 def get_client_for_tier(tier: str = "chat") -> LLMProvider:
     """Get an LLM client via the model pool tier routing.
 
-    If TIER_ROUTING_ENABLED=true, delegates to ModelPool.get_tier().
-    Otherwise, tries env-based chat/think config first, then falls back
-    to ModelPool (which loads DB tier assignments from admin portal).
+    Always delegates to ModelPool.get_tier(), which resolves:
+    DB tier assignments > env TIER_* config > env CHAT_* fallback.
     """
-    from mochi.config import TIER_ROUTING_ENABLED
-    if TIER_ROUTING_ENABLED:
-        from mochi.model_pool import get_pool
-        return get_pool().get_tier(tier)
-
-    # TIER_ROUTING_ENABLED=false: try env config first, then DB models
-    # (admin portal saves models to DB, not .env)
-    purpose = "think" if tier == "deep" else "chat"
-    try:
-        return get_client(purpose)
-    except (ValueError, KeyError):
-        try:
-            from mochi.model_pool import get_pool
-            return get_pool().get_tier(tier)
-        except (KeyError, Exception):
-            raise ValueError(
-                "No model configured. Add a model via the admin portal "
-                "or set CHAT_MODEL in .env."
-            )
+    from mochi.model_pool import get_pool
+    return get_pool().get_tier(tier)

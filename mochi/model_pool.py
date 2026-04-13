@@ -5,8 +5,7 @@ Three tiers:
     chat  — balanced model for daily conversation (default)
     deep  — strong model for background reasoning, memory ops, analysis
 
-When TIER_ROUTING_ENABLED=false (default), all tiers fall back to the
-CHAT_* / THINK_* config — zero-config = existing 2-model behavior.
+Priority: DB tier assignments (admin portal) > env TIER_* vars > env CHAT_* fallback.
 """
 
 import struct

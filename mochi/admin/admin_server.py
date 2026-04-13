@@ -366,6 +366,7 @@ if HAS_FASTAPI:
             EMBEDDING_PROVIDER,
             AZURE_EMBEDDING_ENDPOINT, AZURE_EMBEDDING_API_KEY,
             DB_PATH,
+            WEIXIN_ENABLED,
         )
         from mochi.admin.admin_env import env_key_is_set
         from mochi.admin.admin_env import read_env_value
@@ -399,6 +400,8 @@ if HAS_FASTAPI:
             "tier_models": tier_models,
             "chat_provider": {"set": bool(CHAT_PROVIDER), "value": CHAT_PROVIDER},
             "telegram_bot_token": {"set": bool(TELEGRAM_BOT_TOKEN) or bool((read_env_value("TELEGRAM_BOT_TOKEN") or "").strip())},
+            "weixin_enabled": {"set": bool(WEIXIN_ENABLED) or (read_env_value("WEIXIN_ENABLED") or "").strip().lower() in ("1", "true", "yes")},
+            "weixin_bot_token": {"set": bool((read_env_value("WEIXIN_BOT_TOKEN") or "").strip())},
             "owner_user_id": {
                 "set": bool(OWNER_USER_ID) or bool((read_env_value("OWNER_USER_ID") or "").strip()),
                 "value": str(OWNER_USER_ID) if OWNER_USER_ID else (read_env_value("OWNER_USER_ID") or ""),
@@ -1043,6 +1046,51 @@ if HAS_FASTAPI:
         except Exception as e:
             return {"ok": False, "error": str(e)[:500]}
 
+    # ── WeChat token test ───────────────────────────────────────────────
+
+    @app.post("/api/weixin/test", dependencies=[Depends(_verify_token)])
+    async def api_test_weixin(request: Request):
+        """Test a WeChat Bot Token by calling the getconfig API."""
+        _check_test_rate()
+        body = await request.json()
+        token = (body.get("token") or "").strip()
+        if not token:
+            raise HTTPException(400, "token is required")
+        try:
+            import aiohttp
+        except ImportError:
+            raise HTTPException(501, "aiohttp not installed (pip install aiohttp)")
+        import struct, os, base64
+        uint32 = struct.unpack(">I", os.urandom(4))[0]
+        uin = base64.b64encode(str(uint32).encode()).decode()
+        headers = {
+            "Content-Type": "application/json",
+            "AuthorizationType": "ilink_bot_token",
+            "Authorization": f"Bearer {token}",
+            "X-WECHAT-UIN": uin,
+        }
+        base_url = (body.get("base_url") or "https://ilinkai.weixin.qq.com").rstrip("/")
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{base_url}/ilink/bot/getconfig",
+                    json={"ilink_user_id": "", "context_token": ""},
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    data = await resp.json(content_type=None)
+                    ret = data.get("ret", -1)
+                    errcode = data.get("errcode", 0)
+                    if ret == 0 and errcode == 0:
+                        return {"ok": True}
+                    if errcode == -14 or ret == -14:
+                        return {"ok": False, "error": "Token expired — re-run weixin_auth.py"}
+                    return {"ok": False, "error": f"API error: ret={ret} errcode={errcode}"}
+        except asyncio.TimeoutError:
+            return {"ok": False, "error": "Connection timed out (10s)"}
+        except Exception as e:
+            return {"ok": False, "error": str(e)[:500]}
+
     # ═══════════════════════════════════════════════════════════════════════
     # Page 4: Prompts
     # ═══════════════════════════════════════════════════════════════════════
@@ -1090,6 +1138,144 @@ if HAS_FASTAPI:
         reload_all()
         log.info("Admin: saved prompt '%s' (%d chars)", name, len(content))
         return {"ok": True, "name": name, "chars": len(content)}
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # Page 5: Memory
+    # ═══════════════════════════════════════════════════════════════════════
+
+    @app.get("/api/memory", dependencies=[Depends(_verify_token)])
+    async def api_get_memory():
+        """Return core memory content."""
+        from mochi.config import OWNER_USER_ID
+        from mochi.db import get_core_memory
+        uid = OWNER_USER_ID or 0
+        content = get_core_memory(uid)
+        return {"content": content, "chars": len(content)}
+
+    @app.post("/api/memory", dependencies=[Depends(_verify_token)])
+    async def api_save_memory(request: Request):
+        """Update core memory content."""
+        from mochi.config import OWNER_USER_ID
+        from mochi.db import get_core_memory, update_core_memory
+        body = await request.json()
+        content = body.get("content", "")
+        uid = OWNER_USER_ID or 0
+        update_core_memory(uid, content)
+        log.info("Admin: updated core memory (%d chars)", len(content))
+        return {"ok": True, "chars": len(content)}
+
+    @app.get("/api/memory-items", dependencies=[Depends(_verify_token)])
+    async def api_get_memory_items(
+        q: str = "", category: str = "", sort: str = "importance",
+        page: int = 1, limit: int = 20,
+    ):
+        """Browse L2 memory_items with keyword search, category filter, pagination."""
+        from mochi.config import OWNER_USER_ID
+        from mochi.db import _connect
+
+        uid = OWNER_USER_ID or 0
+        page = max(1, page)
+        limit = max(1, min(limit, 100))
+
+        conn = _connect()
+        conditions = ["user_id = ?"]
+        params: list = [uid]
+        if q:
+            conditions.append("content LIKE ?")
+            params.append(f"%{q}%")
+        if category:
+            conditions.append("category = ?")
+            params.append(category)
+        where = " AND ".join(conditions)
+
+        order = "importance DESC, updated_at DESC" if sort == "importance" else "updated_at DESC"
+
+        total = conn.execute(
+            f"SELECT COUNT(*) as cnt FROM memory_items WHERE {where}", params
+        ).fetchone()["cnt"]
+
+        offset = (page - 1) * limit
+        rows = conn.execute(
+            f"SELECT id, category, content, importance, access_count, source, "
+            f"created_at, updated_at FROM memory_items "
+            f"WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",
+            params + [limit, offset],
+        ).fetchall()
+
+        cat_rows = conn.execute(
+            "SELECT category, COUNT(*) as cnt FROM memory_items "
+            "WHERE user_id = ? GROUP BY category ORDER BY cnt DESC",
+            (uid,),
+        ).fetchall()
+        conn.close()
+
+        return {
+            "total": total,
+            "page": page,
+            "limit": limit,
+            "pages": max(1, (total + limit - 1) // limit),
+            "categories": [{"name": r["category"] or "(无)", "count": r["cnt"]} for r in cat_rows],
+            "items": [
+                {
+                    "id": r["id"],
+                    "category": r["category"],
+                    "content": r["content"],
+                    "importance": r["importance"],
+                    "access_count": r["access_count"],
+                    "source": r["source"],
+                    "created_at": r["created_at"],
+                    "updated_at": r["updated_at"],
+                }
+                for r in rows
+            ],
+        }
+
+    @app.post("/api/memory-items/delete", dependencies=[Depends(_verify_token)])
+    async def api_delete_memory_items(request: Request):
+        """Delete one or more L2 memory items (soft-delete to trash)."""
+        from mochi.db import delete_memory_items
+        body = await request.json()
+        ids = body.get("ids", [])
+        if not ids:
+            raise HTTPException(400, "No item ids provided")
+        count = delete_memory_items(ids, deleted_by="admin")
+        log.info("Admin: deleted %d memory items ids=%s", count, ids)
+        return {"ok": True, "count": count}
+
+    @app.post("/api/memory-items/{item_id}", dependencies=[Depends(_verify_token)])
+    async def api_update_memory_item(item_id: int, request: Request):
+        """Edit a single L2 memory item."""
+        from mochi.config import OWNER_USER_ID
+        from mochi.db import _connect
+        from datetime import datetime
+        from mochi.config import TZ
+
+        body = await request.json()
+        uid = OWNER_USER_ID or 0
+        now = datetime.now(TZ).isoformat()
+        conn = _connect()
+
+        row = conn.execute(
+            "SELECT id FROM memory_items WHERE id = ? AND user_id = ?",
+            (item_id, uid),
+        ).fetchone()
+        if not row:
+            conn.close()
+            raise HTTPException(404, f"Memory item {item_id} not found")
+
+        content = body.get("content", "").strip()
+        category = body.get("category", "").strip()
+        importance = max(1, min(3, int(body.get("importance", 1))))
+
+        conn.execute(
+            "UPDATE memory_items SET content = ?, category = ?, importance = ?, "
+            "updated_at = ? WHERE id = ?",
+            (content, category, importance, now, item_id),
+        )
+        conn.commit()
+        conn.close()
+        log.info("Admin: updated memory item #%d cat=%s imp=%d", item_id, category, importance)
+        return {"ok": True, "id": item_id}
 
 
 # ═══════════════════════════════════════════════════════════════════════════

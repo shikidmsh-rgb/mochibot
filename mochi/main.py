@@ -3,7 +3,7 @@
 Starts all subsystems:
 1. Database initialization
 2. Skill discovery
-3. Transport (Telegram by default)
+3. Transport(s) — Telegram (primary) and/or WeChat (secondary)
 4. Heartbeat loop (includes maintenance scheduling)
 """
 
@@ -13,11 +13,12 @@ import logging
 from mochi.config import (
     TELEGRAM_BOT_TOKEN,
     OWNER_USER_ID,
+    WEIXIN_ENABLED,
 )
 from mochi.db import init_db
 import mochi.skills as skill_registry
 from mochi.ai_client import chat, ChatResult
-from mochi.transport import IncomingMessage
+from mochi.transport import Transport, IncomingMessage
 from mochi.heartbeat import heartbeat_loop, set_send_callback
 from mochi.reminder_timer import reminder_loop, set_send_callback as set_reminder_callback
 
@@ -53,22 +54,46 @@ async def main():
     observers = discover_observers()
     log.info("Observers loaded: %s", observers)
 
-    # 3. Transport
-    from mochi.transport.telegram import TelegramTransport, set_message_handler
-    transport = TelegramTransport()
-    set_message_handler(handle_message)
+    # 3. Transport(s)
+    transports: list[Transport] = []
+    primary_transport: Transport | None = None
 
-    # 4. Heartbeat — wire up send callback
-    async def send_proactive(user_id: int, text: str):
-        await transport.send_message(user_id, text)
+    if TELEGRAM_BOT_TOKEN:
+        from mochi.transport.telegram import TelegramTransport, set_message_handler
+        tg = TelegramTransport()
+        set_message_handler(handle_message)
+        transports.append(tg)
+        primary_transport = tg
 
-    set_send_callback(send_proactive)
+    if WEIXIN_ENABLED:
+        from mochi.transport.weixin import WeixinTransport
+        from mochi.transport.weixin import set_message_handler as set_weixin_handler
+        wx = WeixinTransport()
+        set_weixin_handler(handle_message)
+        transports.append(wx)
+        if primary_transport is None:
+            primary_transport = wx
 
-    # 5. Start transport
-    await transport.start()
-    log.info("Transport started: %s", transport.name)
+    # Start all transports
+    for t in transports:
+        if t is primary_transport:
+            await t.start()
+        else:
+            asyncio.create_task(t.start())
+        log.info("Transport started: %s%s", t.name,
+                 " (primary)" if t is primary_transport else "")
 
-    # 5b. Admin portal
+    # 4. Heartbeat — wire up send callback to primary transport
+    if primary_transport:
+        _primary = primary_transport  # capture for closure
+
+        async def send_proactive(user_id: int, text: str):
+            await _primary.send_message(user_id, text)
+
+        set_send_callback(send_proactive)
+        set_reminder_callback(send_proactive)
+
+    # 5. Admin portal
     from mochi.config import ADMIN_ENABLED, ADMIN_PORT, ADMIN_BIND
     if ADMIN_ENABLED:
         try:
@@ -82,16 +107,11 @@ async def main():
 
     # 6. Start background tasks
     asyncio.create_task(heartbeat_loop())
-
-    # Reminder timer: precise delivery at exact remind_at times
-    async def _send_via_transport(user_id: int, text: str) -> None:
-        await transport.send_message(user_id, text)
-    set_reminder_callback(_send_via_transport)
     asyncio.create_task(reminder_loop())
     log.info("Heartbeat and reminder timer started")
 
     log.info("=" * 50)
-    log.info("MochiBot is alive! 🍡")
+    log.info("MochiBot is alive!")
     log.info("=" * 50)
 
     # Keep running
@@ -100,7 +120,8 @@ async def main():
             await asyncio.sleep(3600)
     except (KeyboardInterrupt, SystemExit):
         log.info("Shutting down...")
-        await transport.stop()
+        for t in transports:
+            await t.stop()
 
 
 if __name__ == "__main__":

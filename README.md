@@ -233,7 +233,7 @@ server {
 <details>
 <summary>进阶：3 级路由、Pre-Router、向量嵌入、集成</summary>
 
-**3 级路由** — 设 `TIER_ROUTING_ENABLED=true`，然后配置每层：
+**3 级路由** — 通过 `.env` 或管理面板为每层配置不同模型（DB 配置优先于 `.env`）：
 
 ```
 TIER_{LITE,CHAT,DEEP}_{PROVIDER,API_KEY,MODEL,BASE_URL}
@@ -241,7 +241,7 @@ TIER_{LITE,CHAT,DEEP}_{PROVIDER,API_KEY,MODEL,BASE_URL}
 
 **Pre-Router** — `TOOL_ROUTER_ENABLED=true` 启用基于 LLM 的 skill 自动选择。`TOOL_ESCALATION_ENABLED=true`（默认）允许对话中途请求缺少的 skill。
 
-**向量嵌入** — `EMBEDDING_PROVIDER`（openai / azure_openai / ollama / none）、`EMBEDDING_API_KEY`、`EMBEDDING_MODEL`
+**向量嵌入** — `EMBEDDING_PROVIDER`（openai / azure_openai / ollama / none）、`EMBEDDING_API_KEY`、`EMBEDDING_MODEL`。配置后记忆检索从纯关键词升级为语义搜索。安装 `pip install sqlite-vec` 可启用原生向量 KNN，速度更快；不装也能跑（退化为 Python 计算余弦相似度）。
 
 **Oura Ring** — `OURA_CLIENT_ID`、`OURA_CLIENT_SECRET`（运行 `python oura_auth.py` 设置）
 

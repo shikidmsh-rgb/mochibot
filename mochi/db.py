@@ -576,71 +576,104 @@ def _load_vec_conn(conn: sqlite3.Connection) -> bool:
         return False
 
 
-def fts_upsert(item_id: int, content: str) -> None:
-    """Update FTS index for a memory item (pre-tokenized for CJK support)."""
+def fts_upsert(item_id: int, content: str,
+               conn: sqlite3.Connection | None = None) -> None:
+    """Update FTS index for a memory item (pre-tokenized for CJK support).
+
+    If *conn* is provided, use it (caller owns commit/close).
+    Otherwise open+commit+close a fresh connection.
+    """
     if not _FTS_AVAILABLE:
         return
     tokenized = _fts_tokenize(content)
-    conn = _connect()
+    own_conn = conn is None
+    if own_conn:
+        conn = _connect()
     try:
         conn.execute("DELETE FROM memory_items_fts WHERE rowid = ?", (item_id,))
         conn.execute(
             "INSERT INTO memory_items_fts(rowid, content) VALUES (?, ?)",
             (item_id, tokenized),
         )
-        conn.commit()
+        if own_conn:
+            conn.commit()
     except Exception as e:
         logger.warning("FTS upsert failed for item %d: %s", item_id, e)
     finally:
-        conn.close()
+        if own_conn:
+            conn.close()
 
 
-def fts_delete(item_ids: list[int]) -> None:
-    """Remove items from FTS index."""
+def fts_delete(item_ids: list[int],
+               conn: sqlite3.Connection | None = None) -> None:
+    """Remove items from FTS index.
+
+    If *conn* is provided, use it (caller owns commit/close).
+    """
     if not _FTS_AVAILABLE or not item_ids:
         return
-    conn = _connect()
+    own_conn = conn is None
+    if own_conn:
+        conn = _connect()
     try:
         placeholders = ",".join("?" * len(item_ids))
         conn.execute(f"DELETE FROM memory_items_fts WHERE rowid IN ({placeholders})", item_ids)
-        conn.commit()
+        if own_conn:
+            conn.commit()
     except Exception as e:
         logger.warning("FTS delete failed: %s", e)
     finally:
-        conn.close()
+        if own_conn:
+            conn.close()
 
 
-def vec_upsert(item_id: int, embedding: bytes) -> None:
-    """Update vector index for a memory item."""
+def vec_upsert(item_id: int, embedding: bytes,
+               conn: sqlite3.Connection | None = None) -> None:
+    """Update vector index for a memory item.
+
+    If *conn* is provided, use it (caller owns commit/close).
+    """
     if not _VEC_AVAILABLE or not embedding:
         return
-    conn = _connect()
+    own_conn = conn is None
+    if own_conn:
+        conn = _connect()
     try:
         conn.execute("DELETE FROM vec_memories WHERE item_id = ?", (item_id,))
         conn.execute(
             "INSERT INTO vec_memories(item_id, embedding) VALUES (?, ?)",
             (item_id, embedding),
         )
-        conn.commit()
+        if own_conn:
+            conn.commit()
     except Exception as e:
         logger.warning("Vec upsert failed for item %d: %s", item_id, e)
     finally:
-        conn.close()
+        if own_conn:
+            conn.close()
 
 
-def vec_delete(item_ids: list[int]) -> None:
-    """Remove items from vector index."""
+def vec_delete(item_ids: list[int],
+               conn: sqlite3.Connection | None = None) -> None:
+    """Remove items from vector index.
+
+    If *conn* is provided, use it (caller owns commit/close).
+    """
     if not _VEC_AVAILABLE or not item_ids:
         return
-    conn = _connect()
+    own_conn = conn is None
+    if own_conn:
+        conn = _connect()
     try:
         placeholders = ",".join("?" * len(item_ids))
         conn.execute(f"DELETE FROM vec_memories WHERE item_id IN ({placeholders})", item_ids)
-        conn.commit()
+        if own_conn:
+            conn.commit()
     except Exception as e:
         logger.warning("Vec delete failed: %s", e)
     finally:
-        conn.close()
+        if own_conn:
+            conn.close()
 
 def save_message(user_id: int, role: str, content: str) -> None:
     now = datetime.now(TZ).isoformat()
@@ -832,10 +865,10 @@ def save_memory_item(user_id: int, category: str, content: str,
                 (keep_content, importance, now, existing["id"]),
             )
         item_id = existing["id"]
-        # Update FTS + vec indices
-        fts_upsert(item_id, keep_content)
+        # Update FTS + vec indices (same conn — not yet committed)
+        fts_upsert(item_id, keep_content, conn)
         if keep_emb is not None:
-            vec_upsert(item_id, keep_emb)
+            vec_upsert(item_id, keep_emb, conn)
     else:
         cur = conn.execute(
             "INSERT INTO memory_items (user_id, category, content, importance, "
@@ -843,9 +876,9 @@ def save_memory_item(user_id: int, category: str, content: str,
             (user_id, category, content, importance, source, now, now, embedding),
         )
         item_id = cur.lastrowid
-        fts_upsert(item_id, content)
+        fts_upsert(item_id, content, conn)
         if embedding:
-            vec_upsert(item_id, embedding)
+            vec_upsert(item_id, embedding, conn)
 
     conn.commit()
     conn.close()

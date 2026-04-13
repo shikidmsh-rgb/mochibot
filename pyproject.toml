@@ -26,7 +26,8 @@ dependencies = [
 [project.optional-dependencies]
 anthropic = ["anthropic>=0.25.0"]
 search = ["tavily-python>=0.3.0"]
-all = ["anthropic>=0.25.0", "tavily-python>=0.3.0"]
+vectordb = ["sqlite-vec>=0.1.6"]
+all = ["anthropic>=0.25.0", "tavily-python>=0.3.0", "sqlite-vec>=0.1.6"]
 
 [project.urls]
 Homepage = "https://github.com/shikidmsh-rgb/mochibot"
