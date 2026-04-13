@@ -96,6 +96,7 @@ select.form-input { cursor:pointer; }
 .tp-card { flex:1; padding:14px 10px; border:2px solid var(--border); border-radius:var(--radius); text-align:center; cursor:pointer; transition:border-color .15s,background .15s; }
 .tp-card:hover { border-color:var(--primary); }
 .tp-card-selected { border-color:var(--primary); background:var(--primary-bg); }
+.tp-card-dim { opacity:.45; filter:grayscale(.6); cursor:pointer; }
 .tp-card-label { font-size:14px; font-weight:600; margin-top:4px; }
 /* ── Stat cards ───────────────────────── */
 .stat-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:12px; margin-bottom:16px; }
@@ -352,8 +353,8 @@ function selectTransport(type) {
   const wxCard = document.getElementById('tp-card-weixin');
   const tgCfg = document.getElementById('transport-cfg');
   const wxCfg = document.getElementById('weixin-cfg');
-  if (tgCard) tgCard.className = 'tp-card' + (type === 'telegram' ? ' tp-card-selected' : '');
-  if (wxCard) wxCard.className = 'tp-card' + (type === 'weixin' ? ' tp-card-selected' : '');
+  if (tgCard) tgCard.className = 'tp-card' + (type === 'telegram' ? ' tp-card-selected' : ' tp-card-dim');
+  if (wxCard) wxCard.className = 'tp-card' + (type === 'weixin' ? ' tp-card-selected' : ' tp-card-dim');
   if (tgCfg) tgCfg.style.display = type === 'telegram' ? 'block' : 'none';
   if (wxCfg) wxCfg.style.display = type === 'weixin' ? 'block' : 'none';
 }
@@ -1132,9 +1133,11 @@ async function loadWelcome() {
       else if (hasWeixin) _selectedTransport = 'weixin';
     }
 
-    // Status badges for selected transport
+    // Status badges — only for the selected transport
     let transportBadges = '';
-    if (tgConfigured || wxConfigured) {
+    const selectedTransportConfigured = (_selectedTransport === 'telegram' && tgConfigured)
+      || (_selectedTransport === 'weixin' && wxConfigured);
+    if (selectedTransportConfigured) {
       if (botStatus.running) {
         transportBadges = '<span class="badge badge-ok">运行中</span>';
       } else if (botStatus.exit_code !== undefined && botStatus.exit_code !== null) {
@@ -1164,17 +1167,54 @@ async function loadWelcome() {
         <strong>选择平台</strong>
         <div style="font-size:12px;color:var(--text-soft)">选择 Bot 使用的消息平台</div>
         <div class="tp-cards">
-          <div class="tp-card${_selectedTransport==='telegram'?' tp-card-selected':''}" id="tp-card-telegram" onclick="selectTransport('telegram')">
+          <div class="tp-card${_selectedTransport==='telegram'?' tp-card-selected':(_selectedTransport?' tp-card-dim':'')}" id="tp-card-telegram" onclick="selectTransport('telegram')">
             <div style="font-size:22px">🤖</div>
             <div class="tp-card-label">Telegram</div>
           </div>
-          <div class="tp-card${_selectedTransport==='weixin'?' tp-card-selected':''}" id="tp-card-weixin" onclick="selectTransport('weixin')">
+          <div class="tp-card${_selectedTransport==='weixin'?' tp-card-selected':(_selectedTransport?' tp-card-dim':'')}" id="tp-card-weixin" onclick="selectTransport('weixin')">
             <div style="font-size:22px">💬</div>
             <div class="tp-card-label">WeChat</div>
           </div>
         </div>
         ${transportBadges?'<div style="display:flex;gap:6px;margin-top:4px;align-items:center">'+transportBadges+'</div>':''}
         ${ownerLine}
+        <div id="transport-cfg" style="display:none;margin-top:10px">
+          <div style="border:1px solid var(--border);border-radius:8px;padding:14px;background:var(--bg)">
+            <div style="font-weight:600;margin-bottom:8px">Telegram 配置</div>
+            <div class="form-group"><label class="form-label">Bot Token</label>
+            <input class="form-input" id="cfg-TELEGRAM_BOT_TOKEN" type="password" autocomplete="new-password" placeholder="${hasTelegram ? '（已配置，粘贴新 Token 可覆盖）' : '123456:ABC-DEF...'}"></div>
+            <div style="display:flex;align-items:center;gap:8px;margin-top:4px">
+            <button class="btn btn-primary btn-sm" id="tg-save-btn" onclick="saveTransportConfig()">保存并连接</button>
+            </div>
+            <div id="tg-connect-status" style="margin-top:10px"></div>
+          </div>
+        </div>
+        <div id="weixin-cfg" style="display:none;margin-top:10px">
+          <div style="border:1px solid var(--border);border-radius:8px;padding:14px;background:var(--bg)">
+            <div style="font-weight:600;margin-bottom:8px">WeChat 配置</div>
+            <div id="wx-qr-section">
+            <p style="font-size:12px;color:var(--text-soft);margin-bottom:12px">用微信扫码即可完成配置，无需手动输入</p>
+            <div style="text-align:center">
+            <button class="btn btn-primary btn-sm" id="wx-qr-btn" onclick="startWeixinQR()">扫码登录</button>
+            <button class="btn btn-ghost btn-sm" id="wx-qr-cancel" style="display:none;margin-left:8px" onclick="stopWeixinQR()">取消</button>
+            </div>
+            <div style="text-align:center;margin-top:12px"><canvas id="wx-qr-canvas" style="display:none;border:1px solid var(--border);border-radius:8px"></canvas></div>
+            <div id="wx-qr-status" style="text-align:center;margin-top:8px;font-size:13px"></div>
+            </div>
+            <div style="margin-top:12px;text-align:center"><a href="javascript:void(0)" onclick="toggleWxManualInput()" style="font-size:12px;color:var(--text-soft)">已有 Token？手动输入 ▾</a></div>
+            <div id="wx-manual-input" style="display:none;margin-top:10px">
+            <div class="form-group"><label class="form-label">Bot Token</label>
+            <input class="form-input" id="cfg-WEIXIN_BOT_TOKEN" type="password" autocomplete="new-password" placeholder="${wxConfigured ? '（已配置，粘贴新 Token 可覆盖）' : '580ba3c1dc75@im.bot:...'}"></div>
+            <div class="form-group"><label class="form-label">允许的用户 <span style="font-weight:400;color:var(--text-soft)">(可选，留空允许所有人)</span></label>
+            <input class="form-input" id="cfg-WEIXIN_ALLOWED_USERS" type="text" placeholder="user_id_1, user_id_2"></div>
+            <div style="display:flex;align-items:center;gap:8px;margin-top:4px">
+            <button class="btn btn-primary btn-sm" id="wx-save-btn" onclick="saveWeixinConfig()">保存并连接</button>
+            </div>
+            <div id="wx-connect-status" style="margin-top:10px"></div>
+            </div>
+            ${wxConfigured ? '<div style="margin-top:10px;text-align:center"><button class="btn btn-ghost btn-sm" onclick="disableWeixin()">禁用 WeChat</button></div>' : ''}
+          </div>
+        </div>
       </div>
     </div>`;
 
@@ -1216,56 +1256,6 @@ async function loadWelcome() {
     </div>`;
 
     html += '</div>';
-
-    // ── Telegram inline config (expandable, always available) ──
-    html += '<div id="transport-cfg" style="display:none">';
-    html += '<div class="card">';
-    html += '<div class="card-title">Telegram 配置</div>';
-    html += '<div class="form-group"><label class="form-label">Bot Token</label>';
-    html += '<input class="form-input" id="cfg-TELEGRAM_BOT_TOKEN" type="password" autocomplete="new-password" placeholder="' + (hasTelegram ? '（已配置，粘贴新 Token 可覆盖）' : '123456:ABC-DEF...') + '"></div>';
-    html += '<div style="display:flex;align-items:center;gap:8px;margin-top:4px">';
-    html += '<button class="btn btn-primary btn-sm" id="tg-save-btn" onclick="saveTransportConfig()">保存并连接</button>';
-    html += '</div>';
-    html += '<div id="tg-connect-status" style="margin-top:10px"></div>';
-    html += '</div></div>';
-
-    // ── WeChat inline config (expandable) ──
-    html += '<div id="weixin-cfg" style="display:none">';
-    html += '<div class="card">';
-    html += '<div class="card-title">WeChat 配置</div>';
-
-    // QR scan flow (primary method)
-    html += '<div id="wx-qr-section">';
-    html += '<p style="font-size:12px;color:var(--text-soft);margin-bottom:12px">用微信扫码即可完成配置，无需手动输入</p>';
-    html += '<div style="text-align:center">';
-    html += '<button class="btn btn-primary btn-sm" id="wx-qr-btn" onclick="startWeixinQR()">扫码登录</button>';
-    html += '<button class="btn btn-ghost btn-sm" id="wx-qr-cancel" style="display:none;margin-left:8px" onclick="stopWeixinQR()">取消</button>';
-    html += '</div>';
-    html += '<div style="text-align:center;margin-top:12px"><canvas id="wx-qr-canvas" style="display:none;border:1px solid var(--border);border-radius:8px"></canvas></div>';
-    html += '<div id="wx-qr-status" style="text-align:center;margin-top:8px;font-size:13px"></div>';
-    html += '</div>';
-
-    // Manual token input (collapsed fallback for advanced users)
-    html += '<div style="margin-top:12px;text-align:center"><a href="javascript:void(0)" onclick="toggleWxManualInput()" style="font-size:12px;color:var(--text-soft)">已有 Token？手动输入 ▾</a></div>';
-    html += '<div id="wx-manual-input" style="display:none;margin-top:10px">';
-    html += '<div class="form-group"><label class="form-label">Bot Token</label>';
-    html += '<input class="form-input" id="cfg-WEIXIN_BOT_TOKEN" type="password" autocomplete="new-password" placeholder="' + (wxConfigured ? '（已配置，粘贴新 Token 可覆盖）' : '580ba3c1dc75@im.bot:...') + '"></div>';
-    html += '<div class="form-group"><label class="form-label">允许的用户 <span style="font-weight:400;color:var(--text-soft)">(可选，留空允许所有人)</span></label>';
-    html += '<input class="form-input" id="cfg-WEIXIN_ALLOWED_USERS" type="text" placeholder="user_id_1, user_id_2"></div>';
-    html += '<div style="display:flex;align-items:center;gap:8px;margin-top:4px">';
-    html += '<button class="btn btn-primary btn-sm" id="wx-save-btn" onclick="saveWeixinConfig()">保存并连接</button>';
-    html += '</div>';
-    html += '<div id="wx-connect-status" style="margin-top:10px"></div>';
-    html += '</div>';
-
-    // Disable button (only shown when already configured)
-    if (wxConfigured) {
-      html += '<div style="margin-top:10px;text-align:center"><button class="btn btn-ghost btn-sm" onclick="disableWeixin()">禁用 WeChat</button></div>';
-    }
-
-    html += '</div></div>';
-
-    html += '</div>'; // close setup steps container
 
     // ── Stats ──
     html += '<div class="stat-grid">';
