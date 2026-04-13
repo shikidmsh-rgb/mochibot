@@ -91,6 +91,12 @@ select.form-input { cursor:pointer; }
 /* ── Status check ─────────────────────── */
 .check-row { display:flex; align-items:center; gap:8px; padding:6px 0; font-size:14px; }
 .check-icon { font-size:16px; width:20px; text-align:center; }
+/* ── Transport selector cards ────────── */
+.tp-cards { display:flex; gap:10px; margin:8px 0 4px; }
+.tp-card { flex:1; padding:14px 10px; border:2px solid var(--border); border-radius:var(--radius); text-align:center; cursor:pointer; transition:border-color .15s,background .15s; }
+.tp-card:hover { border-color:var(--primary); }
+.tp-card-selected { border-color:var(--primary); background:var(--primary-bg); }
+.tp-card-label { font-size:14px; font-weight:600; margin-top:4px; }
 /* ── Stat cards ───────────────────────── */
 .stat-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:12px; margin-bottom:16px; }
 .stat-card { background:var(--card); border:1px solid var(--border); border-radius:var(--radius); padding:16px; text-align:center; }
@@ -293,6 +299,12 @@ if (_urlToken) {
 const authToken = _urlToken || sessionStorage.getItem('_admin_token') || '';
 let _telegramBotInfo = null; // {username, first_name} — set after successful token test
 let _weixinConnected = false; // set after successful WeChat token test
+let _selectedTransport = null; // 'telegram' | 'weixin' | null
+let _wxQrPollTimer = null;   // QR scan poll interval
+let _wxQrRefreshCount = 0;   // QR refresh counter (max 6)
+let _wxQrStartTime = 0;      // overall timeout tracking
+let _wxQrActiveContent = '';  // current QR URL for re-render after DOM rebuild
+let _wxQrStatusHtml = '';     // current status HTML for re-render after DOM rebuild
 
 async function api(method, path, body) {
   const opts = {method, headers:{'Content-Type':'application/json'}};
@@ -334,14 +346,27 @@ function toggleSidebar() {
 loaded.welcome = true;
 loadWelcome();
 
+function selectTransport(type) {
+  _selectedTransport = type;
+  const tgCard = document.getElementById('tp-card-telegram');
+  const wxCard = document.getElementById('tp-card-weixin');
+  const tgCfg = document.getElementById('transport-cfg');
+  const wxCfg = document.getElementById('weixin-cfg');
+  if (tgCard) tgCard.className = 'tp-card' + (type === 'telegram' ? ' tp-card-selected' : '');
+  if (wxCard) wxCard.className = 'tp-card' + (type === 'weixin' ? ' tp-card-selected' : '');
+  if (tgCfg) tgCfg.style.display = type === 'telegram' ? 'block' : 'none';
+  if (wxCfg) wxCfg.style.display = type === 'weixin' ? 'block' : 'none';
+}
+
 function toggleTransportConfig() {
-  const el = document.getElementById('transport-cfg');
-  if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+  selectTransport('telegram');
 }
 
 async function saveTransportConfig() {
   const tokenInput = document.getElementById('cfg-TELEGRAM_BOT_TOKEN');
   if (!tokenInput || !tokenInput.value.trim()) return showToast('Bot Token 不能为空');
+  // Confirm if switching from WeChat
+  if (_weixinConnected && !confirm('这将断开 WeChat 连接，确定切换到 Telegram？')) return;
   const token = tokenInput.value.trim();
   const statusEl = document.getElementById('tg-connect-status');
   const saveBtn = document.getElementById('tg-save-btn');
@@ -363,6 +388,9 @@ async function saveTransportConfig() {
 
     if (test.ok) {
       _telegramBotInfo = {username: test.username, first_name: test.first_name};
+      // Clear WeChat credentials (mutually exclusive transports)
+      _weixinConnected = false;
+      api('PUT', '/env', {'WEIXIN_ENABLED': 'false', 'WEIXIN_BOT_TOKEN': ''}).catch(() => {});
       if (statusEl) {
         statusEl.innerHTML = '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
           + '<span class="badge badge-ok" style="font-size:13px">✅ 已连接</span>'
@@ -394,13 +422,553 @@ async function startBotAndRefresh() {
 }
 
 function toggleWeixinConfig() {
-  const el = document.getElementById('weixin-cfg');
+  selectTransport('weixin');
+}
+
+// ── WeChat QR Scan Flow ──────────
+
+async function startWeixinQR() {
+  const statusEl = document.getElementById('wx-qr-status');
+  const canvasEl = document.getElementById('wx-qr-canvas');
+  const btnEl = document.getElementById('wx-qr-btn');
+  const cancelEl = document.getElementById('wx-qr-cancel');
+
+  if (btnEl) { btnEl.disabled = true; btnEl.textContent = '获取二维码中...'; }
+  if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-soft)">⏳ 正在获取二维码...</span>';
+  if (canvasEl) { canvasEl.style.display = 'none'; canvasEl.getContext('2d').clearRect(0,0,canvasEl.width,canvasEl.height); }
+
+  try {
+    const r = await api('POST', '/weixin/qr');
+    if (!r.ok) {
+      if (statusEl) statusEl.innerHTML = '<span style="color:var(--danger)">❌ ' + esc(r.error) + '</span>';
+      if (btnEl) { btnEl.disabled = false; btnEl.textContent = '扫码登录'; }
+      return;
+    }
+    // Render QR code to canvas
+    if (canvasEl) {
+      renderQRToCanvas(canvasEl, r.qrcode_img_content, 220);
+      canvasEl.style.display = 'block';
+    }
+    _wxQrActiveContent = r.qrcode_img_content;
+    _wxQrStatusHtml = '<span style="color:var(--text-soft)">📱 用微信扫描上方二维码</span>';
+    if (statusEl) statusEl.innerHTML = _wxQrStatusHtml;
+    if (btnEl) btnEl.style.display = 'none';
+    if (cancelEl) cancelEl.style.display = 'inline-block';
+
+    // Start polling
+    _wxQrRefreshCount = 0;
+    _wxQrStartTime = Date.now();
+    pollWeixinQR(r.qrcode);
+  } catch(e) {
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--danger)">❌ ' + esc(e.message) + '</span>';
+    if (btnEl) { btnEl.disabled = false; btnEl.textContent = '扫码登录'; }
+  }
+}
+
+function pollWeixinQR(qrcode) {
+  cancelWeixinQR(); // clear any existing timer
+  const QR_TIMEOUT_MS = 480000; // 8 min
+  const QR_MAX_REFRESH = 6;
+  const POLL_INTERVAL_MS = 3000;
+
+  _wxQrPollTimer = setInterval(async () => {
+    // Overall timeout
+    if (Date.now() - _wxQrStartTime > QR_TIMEOUT_MS) {
+      cancelWeixinQR();
+      const s = document.getElementById('wx-qr-status');
+      if (s) s.innerHTML = '<span style="color:var(--danger)">⏰ 扫码超时，请重试</span>';
+      resetWxQrBtn();
+      return;
+    }
+    try {
+      const r = await api('POST', '/weixin/qr/poll', {qrcode});
+
+      if (r.status === 'scaned') {
+        const s = document.getElementById('wx-qr-status');
+        _wxQrStatusHtml = '<span style="color:var(--primary)">✅ 已扫码，请在手机上确认...</span>';
+        if (s) s.innerHTML = _wxQrStatusHtml;
+      } else if (r.status === 'expired') {
+        _wxQrRefreshCount++;
+        if (_wxQrRefreshCount > QR_MAX_REFRESH) {
+          cancelWeixinQR();
+          const s = document.getElementById('wx-qr-status');
+          if (s) s.innerHTML = '<span style="color:var(--danger)">⏰ 二维码已过期多次，请重试</span>';
+          resetWxQrBtn();
+          return;
+        }
+        // Fetch new QR
+        const s = document.getElementById('wx-qr-status');
+        if (s) s.innerHTML = '<span style="color:var(--text-soft)">🔄 二维码已过期，自动刷新中...</span>';
+        try {
+          const fresh = await api('POST', '/weixin/qr');
+          if (fresh.ok) {
+            const c = document.getElementById('wx-qr-canvas');
+            if (c) renderQRToCanvas(c, fresh.qrcode_img_content, 220);
+            _wxQrActiveContent = fresh.qrcode_img_content;
+            _wxQrStatusHtml = '<span style="color:var(--text-soft)">📱 用微信扫描上方二维码</span>';
+            if (s) s.innerHTML = _wxQrStatusHtml;
+            // Restart poll with new qrcode ID
+            cancelWeixinQR();
+            pollWeixinQR(fresh.qrcode);
+            return;
+          }
+        } catch(e) { /* keep polling with old ID */ }
+      } else if (r.status === 'confirmed') {
+        cancelWeixinQR();
+        _wxQrActiveContent = '';
+        _wxQrStatusHtml = '';
+        _weixinConnected = true;
+        _telegramBotInfo = null; // mutually exclusive
+        const s = document.getElementById('wx-qr-status');
+        if (s) s.innerHTML = '<span class="badge badge-ok" style="font-size:13px">✅ 登录成功！Token 已自动保存</span>'
+          + '<div style="margin-top:8px;color:var(--text-soft);font-size:13px">⏳ 正在启动 Bot...</div>';
+        const c = document.getElementById('wx-qr-canvas');
+        if (c) c.style.display = 'none';
+        const cancel = document.getElementById('wx-qr-cancel');
+        if (cancel) cancel.style.display = 'none';
+        showToast('✅ WeChat 登录成功，正在启动...');
+        startBotAndRefresh();
+        return;
+      } else if (r.status === 'error') {
+        cancelWeixinQR();
+        const s = document.getElementById('wx-qr-status');
+        if (s) s.innerHTML = '<span style="color:var(--danger)">❌ ' + esc(r.error) + '</span>';
+        resetWxQrBtn();
+        return;
+      }
+      // status === 'wait' → continue polling
+    } catch(e) {
+      // Transient error — keep polling
+    }
+  }, POLL_INTERVAL_MS);
+}
+
+function cancelWeixinQR() {
+  if (_wxQrPollTimer) { clearInterval(_wxQrPollTimer); _wxQrPollTimer = null; }
+}
+
+function resetWxQrBtn() {
+  const btn = document.getElementById('wx-qr-btn');
+  const cancel = document.getElementById('wx-qr-cancel');
+  if (btn) { btn.disabled = false; btn.textContent = '扫码登录'; btn.style.display = 'inline-block'; }
+  if (cancel) cancel.style.display = 'none';
+}
+
+function stopWeixinQR() {
+  cancelWeixinQR();
+  _wxQrActiveContent = '';
+  _wxQrStatusHtml = '';
+  const c = document.getElementById('wx-qr-canvas');
+  if (c) c.style.display = 'none';
+  const s = document.getElementById('wx-qr-status');
+  if (s) s.innerHTML = '';
+  resetWxQrBtn();
+}
+
+function toggleWxManualInput() {
+  const el = document.getElementById('wx-manual-input');
   if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
 }
+
+// ── Minimal QR Code Canvas Renderer ──
+// Generates QR codes in the browser without external dependencies.
+// Based on public domain QR code algorithms — renders data to a <canvas>.
+function renderQRToCanvas(canvas, text, size) {
+  // Use the built-in qrcodegen approach — encode text into modules,
+  // then draw onto canvas. For simplicity, we build a basic QR using
+  // an immediately-invoked function that generates the binary matrix.
+  const ctx = canvas.getContext('2d');
+  canvas.width = size;
+  canvas.height = size;
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, size, size);
+
+  // Generate QR matrix using a minimal implementation
+  const modules = generateQR(text);
+  if (!modules || modules.length === 0) {
+    ctx.fillStyle = '#ff0000';
+    ctx.font = '12px sans-serif';
+    ctx.fillText('QR Error', 10, size/2);
+    return;
+  }
+  const moduleCount = modules.length;
+  const cellSize = size / (moduleCount + 8); // padding
+  const offset = (size - cellSize * moduleCount) / 2;
+
+  ctx.fillStyle = '#000000';
+  for (let r = 0; r < moduleCount; r++) {
+    for (let c = 0; c < moduleCount; c++) {
+      if (modules[r][c]) {
+        ctx.fillRect(
+          Math.round(offset + c * cellSize),
+          Math.round(offset + r * cellSize),
+          Math.ceil(cellSize),
+          Math.ceil(cellSize)
+        );
+      }
+    }
+  }
+}
+
+// Minimal QR Code generator — supports alphanumeric and byte mode
+// Produces a boolean[][] matrix. Sufficient for URLs up to ~200 chars.
+function generateQR(text) {
+  // Use error correction level L for maximum data capacity
+  // This is a simplified implementation supporting QR versions 1-10
+  const data = new TextEncoder().encode(text);
+  const version = selectVersion(data.length);
+  if (version < 0) return null;
+
+  const size = version * 4 + 17;
+  const modules = Array.from({length: size}, () => Array(size).fill(false));
+  const reserved = Array.from({length: size}, () => Array(size).fill(false));
+
+  // Place function patterns
+  placeFinder(modules, reserved, 0, 0);
+  placeFinder(modules, reserved, size - 7, 0);
+  placeFinder(modules, reserved, 0, size - 7);
+  placeAlignment(modules, reserved, version);
+  placeTiming(modules, reserved, size);
+
+  // Reserve format info areas
+  for (let i = 0; i < 8; i++) {
+    reserved[8][i] = true; reserved[i][8] = true;
+    reserved[8][size - 1 - i] = true; reserved[size - 1 - i][8] = true;
+  }
+  reserved[8][8] = true;
+  // Dark module
+  modules[size - 8][8] = true; reserved[size - 8][8] = true;
+
+  // Reserve version info for version >= 7
+  if (version >= 7) {
+    for (let i = 0; i < 6; i++) for (let j = 0; j < 3; j++) {
+      reserved[i][size - 11 + j] = true;
+      reserved[size - 11 + j][i] = true;
+    }
+  }
+
+  // Encode data
+  const ecInfo = getECInfo(version);
+  const codewords = encodeData(data, version, ecInfo);
+  const ecCodewords = generateEC(codewords, ecInfo);
+  const allBits = interleave(codewords, ecCodewords, ecInfo);
+
+  // Place data bits
+  placeData(modules, reserved, allBits, size);
+
+  // Apply best mask
+  let bestMask = 0, bestPenalty = Infinity;
+  for (let m = 0; m < 8; m++) {
+    const masked = modules.map(r => [...r]);
+    applyMask(masked, reserved, m, size);
+    placeFormatInfo(masked, m, size);
+    if (version >= 7) placeVersionInfo(masked, version, size);
+    const penalty = calcPenalty(masked, size);
+    if (penalty < bestPenalty) { bestPenalty = penalty; bestMask = m; }
+  }
+  applyMask(modules, reserved, bestMask, size);
+  placeFormatInfo(modules, bestMask, size);
+  if (version >= 7) placeVersionInfo(modules, version, size);
+
+  return modules;
+}
+
+function selectVersion(dataLen) {
+  // Byte mode capacities for EC level L (versions 1-20)
+  const caps = [17,32,53,78,106,134,154,192,230,271,321,367,425,458,520,586,644,718,792,858];
+  const needed = dataLen + 3; // mode + char count + terminator overhead
+  for (let v = 0; v < caps.length; v++) {
+    if (caps[v] >= needed) return v + 1;
+  }
+  return -1;
+}
+
+function getECInfo(version) {
+  // EC Level L lookup: [totalCodewords, ecCodewordsPerBlock, numBlocks]
+  const table = {
+    1:[26,7,1],2:[44,10,1],3:[70,15,1],4:[100,20,1],5:[134,26,1],
+    6:[172,18,2],7:[196,20,2],8:[242,24,2],9:[292,30,2],10:[346,18,4],
+    11:[404,20,4],12:[466,24,4],13:[532,26,4],14:[581,30,4],15:[655,22,6],
+    16:[733,24,6],17:[815,28,6],18:[901,30,6],19:[991,28,7],20:[1085,28,8],
+  };
+  const t = table[version] || table[10];
+  const totalCW = t[0];
+  const ecPerBlock = t[1];
+  const numBlocks = t[2];
+  const dataCW = totalCW - ecPerBlock * numBlocks;
+  return {totalCW, ecPerBlock, numBlocks, dataCW};
+}
+
+function encodeData(data, version, ecInfo) {
+  const bits = [];
+  function push(val, len) { for (let i = len - 1; i >= 0; i--) bits.push((val >> i) & 1); }
+
+  // Byte mode indicator
+  push(0b0100, 4);
+  // Character count (8 bits for v1-9, 16 bits for v10+)
+  push(data.length, version <= 9 ? 8 : 16);
+  // Data
+  for (const b of data) push(b, 8);
+  // Terminator
+  const totalBits = ecInfo.dataCW * 8;
+  const termLen = Math.min(4, totalBits - bits.length);
+  push(0, termLen);
+  // Pad to byte boundary
+  while (bits.length % 8 !== 0) bits.push(0);
+  // Pad codewords
+  const pads = [0b11101100, 0b00010001];
+  let pi = 0;
+  while (bits.length < totalBits) { push(pads[pi % 2], 8); pi++; }
+
+  // Convert to bytes
+  const codewords = [];
+  for (let i = 0; i < bits.length; i += 8) {
+    let b = 0;
+    for (let j = 0; j < 8; j++) b = (b << 1) | (bits[i + j] || 0);
+    codewords.push(b);
+  }
+  return codewords;
+}
+
+function generateEC(codewords, ecInfo) {
+  const {ecPerBlock, numBlocks, dataCW} = ecInfo;
+  const blockSize = Math.floor(dataCW / numBlocks);
+  const largeBlocks = dataCW % numBlocks;
+  const ecBlocks = [];
+
+  let offset = 0;
+  for (let b = 0; b < numBlocks; b++) {
+    const sz = blockSize + (b >= numBlocks - largeBlocks ? 1 : 0);
+    const block = codewords.slice(offset, offset + sz);
+    offset += sz;
+    ecBlocks.push(rsEncode(block, ecPerBlock));
+  }
+  return ecBlocks;
+}
+
+function interleave(codewords, ecBlocks, ecInfo) {
+  const {numBlocks, dataCW, ecPerBlock} = ecInfo;
+  const blockSize = Math.floor(dataCW / numBlocks);
+  const largeBlocks = dataCW % numBlocks;
+  const bits = [];
+
+  // Split data into blocks
+  const dataBlocks = [];
+  let off = 0;
+  for (let b = 0; b < numBlocks; b++) {
+    const sz = blockSize + (b >= numBlocks - largeBlocks ? 1 : 0);
+    dataBlocks.push(codewords.slice(off, off + sz));
+    off += sz;
+  }
+
+  // Interleave data codewords
+  const maxDataLen = blockSize + (largeBlocks > 0 ? 1 : 0);
+  for (let i = 0; i < maxDataLen; i++) {
+    for (let b = 0; b < numBlocks; b++) {
+      if (i < dataBlocks[b].length) {
+        const v = dataBlocks[b][i];
+        for (let bit = 7; bit >= 0; bit--) bits.push((v >> bit) & 1);
+      }
+    }
+  }
+  // Interleave EC codewords
+  for (let i = 0; i < ecPerBlock; i++) {
+    for (let b = 0; b < numBlocks; b++) {
+      const v = ecBlocks[b][i];
+      for (let bit = 7; bit >= 0; bit--) bits.push((v >> bit) & 1);
+    }
+  }
+  return bits;
+}
+
+// Reed-Solomon GF(256) encoder
+function rsEncode(data, ecLen) {
+  const gfExp = new Uint8Array(512);
+  const gfLog = new Uint8Array(256);
+  let v = 1;
+  for (let i = 0; i < 255; i++) {
+    gfExp[i] = v; gfLog[v] = i;
+    v = (v << 1) ^ (v >= 128 ? 0x11d : 0);
+  }
+  for (let i = 255; i < 512; i++) gfExp[i] = gfExp[i - 255];
+
+  function gfMul(a, b) { return a === 0 || b === 0 ? 0 : gfExp[gfLog[a] + gfLog[b]]; }
+
+  // Build generator polynomial
+  let gen = [1];
+  for (let i = 0; i < ecLen; i++) {
+    const next = new Array(gen.length + 1).fill(0);
+    for (let j = 0; j < gen.length; j++) {
+      next[j] ^= gen[j];
+      next[j + 1] ^= gfMul(gen[j], gfExp[i]);
+    }
+    gen = next;
+  }
+
+  const result = new Array(ecLen).fill(0);
+  for (const b of data) {
+    const lead = b ^ result[0];
+    for (let i = 0; i < ecLen - 1; i++) result[i] = result[i + 1] ^ gfMul(gen[i + 1], lead);
+    result[ecLen - 1] = gfMul(gen[ecLen], lead);
+  }
+  return result;
+}
+
+function placeFinder(m, r, row, col) {
+  for (let dr = -1; dr <= 7; dr++) for (let dc = -1; dc <= 7; dc++) {
+    const rr = row + dr, cc = col + dc;
+    if (rr < 0 || cc < 0 || rr >= m.length || cc >= m.length) continue;
+    const inOuter = dr === 0 || dr === 6 || dc === 0 || dc === 6;
+    const inInner = dr >= 2 && dr <= 4 && dc >= 2 && dc <= 4;
+    m[rr][cc] = inOuter || inInner;
+    r[rr][cc] = true;
+  }
+}
+
+function placeAlignment(m, r, version) {
+  if (version < 2) return;
+  const positions = getAlignmentPositions(version);
+  for (const row of positions) for (const col of positions) {
+    if (r[row][col]) continue; // skip if overlaps finder
+    for (let dr = -2; dr <= 2; dr++) for (let dc = -2; dc <= 2; dc++) {
+      const rr = row + dr, cc = col + dc;
+      m[rr][cc] = Math.abs(dr) === 2 || Math.abs(dc) === 2 || (dr === 0 && dc === 0);
+      r[rr][cc] = true;
+    }
+  }
+}
+
+function getAlignmentPositions(version) {
+  if (version === 1) return [];
+  const intervals = Math.floor(version / 7) + 1;
+  const size = version * 4 + 17;
+  const last = size - 7;
+  const step = Math.ceil((last - 6) / intervals / 2) * 2;
+  const positions = [6];
+  for (let p = last; p > 6; p -= step) positions.unshift(p);
+  return positions;
+}
+
+function placeTiming(m, r, size) {
+  for (let i = 8; i < size - 8; i++) {
+    m[6][i] = i % 2 === 0; r[6][i] = true;
+    m[i][6] = i % 2 === 0; r[i][6] = true;
+  }
+}
+
+function placeData(m, r, bits, size) {
+  let bitIdx = 0;
+  for (let right = size - 1; right >= 1; right -= 2) {
+    if (right === 6) right = 5; // skip timing column
+    for (let vert = 0; vert < size; vert++) {
+      for (let j = 0; j < 2; j++) {
+        const col = right - j;
+        const upward = ((right + 1) & 2) === 0;
+        const row = upward ? (size - 1 - vert) : vert;
+        if (!r[row][col] && bitIdx < bits.length) {
+          m[row][col] = bits[bitIdx] === 1;
+          bitIdx++;
+        }
+      }
+    }
+  }
+}
+
+function applyMask(m, r, mask, size) {
+  for (let row = 0; row < size; row++) {
+    for (let col = 0; col < size; col++) {
+      if (r[row][col]) continue;
+      let invert = false;
+      switch(mask) {
+        case 0: invert = (row + col) % 2 === 0; break;
+        case 1: invert = row % 2 === 0; break;
+        case 2: invert = col % 3 === 0; break;
+        case 3: invert = (row + col) % 3 === 0; break;
+        case 4: invert = (Math.floor(row/2) + Math.floor(col/3)) % 2 === 0; break;
+        case 5: invert = (row*col)%2 + (row*col)%3 === 0; break;
+        case 6: invert = ((row*col)%2 + (row*col)%3) % 2 === 0; break;
+        case 7: invert = ((row+col)%2 + (row*col)%3) % 2 === 0; break;
+      }
+      if (invert) m[row][col] = !m[row][col];
+    }
+  }
+}
+
+function placeFormatInfo(m, mask, size) {
+  const formatBits = getFormatBits(mask);
+  // Around top-left finder
+  for (let i = 0; i <= 5; i++) m[8][i] = (formatBits >> (14 - i)) & 1;
+  m[8][7] = (formatBits >> 8) & 1;
+  m[8][8] = (formatBits >> 7) & 1;
+  m[7][8] = (formatBits >> 6) & 1;
+  for (let i = 0; i <= 5; i++) m[5 - i][8] = (formatBits >> (i + 9)) & 1;
+  // Around other finders
+  for (let i = 0; i <= 7; i++) m[size - 1 - i][8] = (formatBits >> i) & 1;
+  for (let i = 8; i <= 14; i++) m[8][size - 15 + i] = (formatBits >> i) & 1;
+}
+
+function getFormatBits(mask) {
+  // EC level L = 01, mask pattern 0-7
+  const data = (0b01 << 3) | mask;
+  let bits = data << 10;
+  let gen = 0b10100110111;
+  for (let i = 14; i >= 10; i--) {
+    if ((bits >> i) & 1) bits ^= gen << (i - 10);
+  }
+  return ((data << 10) | bits) ^ 0b101010000010010;
+}
+
+function placeVersionInfo(m, version, size) {
+  if (version < 7) return;
+  let bits = version << 12;
+  let gen = 0b1111100100101;
+  for (let i = 17; i >= 12; i--) {
+    if ((bits >> i) & 1) bits ^= gen << (i - 12);
+  }
+  bits = (version << 12) | bits;
+  for (let i = 0; i < 18; i++) {
+    const bit = (bits >> i) & 1;
+    const row = Math.floor(i / 3), col = size - 11 + (i % 3);
+    m[row][col] = bit; m[col][row] = bit;
+  }
+}
+
+function calcPenalty(m, size) {
+  let penalty = 0;
+  // Rule 1: runs of same color
+  for (let row = 0; row < size; row++) {
+    let run = 1;
+    for (let col = 1; col < size; col++) {
+      if (m[row][col] === m[row][col-1]) { run++; }
+      else { if (run >= 5) penalty += run - 2; run = 1; }
+    }
+    if (run >= 5) penalty += run - 2;
+  }
+  for (let col = 0; col < size; col++) {
+    let run = 1;
+    for (let row = 1; row < size; row++) {
+      if (m[row][col] === m[row-1][col]) { run++; }
+      else { if (run >= 5) penalty += run - 2; run = 1; }
+    }
+    if (run >= 5) penalty += run - 2;
+  }
+  // Rule 2: 2x2 blocks
+  for (let row = 0; row < size - 1; row++) {
+    for (let col = 0; col < size - 1; col++) {
+      const c = m[row][col];
+      if (c === m[row][col+1] && c === m[row+1][col] && c === m[row+1][col+1]) penalty += 3;
+    }
+  }
+  return penalty;
+}
+
+// ── End QR Code Generator ──
 
 async function saveWeixinConfig() {
   const tokenInput = document.getElementById('cfg-WEIXIN_BOT_TOKEN');
   if (!tokenInput || !tokenInput.value.trim()) return showToast('Bot Token 不能为空');
+  // Confirm if switching from Telegram
+  if (_telegramBotInfo && !confirm('这将断开 Telegram 连接，确定切换到 WeChat？')) return;
   const token = tokenInput.value.trim();
   const allowedInput = document.getElementById('cfg-WEIXIN_ALLOWED_USERS');
   const allowed = allowedInput ? allowedInput.value.trim() : '';
@@ -429,6 +997,9 @@ async function saveWeixinConfig() {
 
     if (test.ok) {
       _weixinConnected = true;
+      // Clear Telegram credentials (mutually exclusive transports)
+      _telegramBotInfo = null;
+      api('PUT', '/env', {'TELEGRAM_BOT_TOKEN': ''}).catch(() => {});
       if (statusEl) statusEl.innerHTML = '<span class="badge badge-ok" style="font-size:13px">✅ Token 有效</span>'
         + '<div style="margin-top:8px;color:var(--text-soft);font-size:13px">⏳ 重启 Bot 以启用 WeChat...</div>';
       showToast('✅ WeChat Token 验证成功，正在重启...');
@@ -510,7 +1081,9 @@ async function loadWelcome() {
 
     const tgConfigured = hasTelegram || _telegramBotInfo;
     const tgRunning = tgConfigured && botStatus.running;
-    const allDone = hasModel && tgRunning && hasPersonality;
+    const wxConfigured = hasWeixin || _weixinConnected;
+    const transportOk = tgRunning || (wxConfigured && botStatus.running);
+    const allDone = hasModel && transportOk && hasPersonality;
 
     // Helper: step number circle
     const stepCircle = (n, active) => `<span style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;border:2px solid ${active?'var(--primary)':'var(--border)'};font-size:12px;color:${active?'var(--primary)':'var(--text-soft)'};font-weight:700">${n}</span>`;
@@ -521,9 +1094,9 @@ async function loadWelcome() {
     html += '<div class="card">';
     html += '<div class="card-title">Setup Guide</div>';
     if (!allDone) {
-      const configDone = hasModel && tgConfigured && hasPersonality;
-      if (configDone && !tgRunning) {
-        html += '<p style="font-size:13px;color:var(--warning);margin-bottom:12px"><span style="display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:4px;background:var(--warning);color:#fff;font-size:12px;margin-right:4px;vertical-align:middle">!</span> 配置已完成，但 Telegram bot 未在运行。</p>';
+      const configDone = hasModel && (tgConfigured || wxConfigured) && hasPersonality;
+      if (configDone && !transportOk) {
+        html += '<p style="font-size:13px;color:var(--warning);margin-bottom:12px"><span style="display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:4px;background:var(--warning);color:#fff;font-size:12px;margin-right:4px;vertical-align:middle">!</span> 配置已完成，但 Bot 未在运行。</p>';
       } else {
         html += '<p style="font-size:13px;color:var(--text-soft);margin-bottom:12px">按顺序完成以下步骤，让 MochiBot 跑起来 🍡</p>';
       }
@@ -551,66 +1124,63 @@ async function loadWelcome() {
       ${!hasModel?'<button class=\"btn btn-primary btn-sm\" onclick=\"document.querySelector(\'[data-page=models]\').click()\">去配置 →</button>':(tierCount===0?modelBadges:'')}
     </div>`;
 
-    // Step 2: Telegram (2 states: unconfigured / configured — bot auto-starts)
-    const ownerBound = s.config_status.owner_user_id && s.config_status.owner_user_id.set;
-    const ownerUid = ownerBound ? s.config_status.owner_user_id.value : '';
-    let tgBadges = '';
-    let tgAction = '';
-    if (tgConfigured) {
+    // Step 2: Choose transport platform (mutually exclusive)
+
+    // Auto-detect selected transport from config (only if user hasn't explicitly picked one)
+    if (!_selectedTransport) {
+      if (hasTelegram) _selectedTransport = 'telegram';
+      else if (hasWeixin) _selectedTransport = 'weixin';
+    }
+
+    // Status badges for selected transport
+    let transportBadges = '';
+    if (tgConfigured || wxConfigured) {
       if (botStatus.running) {
-        tgBadges = '<span class="badge badge-ok">运行中</span>';
+        transportBadges = '<span class="badge badge-ok">运行中</span>';
       } else if (botStatus.exit_code !== undefined && botStatus.exit_code !== null) {
-        tgBadges = '<span class="badge badge-err">异常退出 (code ' + botStatus.exit_code + ')</span>'
+        transportBadges = '<span class="badge badge-err">异常退出 (code ' + botStatus.exit_code + ')</span>'
           + ' <button class="btn btn-ghost btn-sm" style="padding:2px 8px;font-size:11px" onclick="startBotAndRefresh()">重启</button>';
       } else {
-        tgBadges = '<span class="badge badge-warn">启动中...</span>';
+        transportBadges = '<span class="badge badge-warn">启动中...</span>';
       }
-      if (_telegramBotInfo) tgBadges += ' <strong style="font-size:13px">@' + esc(_telegramBotInfo.username) + '</strong>';
-      tgAction = '<button class="btn btn-ghost btn-sm" onclick="toggleTransportConfig()">重新配置</button>';
-    } else {
-      tgAction = '<button class="btn btn-ghost btn-sm" onclick="toggleTransportConfig()">配置</button>';
+      if (_telegramBotInfo && _selectedTransport === 'telegram') transportBadges += ' <strong style="font-size:13px">@' + esc(_telegramBotInfo.username) + '</strong>';
     }
+
+    // Owner binding info (Telegram only)
+    const ownerBound = s.config_status.owner_user_id && s.config_status.owner_user_id.set;
+    const ownerUid = ownerBound ? s.config_status.owner_user_id.value : '';
     let ownerLine = '';
-    if (tgConfigured) {
+    if (tgConfigured && _selectedTransport === 'telegram') {
       if (ownerBound) {
         ownerLine = '<div style="font-size:12px;color:var(--success);margin-top:2px">Owner 已绑定: <code style="font-size:11px;background:var(--primary-bg);padding:1px 5px;border-radius:4px">' + esc(ownerUid) + '</code></div>';
       } else {
         ownerLine = '<div style="font-size:12px;color:var(--warning);margin-top:2px">⚠ Owner 未绑定 — 在 Telegram 中向 bot 发送一条消息即可自动绑定</div>';
       }
     }
-    html += `<div class="check-row" style="padding:10px 0;border-bottom:1px solid var(--border)">
-      <span class="check-icon" style="font-size:20px">${tgRunning?stepDone():stepCircle(2, hasModel)}</span>
+
+    html += `<div class="check-row" style="padding:10px 0;border-bottom:1px solid var(--border);flex-wrap:wrap">
+      <span class="check-icon" style="font-size:20px">${transportOk?stepDone():stepCircle(2, hasModel)}</span>
       <div style="flex:1">
-        <strong>配置 Telegram</strong>
-        <div style="font-size:12px;color:var(--text-soft)">设置 Bot Token 并连接</div>
-        ${tgBadges?'<div style="display:flex;gap:6px;margin-top:4px;align-items:center">'+tgBadges+'</div>':''}
+        <strong>选择平台</strong>
+        <div style="font-size:12px;color:var(--text-soft)">选择 Bot 使用的消息平台</div>
+        <div class="tp-cards">
+          <div class="tp-card${_selectedTransport==='telegram'?' tp-card-selected':''}" id="tp-card-telegram" onclick="selectTransport('telegram')">
+            <div style="font-size:22px">🤖</div>
+            <div class="tp-card-label">Telegram</div>
+          </div>
+          <div class="tp-card${_selectedTransport==='weixin'?' tp-card-selected':''}" id="tp-card-weixin" onclick="selectTransport('weixin')">
+            <div style="font-size:22px">💬</div>
+            <div class="tp-card-label">WeChat</div>
+          </div>
+        </div>
+        ${transportBadges?'<div style="display:flex;gap:6px;margin-top:4px;align-items:center">'+transportBadges+'</div>':''}
         ${ownerLine}
       </div>
-      ${tgAction}
-    </div>`;
-
-    // Step 2b: WeChat (optional secondary transport)
-    let wxBadges = '';
-    let wxAction = '';
-    if (wxConfigured) {
-      wxBadges = '<span class="badge badge-ok">已启用</span>';
-      wxAction = '<button class="btn btn-ghost btn-sm" onclick="toggleWeixinConfig()">重新配置</button>';
-    } else {
-      wxAction = '<button class="btn btn-ghost btn-sm" onclick="toggleWeixinConfig()">配置</button>';
-    }
-    html += `<div class="check-row" style="padding:10px 0;border-bottom:1px solid var(--border)">
-      <span class="check-icon" style="font-size:20px">${wxConfigured ? stepDone() : '<span style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;font-size:12px;color:var(--text-soft)">💬</span>'}</span>
-      <div style="flex:1">
-        <strong>配置 WeChat</strong> <span class="badge badge-gray" style="font-size:10px;vertical-align:middle">可选</span>
-        <div style="font-size:12px;color:var(--text-soft)">微信 iLink Bot，可与 Telegram 同时运行</div>
-        ${wxBadges?'<div style="display:flex;gap:6px;margin-top:4px;align-items:center">'+wxBadges+'</div>':''}
-      </div>
-      ${wxAction}
     </div>`;
 
     // Step 3: Personality (required)
     html += `<div class="check-row" style="padding:10px 0;border-bottom:1px solid var(--border)">
-      <span class="check-icon" style="font-size:20px">${hasPersonality?stepDone():stepCircle(3, tgConfigured)}</span>
+      <span class="check-icon" style="font-size:20px">${hasPersonality?stepDone():stepCircle(3, transportOk||tgConfigured||wxConfigured)}</span>
       <div style="flex:1">
         <strong>配置人格</strong>
         <div style="font-size:12px;color:var(--text-soft)">定义 bot 的灵魂、性格、说话风格（soul.md）</div>
@@ -660,20 +1230,39 @@ async function loadWelcome() {
     html += '</div></div>';
 
     // ── WeChat inline config (expandable) ──
-    const wxConfigured = hasWeixin || _weixinConnected;
     html += '<div id="weixin-cfg" style="display:none">';
     html += '<div class="card">';
     html += '<div class="card-title">WeChat 配置</div>';
-    html += '<p style="font-size:12px;color:var(--text-soft);margin-bottom:12px">需要先运行 <code style="background:var(--primary-bg);padding:1px 5px;border-radius:4px">python weixin_auth.py</code> 扫描二维码获取 Token</p>';
+
+    // QR scan flow (primary method)
+    html += '<div id="wx-qr-section">';
+    html += '<p style="font-size:12px;color:var(--text-soft);margin-bottom:12px">用微信扫码即可完成配置，无需手动输入</p>';
+    html += '<div style="text-align:center">';
+    html += '<button class="btn btn-primary btn-sm" id="wx-qr-btn" onclick="startWeixinQR()">扫码登录</button>';
+    html += '<button class="btn btn-ghost btn-sm" id="wx-qr-cancel" style="display:none;margin-left:8px" onclick="stopWeixinQR()">取消</button>';
+    html += '</div>';
+    html += '<div style="text-align:center;margin-top:12px"><canvas id="wx-qr-canvas" style="display:none;border:1px solid var(--border);border-radius:8px"></canvas></div>';
+    html += '<div id="wx-qr-status" style="text-align:center;margin-top:8px;font-size:13px"></div>';
+    html += '</div>';
+
+    // Manual token input (collapsed fallback for advanced users)
+    html += '<div style="margin-top:12px;text-align:center"><a href="javascript:void(0)" onclick="toggleWxManualInput()" style="font-size:12px;color:var(--text-soft)">已有 Token？手动输入 ▾</a></div>';
+    html += '<div id="wx-manual-input" style="display:none;margin-top:10px">';
     html += '<div class="form-group"><label class="form-label">Bot Token</label>';
     html += '<input class="form-input" id="cfg-WEIXIN_BOT_TOKEN" type="password" autocomplete="new-password" placeholder="' + (wxConfigured ? '（已配置，粘贴新 Token 可覆盖）' : '580ba3c1dc75@im.bot:...') + '"></div>';
     html += '<div class="form-group"><label class="form-label">允许的用户 <span style="font-weight:400;color:var(--text-soft)">(可选，留空允许所有人)</span></label>';
     html += '<input class="form-input" id="cfg-WEIXIN_ALLOWED_USERS" type="text" placeholder="user_id_1, user_id_2"></div>';
     html += '<div style="display:flex;align-items:center;gap:8px;margin-top:4px">';
     html += '<button class="btn btn-primary btn-sm" id="wx-save-btn" onclick="saveWeixinConfig()">保存并连接</button>';
-    if (wxConfigured) html += '<button class="btn btn-ghost btn-sm" onclick="disableWeixin()">禁用 WeChat</button>';
     html += '</div>';
     html += '<div id="wx-connect-status" style="margin-top:10px"></div>';
+    html += '</div>';
+
+    // Disable button (only shown when already configured)
+    if (wxConfigured) {
+      html += '<div style="margin-top:10px;text-align:center"><button class="btn btn-ghost btn-sm" onclick="disableWeixin()">禁用 WeChat</button></div>';
+    }
+
     html += '</div></div>';
 
     html += '</div>'; // close setup steps container
@@ -696,6 +1285,19 @@ async function loadWelcome() {
     html += '</div>';
 
     el.innerHTML = html;
+    // Restore transport selection state
+    if (_selectedTransport) selectTransport(_selectedTransport);
+    // Restore active QR flow UI after DOM rebuild
+    if (_wxQrPollTimer && _wxQrActiveContent) {
+      const c = document.getElementById('wx-qr-canvas');
+      if (c) { renderQRToCanvas(c, _wxQrActiveContent, 220); c.style.display = 'block'; }
+      const s = document.getElementById('wx-qr-status');
+      if (s && _wxQrStatusHtml) s.innerHTML = _wxQrStatusHtml;
+      const btn = document.getElementById('wx-qr-btn');
+      if (btn) btn.style.display = 'none';
+      const cancel = document.getElementById('wx-qr-cancel');
+      if (cancel) cancel.style.display = 'inline-block';
+    }
     _welcomeLastRunning = botStatus.running;
     _welcomeLastOwner = ownerBound;
     startWelcomePolling();

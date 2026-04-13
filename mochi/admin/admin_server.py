@@ -241,10 +241,12 @@ if HAS_FASTAPI:
         skill_registry.discover()
         observer_registry.discover()
         _migrate_encrypt_api_keys()
-        # Auto-start the bot if Telegram token is already configured
+        # Auto-start the bot if a transport is already configured
         from mochi.admin.admin_env import read_env_value
-        token = (read_env_value("TELEGRAM_BOT_TOKEN") or "").strip()
-        if token:
+        tg_token = (read_env_value("TELEGRAM_BOT_TOKEN") or "").strip()
+        wx_enabled = (read_env_value("WEIXIN_ENABLED") or "").strip().lower() in ("1", "true", "yes")
+        wx_token = (read_env_value("WEIXIN_BOT_TOKEN") or "").strip()
+        if tg_token or (wx_enabled and wx_token):
             try:
                 _start_bot_process()
             except Exception:
@@ -325,6 +327,21 @@ if HAS_FASTAPI:
                 detail=f"Rate limit: max {_TEST_RATE_LIMIT} tests per {int(_TEST_RATE_WINDOW)}s"
             )
         _test_timestamps.append(now)
+
+    # Separate rate limiter for QR poll (called every 3s, needs larger budget)
+    _qr_poll_timestamps: list[float] = []
+    _QR_POLL_RATE_LIMIT = 200   # max calls (~10 min of 3s polling)
+    _QR_POLL_RATE_WINDOW = 600.0
+
+    def _check_qr_poll_rate():
+        now = time.monotonic()
+        _qr_poll_timestamps[:] = [t for t in _qr_poll_timestamps if now - t < _QR_POLL_RATE_WINDOW]
+        if len(_qr_poll_timestamps) >= _QR_POLL_RATE_LIMIT:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Rate limit: max {_QR_POLL_RATE_LIMIT} polls per {int(_QR_POLL_RATE_WINDOW)}s"
+            )
+        _qr_poll_timestamps.append(now)
 
     # ── Frontend ──────────────────────────────────────────────────────────
 
@@ -920,8 +937,14 @@ if HAS_FASTAPI:
             # Recheck required env vars (config may now be satisfied)
             skill._config_missing = [
                 key for key in skill.requires_config
-                if not os.getenv(key)
+                if not os.getenv(key) and not skill.config.get(key)
             ]
+            # Re-enable co-located observer if config is now satisfied
+            if not skill._config_missing:
+                from mochi.observers import get_observer
+                obs = get_observer(name)
+                if obs and not obs.meta.enabled:
+                    obs.meta.enabled = True
 
         return {"ok": len(errors) == 0, "written": written, "errors": errors}
 
@@ -1090,6 +1113,93 @@ if HAS_FASTAPI:
             return {"ok": False, "error": "Connection timed out (10s)"}
         except Exception as e:
             return {"ok": False, "error": str(e)[:500]}
+
+    # ── WeChat QR auth flow ────────────────────────────────────────────
+
+    _WEIXIN_DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com"
+
+    @app.post("/api/weixin/qr", dependencies=[Depends(_verify_token)])
+    async def api_weixin_qr():
+        """Fetch a QR code for WeChat bot login."""
+        _check_test_rate()
+        try:
+            import aiohttp
+        except ImportError:
+            raise HTTPException(501, "aiohttp not installed (pip install aiohttp)")
+        try:
+            async with aiohttp.ClientSession() as session:
+                url = f"{_WEIXIN_DEFAULT_BASE_URL}/ilink/bot/get_bot_qrcode?bot_type=3"
+                async with session.get(
+                    url, timeout=aiohttp.ClientTimeout(total=15),
+                ) as resp:
+                    data = await resp.json(content_type=None)
+                    qrcode = data.get("qrcode", "")
+                    qr_content = data.get("qrcode_img_content", "")
+                    if not qrcode or not qr_content:
+                        return {"ok": False, "error": f"API returned no QR data: {str(data)[:200]}"}
+                    return {"ok": True, "qrcode": qrcode, "qrcode_img_content": qr_content}
+        except asyncio.TimeoutError:
+            return {"ok": False, "error": "Connection timed out (15s)"}
+        except Exception as e:
+            return {"ok": False, "error": str(e)[:500]}
+
+    @app.post("/api/weixin/qr/poll", dependencies=[Depends(_verify_token)])
+    async def api_weixin_qr_poll(request: Request):
+        """Poll QR code scan status. On confirmed, auto-save credentials to .env."""
+        _check_qr_poll_rate()
+        body = await request.json()
+        qrcode = (body.get("qrcode") or "").strip()
+        if not qrcode:
+            raise HTTPException(400, "qrcode is required")
+        try:
+            import aiohttp
+        except ImportError:
+            raise HTTPException(501, "aiohttp not installed (pip install aiohttp)")
+        try:
+            async with aiohttp.ClientSession() as session:
+                url = f"{_WEIXIN_DEFAULT_BASE_URL}/ilink/bot/get_qrcode_status?qrcode={qrcode}"
+                async with session.get(
+                    url,
+                    headers={"iLink-App-ClientVersion": "1"},
+                    timeout=aiohttp.ClientTimeout(total=35),
+                ) as resp:
+                    data = await resp.json(content_type=None)
+        except asyncio.TimeoutError:
+            return {"status": "wait"}
+        except Exception as e:
+            return {"status": "error", "error": str(e)[:500]}
+
+        status = data.get("status", "")
+
+        if status == "confirmed":
+            from mochi.admin.admin_env import write_env_value, read_env_value
+            bot_token = data.get("bot_token", "")
+            user_id = data.get("ilink_user_id", "")
+            base_url = data.get("baseurl", "")
+
+            if bot_token:
+                write_env_value("WEIXIN_ENABLED", "true")
+                write_env_value("WEIXIN_BOT_TOKEN", bot_token)
+
+            if base_url and base_url.rstrip("/") != _WEIXIN_DEFAULT_BASE_URL:
+                write_env_value("WEIXIN_BASE_URL", base_url)
+
+            if user_id:
+                existing = read_env_value("WEIXIN_ALLOWED_USERS")
+                if not existing:
+                    write_env_value("WEIXIN_ALLOWED_USERS", user_id)
+
+            # Clear Telegram (mutually exclusive transports)
+            write_env_value("TELEGRAM_BOT_TOKEN", "")
+
+            log.info("WeChat QR auth: credentials saved to .env")
+
+        return {
+            "status": status,
+            "bot_token": data.get("bot_token", ""),
+            "ilink_user_id": data.get("ilink_user_id", ""),
+            "baseurl": data.get("baseurl", ""),
+        }
 
     # ═══════════════════════════════════════════════════════════════════════
     # Page 4: Prompts

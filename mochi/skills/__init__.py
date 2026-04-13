@@ -88,9 +88,11 @@ def discover() -> list[str]:
                     log.warning("Skill %s config resolution failed: %s", skill.name, e)
 
             # Check required config vars (parity with observer auto-disable)
+            # Check both os.environ AND DB-resolved skill.config (admin portal
+            # saves to DB, not .env, so os.getenv alone misses DB values).
             missing_config = [
                 key for key in skill.requires_config
-                if not os.getenv(key)
+                if not os.getenv(key) and not skill.config.get(key)
             ]
             if missing_config:
                 log.info(
@@ -280,9 +282,9 @@ def get_skill_info_all() -> list[dict]:
             "admin_disabled": admin_disabled,
             "auto_disabled": auto_disabled,
             "config_status": {
-                **{key: bool(os.getenv(key))
+                **{key: bool(os.getenv(key) or s.config.get(key))
                    for key in getattr(s, "requires_config", [])},
-                **{entry["key"]: entry["key"] in s.config
+                **{entry["key"]: entry["key"] in s.config and bool(s.config[entry["key"]])
                    for entry in s.config_schema},
             },
             "has_observer": s.has_observer,
