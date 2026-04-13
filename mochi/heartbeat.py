@@ -21,15 +21,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 from mochi.config import (
-    HEARTBEAT_INTERVAL_MINUTES,
     AWAKE_HOUR_START, AWAKE_HOUR_END,
-    SLEEP_KEYWORD_HOUR_START, SLEEP_KEYWORD_HOUR_END, SLEEP_KEYWORDS,
-    SILENCE_SLEEP_AFTER_HOUR, SILENCE_SLEEP_THRESHOLD_HOURS,
-    SILENCE_PAUSE_DAYS, FALLBACK_WAKE_HOUR,
-    MAX_DAILY_PROACTIVE, PROACTIVE_COOLDOWN_SECONDS,
-    THINK_FALLBACK_MINUTES, LLM_HEARTBEAT_TIMEOUT_SECONDS,
-    MAINTENANCE_HOUR, MAINTENANCE_ENABLED,
-    BEDTIME_TIDY_ENABLED, BEDTIME_TIDY_TIMEOUT_S,
     TZ,
     OWNER_USER_ID,
 )
@@ -72,40 +64,13 @@ def _persist_state(state: str, changed_at: datetime | None = None) -> None:
         log.debug("Failed to persist heartbeat state: %s", exc)
 
 
-# ── Runtime config override support (admin portal) ────────────────────────
-
-_system_overrides_cache: dict[str, str] = {}
-_system_overrides_cache_time: float = 0.0
+# ── Runtime config (DB-only, cached in admin_db) ─────────────────────────
 
 
 def _effective(key: str):
-    """Get effective config value: DB override (skill_config._system) > module import.
-
-    Cached for 60s to avoid hitting the DB every heartbeat access.
-    """
-    global _system_overrides_cache, _system_overrides_cache_time
-    import time as _time
-    now = _time.monotonic()
-    if now - _system_overrides_cache_time > 60:
-        try:
-            from mochi.admin.admin_db import get_system_overrides
-            _system_overrides_cache = get_system_overrides()
-        except Exception:
-            _system_overrides_cache = {}
-        _system_overrides_cache_time = now
-
-    if key in _system_overrides_cache:
-        raw = _system_overrides_cache[key]
-        original = globals().get(key)
-        if isinstance(original, bool):
-            return raw.lower() in ("true", "1", "yes")
-        if isinstance(original, int):
-            try:
-                return int(raw)
-            except (ValueError, TypeError):
-                return original
-        return raw
-    return globals().get(key)
+    """Get effective config value from DB (cached 60s in admin_db)."""
+    from mochi.admin.admin_db import get_system_config
+    return get_system_config(key)
 
 
 async def _llm_with_timeout(coro, label: str):
@@ -257,12 +222,12 @@ def check_sleep_entry(last_user_msg_text: str | None = None) -> bool:
     now = datetime.now(TZ)
     hour = now.hour
     # Night window: SLEEP_KEYWORD_HOUR_START (21) to SLEEP_KEYWORD_HOUR_END (4)
-    is_night = hour >= SLEEP_KEYWORD_HOUR_START or hour < SLEEP_KEYWORD_HOUR_END
+    is_night = hour >= _effective('SLEEP_KEYWORD_HOUR_START') or hour < _effective('SLEEP_KEYWORD_HOUR_END')
     if not is_night:
         return False
 
     text_lower = last_user_msg_text.lower().strip()
-    if any(kw in text_lower for kw in SLEEP_KEYWORDS):
+    if any(kw in text_lower for kw in _effective('SLEEP_KEYWORDS').split(",")):
         return True
 
     return False
@@ -339,7 +304,7 @@ def check_silence_sleep() -> dict | None:
     hour = now.hour
 
     # Only during night hours: >= SILENCE_SLEEP_AFTER_HOUR or < SLEEP_KEYWORD_HOUR_END
-    is_night = hour >= SILENCE_SLEEP_AFTER_HOUR or hour < SLEEP_KEYWORD_HOUR_END
+    is_night = hour >= _effective('SILENCE_SLEEP_AFTER_HOUR') or hour < _effective('SLEEP_KEYWORD_HOUR_END')
     if not is_night:
         return None
 
@@ -359,7 +324,7 @@ def check_silence_sleep() -> dict | None:
     except (ValueError, TypeError):
         return None
 
-    if silence_hours < SILENCE_SLEEP_THRESHOLD_HOURS:
+    if silence_hours < _effective('SILENCE_SLEEP_THRESHOLD_HOURS'):
         return None
 
     # Distinguish first sleep vs re-sleep (woke mid-night and went silent again)
@@ -391,7 +356,7 @@ def enter_silent_pause() -> None:
     if not _silent_pause:
         _silent_pause = True
         log.info("SILENT PAUSE — user silent for %.1f+ days, pausing proactive",
-                 SILENCE_PAUSE_DAYS)
+                 _effective('SILENCE_PAUSE_DAYS'))
 
 
 def clear_silent_pause() -> None:
@@ -420,7 +385,7 @@ def _check_silence_pause() -> None:
     except (ValueError, TypeError):
         return
 
-    threshold_hours = SILENCE_PAUSE_DAYS * 24
+    threshold_hours = _effective('SILENCE_PAUSE_DAYS') * 24
     if silence_hours >= threshold_hours:
         enter_silent_pause()
     elif _silent_pause:
@@ -916,7 +881,8 @@ async def _dispatch_proactive(notify_actions: list[dict], user_id: int) -> None:
 async def heartbeat_loop() -> None:
     """Main heartbeat loop. Run as asyncio task."""
     log.info("Heartbeat started: interval=%dm, awake=%d-%d, state=%s",
-             HEARTBEAT_INTERVAL_MINUTES, AWAKE_HOUR_START, AWAKE_HOUR_END, _state)
+             _effective('HEARTBEAT_INTERVAL_MINUTES'), AWAKE_HOUR_START,
+             _effective('AWAKE_HOUR_END'), _state)
 
     while True:
         try:

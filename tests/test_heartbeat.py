@@ -101,37 +101,37 @@ class TestStateMachine:
 
 class TestCheckSleepEntry:
 
-    def test_keyword_in_night_window_true(self, monkeypatch):
+    @pytest.fixture(autouse=True)
+    def _seed_sleep_config(self):
+        """Seed sleep config into DB for check_sleep_entry tests."""
+        from mochi.admin.admin_db import set_system_override, invalidate_system_config_cache
+        set_system_override("SLEEP_KEYWORD_HOUR_START", "21")
+        set_system_override("SLEEP_KEYWORD_HOUR_END", "4")
+        set_system_override("SLEEP_KEYWORDS", "晚安,睡了")
+        invalidate_system_config_cache()
+
+    def test_keyword_in_night_window_true(self):
         """Sleep keyword during night hours returns True."""
         hb._state = "AWAKE"
         night_time = datetime(2026, 4, 13, 22, 30, tzinfo=timezone.utc)
-        monkeypatch.setattr(hb, "SLEEP_KEYWORD_HOUR_START", 21)
-        monkeypatch.setattr(hb, "SLEEP_KEYWORD_HOUR_END", 4)
-        monkeypatch.setattr(hb, "SLEEP_KEYWORDS", ["晚安", "睡了"])
         with patch("mochi.heartbeat.datetime") as mock_dt:
             mock_dt.now.return_value = night_time
             mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
             assert hb.check_sleep_entry("晚安~") is True
 
-    def test_keyword_outside_window_false(self, monkeypatch):
+    def test_keyword_outside_window_false(self):
         """Sleep keyword during daytime returns False."""
         hb._state = "AWAKE"
         day_time = datetime(2026, 4, 13, 14, 0, tzinfo=timezone.utc)
-        monkeypatch.setattr(hb, "SLEEP_KEYWORD_HOUR_START", 21)
-        monkeypatch.setattr(hb, "SLEEP_KEYWORD_HOUR_END", 4)
-        monkeypatch.setattr(hb, "SLEEP_KEYWORDS", ["晚安"])
         with patch("mochi.heartbeat.datetime") as mock_dt:
             mock_dt.now.return_value = day_time
             mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
             assert hb.check_sleep_entry("晚安") is False
 
-    def test_no_keyword_false(self, monkeypatch):
+    def test_no_keyword_false(self):
         """Non-sleep text during night returns False."""
         hb._state = "AWAKE"
         night_time = datetime(2026, 4, 13, 23, 0, tzinfo=timezone.utc)
-        monkeypatch.setattr(hb, "SLEEP_KEYWORD_HOUR_START", 21)
-        monkeypatch.setattr(hb, "SLEEP_KEYWORD_HOUR_END", 4)
-        monkeypatch.setattr(hb, "SLEEP_KEYWORDS", ["晚安", "睡了"])
         with patch("mochi.heartbeat.datetime") as mock_dt:
             mock_dt.now.return_value = night_time
             mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
@@ -205,17 +205,24 @@ class TestGetState:
 
 class TestCheckSilenceSleep:
 
+    @pytest.fixture(autouse=True)
+    def _seed_silence_config(self):
+        """Seed silence config into DB for check_silence_sleep tests."""
+        from mochi.admin.admin_db import set_system_override, invalidate_system_config_cache
+        set_system_override("SILENCE_SLEEP_AFTER_HOUR", "23")
+        set_system_override("SLEEP_KEYWORD_HOUR_END", "4")
+        set_system_override("SILENCE_SLEEP_THRESHOLD_HOURS", "1.0")
+        invalidate_system_config_cache()
+
     def test_not_awake_returns_none(self):
         """check_silence_sleep returns None when SLEEPING."""
         hb._state = "SLEEPING"
         assert hb.check_silence_sleep() is None
 
-    def test_daytime_returns_none(self, monkeypatch):
+    def test_daytime_returns_none(self):
         """check_silence_sleep returns None during daytime hours."""
         hb._state = "AWAKE"
         day_time = datetime(2026, 4, 13, 15, 0, tzinfo=timezone.utc)
-        monkeypatch.setattr(hb, "SILENCE_SLEEP_AFTER_HOUR", 23)
-        monkeypatch.setattr(hb, "SLEEP_KEYWORD_HOUR_END", 4)
         with patch("mochi.heartbeat.datetime") as mock_dt:
             mock_dt.now.return_value = day_time
             mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)

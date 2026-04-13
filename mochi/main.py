@@ -50,6 +50,10 @@ async def main():
     from mochi.admin.admin_db import seed_models_from_env
     seed_models_from_env()
 
+    # 0c. Seed system config from .env on first run (DB empty)
+    from mochi.admin.admin_db import seed_system_config_from_env
+    seed_system_config_from_env()
+
     # 1. Config validation
     validate_config()
 

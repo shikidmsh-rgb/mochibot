@@ -1,7 +1,7 @@
-"""Admin portal — DB helpers for model registry, tier assignments, system overrides.
+"""Admin portal — DB helpers for model registry, tier assignments, system config.
 
-Model config authority: DB is the single source of truth.
-.env model vars (CHAT_*, TIER_*) are seed data — auto-imported on first startup.
+DB is the single source of truth for all admin-configurable settings.
+.env vars are seed data — auto-imported to DB on first startup, then DB-only at runtime.
 """
 
 import logging
@@ -291,6 +291,133 @@ def get_tier_effective_config() -> dict[str, dict]:
 
 _SYSTEM_SKILL_NAME = "_system"
 
+# All admin-configurable system config keys with (type, default_value).
+# Default values match config.py. Keys not listed here are not managed via admin portal.
+# Excluded keys (internal tuning, not user-facing):
+#   PROACTIVE_CHAT_MAX_TOKENS, PROACTIVE_CHAT_HISTORY_TURNS — LLM output tuning
+#   BEDTIME_TIDY_MAX_ROUNDS, BEDTIME_TIDY_MAX_TOKENS, BEDTIME_TIDY_TOOLS — internal behavior
+#   AWAKE_HOUR_START — only used at startup for initial state detection
+SYSTEM_DEFAULTS: dict[str, tuple[str, any]] = {
+    # ── Heartbeat ──
+    "HEARTBEAT_INTERVAL_MINUTES":     ("int",   20),
+    "MAX_DAILY_PROACTIVE":            ("int",   10),
+    "PROACTIVE_COOLDOWN_SECONDS":     ("int",   1800),
+    "THINK_FALLBACK_MINUTES":         ("int",   60),
+    "LLM_HEARTBEAT_TIMEOUT_SECONDS":  ("int",   120),
+    "FALLBACK_WAKE_HOUR":             ("int",   10),
+    "AWAKE_HOUR_END":                 ("int",   23),
+    "BEDTIME_TIDY_ENABLED":           ("bool",  True),
+    "BEDTIME_TIDY_TIMEOUT_S":         ("int",   60),
+    # ── Sleep/Wake ──
+    "SLEEP_KEYWORD_HOUR_START":       ("int",   21),
+    "SLEEP_KEYWORD_HOUR_END":         ("int",   4),
+    "SLEEP_KEYWORDS":                 ("str",   "晚安,睡了,去睡了,good night,gn"),
+    "SILENCE_SLEEP_AFTER_HOUR":       ("int",   23),
+    "SILENCE_SLEEP_THRESHOLD_HOURS":  ("float", 1.0),
+    "SILENCE_PAUSE_DAYS":             ("float", 3.0),
+    # ── Basic ──
+    "TIMEZONE_OFFSET_HOURS":          ("int",   8),
+    "AI_CHAT_MAX_COMPLETION_TOKENS":  ("int",   4096),
+    "MAINTENANCE_HOUR":               ("int",   3),
+    "MAINTENANCE_ENABLED":            ("bool",  True),
+    "HEARTBEAT_LOG_TRIM_DAYS":        ("int",   7),
+    "HEARTBEAT_LOG_DELETE_DAYS":      ("int",   30),
+}
+
+
+def _cast_system(raw: str, type_name: str):
+    """Cast a DB string to the declared system config type."""
+    if type_name == "bool":
+        return raw.lower() in ("true", "1", "yes")
+    if type_name == "int":
+        try:
+            return int(raw)
+        except (ValueError, TypeError):
+            return 0
+    if type_name == "float":
+        try:
+            return float(raw)
+        except (ValueError, TypeError):
+            return 0.0
+    return raw
+
+
+# ── Cached system config reader ──────────────────────────────────────────
+
+_system_config_cache: dict[str, str] = {}
+_system_config_cache_time: float = 0.0
+
+
+def get_system_config(key: str):
+    """Get effective system config value from DB with 60s cache.
+
+    Priority: DB value > SYSTEM_DEFAULTS > config module fallback.
+    """
+    global _system_config_cache, _system_config_cache_time
+    import time as _time
+    now = _time.monotonic()
+    if now - _system_config_cache_time > 60:
+        try:
+            _system_config_cache = get_system_overrides()
+        except Exception:
+            _system_config_cache = {}
+        _system_config_cache_time = now
+
+    raw = _system_config_cache.get(key)
+    if raw is not None:
+        type_name = SYSTEM_DEFAULTS.get(key, ("str",))[0]
+        return _cast_system(raw, type_name)
+
+    if key in SYSTEM_DEFAULTS:
+        return SYSTEM_DEFAULTS[key][1]
+
+    # Unknown key — fallback to config module for backward compat
+    log.warning("get_system_config: unknown key %r, falling back to config module", key)
+    import mochi.config as _cfg
+    return getattr(_cfg, key, None)
+
+
+def invalidate_system_config_cache() -> None:
+    """Force next get_system_config() call to re-read from DB."""
+    global _system_config_cache_time
+    _system_config_cache_time = 0.0
+
+
+# ── Seed system config from .env ─────────────────────────────────────────
+
+def seed_system_config_from_env() -> None:
+    """Import .env system config into DB on first startup.
+
+    For each key in SYSTEM_DEFAULTS:
+    - If DB already has a value → skip
+    - If .env has a value (via config module) → seed that value
+    - Otherwise → seed the hardcoded default
+
+    Idempotent: runs every startup but only writes missing keys.
+    """
+    existing = get_system_overrides()
+    missing = [k for k in SYSTEM_DEFAULTS if k not in existing]
+    if not missing:
+        return
+
+    import mochi.config as cfg
+    seeded = 0
+    for key in missing:
+        type_name, default_val = SYSTEM_DEFAULTS[key]
+        # Read from config module (populated from .env at import time)
+        env_val = getattr(cfg, key, None)
+        if env_val is not None:
+            # SLEEP_KEYWORDS is a list in config.py, convert back to comma-separated str
+            if isinstance(env_val, list):
+                env_val = ",".join(env_val)
+            set_system_override(key, str(env_val))
+        else:
+            set_system_override(key, str(default_val))
+        seeded += 1
+
+    if seeded:
+        log.info("Seeded %d system config key(s) from .env", seeded)
+
 
 def get_system_overrides() -> dict[str, str]:
     """Get all system overrides from skill_config table."""
@@ -318,7 +445,7 @@ def set_system_override(key: str, value: str) -> None:
 
 
 def clear_system_override(key: str) -> None:
-    """Remove a system override (revert to .env default)."""
+    """Remove a system config value (reverts to SYSTEM_DEFAULTS hardcoded default)."""
     conn = _connect()
     conn.execute(
         "DELETE FROM skill_config WHERE skill_name = ? AND key = ?",

@@ -244,6 +244,9 @@ if HAS_FASTAPI:
         # Seed model config from .env on first run (DB empty)
         from mochi.admin.admin_db import seed_models_from_env
         seed_models_from_env()
+        # Seed system config from .env on first run (DB empty)
+        from mochi.admin.admin_db import seed_system_config_from_env
+        seed_system_config_from_env()
         # Auto-start the bot if a transport is already configured
         from mochi.admin.admin_env import read_env_value
         tg_token = (read_env_value("TELEGRAM_BOT_TOKEN") or "").strip()
@@ -734,40 +737,64 @@ if HAS_FASTAPI:
     # ═══════════════════════════════════════════════════════════════════════
 
     _HEARTBEAT_PARAMS = {
-        "HEARTBEAT_INTERVAL_MINUTES": "int",
-        "MAX_DAILY_PROACTIVE": "int",
+        # ── Core ──
+        "HEARTBEAT_INTERVAL_MINUTES":     "int",
+        "MAX_DAILY_PROACTIVE":            "int",
+        "PROACTIVE_COOLDOWN_SECONDS":     "int",
+        "THINK_FALLBACK_MINUTES":         "int",
+        "LLM_HEARTBEAT_TIMEOUT_SECONDS":  "int",
+        # ── Sleep/Wake ──
+        "FALLBACK_WAKE_HOUR":             "int",
+        "AWAKE_HOUR_END":                 "int",
+        "SLEEP_KEYWORD_HOUR_START":       "int",
+        "SLEEP_KEYWORD_HOUR_END":         "int",
+        "SLEEP_KEYWORDS":                 "str",
+        "SILENCE_SLEEP_AFTER_HOUR":       "int",
+        "SILENCE_SLEEP_THRESHOLD_HOURS":  "float",
+        "SILENCE_PAUSE_DAYS":             "float",
+        # ── Bedtime tidy ──
+        "BEDTIME_TIDY_ENABLED":           "bool",
+        "BEDTIME_TIDY_TIMEOUT_S":         "int",
     }
 
-    @app.get("/api/heartbeat/config", dependencies=[Depends(_verify_token)])
-    async def api_get_heartbeat_config():
-        import mochi.config as cfg
-        from mochi.admin.admin_db import get_system_overrides
-        overrides = get_system_overrides()
+    def _get_config_values(params: dict[str, str]) -> dict:
+        """Read config values for a set of params. DB is the single authority."""
+        from mochi.admin.admin_db import get_system_overrides, SYSTEM_DEFAULTS
+        db_values = get_system_overrides()
         result = {}
-        for key, typ in _HEARTBEAT_PARAMS.items():
-            env_val = getattr(cfg, key, None)
-            override_val = overrides.get(key)
-            result[key] = {
-                "env_default": env_val,
-                "override": override_val,
-                "effective": _cast(override_val, typ) if override_val is not None else env_val,
-                "type": typ,
-            }
+        for key, typ in params.items():
+            _, default_val = SYSTEM_DEFAULTS.get(key, (typ, None))
+            db_val = db_values.get(key)
+            value = _cast(db_val, typ) if db_val is not None else default_val
+            result[key] = {"value": value, "default": default_val, "type": typ}
         return result
 
-    @app.put("/api/heartbeat/config", dependencies=[Depends(_verify_token)])
-    async def api_set_heartbeat_config(request: Request):
-        body = await request.json()
-        from mochi.admin.admin_db import set_system_override, clear_system_override
+    def _set_config_values(params: dict[str, str], body: dict) -> list[str]:
+        """Write config values for a set of params. Returns list of updated keys."""
+        from mochi.admin.admin_db import (
+            set_system_override, clear_system_override, invalidate_system_config_cache,
+        )
         updated = []
         for key, value in body.items():
-            if key not in _HEARTBEAT_PARAMS:
+            if key not in params:
                 continue
             if value is None:
                 clear_system_override(key)
             else:
                 set_system_override(key, str(value))
             updated.append(key)
+        if updated:
+            invalidate_system_config_cache()
+        return updated
+
+    @app.get("/api/heartbeat/config", dependencies=[Depends(_verify_token)])
+    async def api_get_heartbeat_config():
+        return _get_config_values(_HEARTBEAT_PARAMS)
+
+    @app.put("/api/heartbeat/config", dependencies=[Depends(_verify_token)])
+    async def api_set_heartbeat_config(request: Request):
+        body = await request.json()
+        updated = _set_config_values(_HEARTBEAT_PARAMS, body)
         return {"ok": True, "updated": updated}
 
     @app.get("/api/heartbeat/state", dependencies=[Depends(_verify_token)])
@@ -811,34 +838,12 @@ if HAS_FASTAPI:
 
     @app.get("/api/basic/config", dependencies=[Depends(_verify_token)])
     async def api_get_basic_config():
-        import mochi.config as cfg
-        from mochi.admin.admin_db import get_system_overrides
-        overrides = get_system_overrides()
-        result = {}
-        for key, typ in _BASIC_PARAMS.items():
-            env_val = getattr(cfg, key, None)
-            override_val = overrides.get(key)
-            result[key] = {
-                "env_default": env_val,
-                "override": override_val,
-                "effective": _cast(override_val, typ) if override_val is not None else env_val,
-                "type": typ,
-            }
-        return result
+        return _get_config_values(_BASIC_PARAMS)
 
     @app.put("/api/basic/config", dependencies=[Depends(_verify_token)])
     async def api_set_basic_config(request: Request):
         body = await request.json()
-        from mochi.admin.admin_db import set_system_override, clear_system_override
-        updated = []
-        for key, value in body.items():
-            if key not in _BASIC_PARAMS:
-                continue
-            if value is None:
-                clear_system_override(key)
-            else:
-                set_system_override(key, str(value))
-            updated.append(key)
+        updated = _set_config_values(_BASIC_PARAMS, body)
         return {"ok": True, "updated": updated}
 
     # ═══════════════════════════════════════════════════════════════════════
