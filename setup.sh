@@ -98,4 +98,16 @@ else
     echo ""
 fi
 
-.venv/bin/python -m mochi.admin
+while true; do
+    set +e
+    .venv/bin/python -m mochi.admin
+    EXIT_CODE=$?
+    set -e
+    if [ "$EXIT_CODE" -eq 43 ]; then
+        echo ""
+        echo "  [INFO] Admin server restarting..."
+        echo ""
+        continue
+    fi
+    break
+done

@@ -8,6 +8,7 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 RESTART_EXIT_CODE = 42
+ADMIN_RESTART_EXIT_CODE = 43
 _RESTART_FLAG = Path("data/.restart_requested")
 
 _restart_event: asyncio.Event | None = None

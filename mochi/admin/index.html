@@ -153,6 +153,9 @@ select.form-input { cursor:pointer; }
     <button class="nav-item" data-page="prompts"><span class="nav-icon">📝</span> 人格 & Prompts</button>
     <button class="nav-item" data-page="memory"><span class="nav-icon">🧠</span> 记忆库</button>
   </nav>
+  <div style="padding:8px 12px; border-top:1px solid var(--border);">
+    <button onclick="restartAdminServer()" style="display:flex;align-items:center;gap:6px;padding:8px 10px;border-radius:8px;cursor:pointer;font-size:13px;color:var(--text-dim);border:none;background:none;width:100%;text-align:left;transition:background .15s;" onmouseover="this.style.background='var(--primary-bg)'" onmouseout="this.style.background='none'" id="admin-restart-btn">🔄 重启管理后台</button>
+  </div>
 </aside>
 
 <main class="content">
@@ -443,6 +446,25 @@ async function startBotAndRefresh() {
   }
   // Give it a moment then refresh welcome to show running state
   setTimeout(() => { loaded.welcome = false; loadWelcome(); }, 2000);
+}
+
+async function restartAdminServer() {
+  if (!confirm('确定要重启管理后台吗？页面会短暂断开连接。')) return;
+  const btn = document.getElementById('admin-restart-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '重启中...'; }
+  try {
+    await api('POST', '/admin/restart');
+  } catch(e) {
+    // Server may have already died — that's expected
+  }
+  showToast('🔄 管理后台重启中，等待重新连接...');
+  // Poll until server is back
+  const poll = setInterval(async () => {
+    try {
+      const r = await fetch('/api/status', {signal: AbortSignal.timeout(2000)});
+      if (r.ok) { clearInterval(poll); location.reload(); }
+    } catch(e) { /* still down, keep polling */ }
+  }, 2000);
 }
 
 function toggleWeixinConfig() {
