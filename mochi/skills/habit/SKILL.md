@@ -8,11 +8,6 @@ expose_as_tool: false
 writes:
   diary: [diary]
   db: [habit_checkins]
-config:
-  default_habits:
-    type: str
-    default: "喝水|daily:6|normal|每天至少6杯"
-    description: "Pipe-separated default habits seeded on first use. Format per entry: name|frequency|importance|note. Multiple entries separated by semicolons."
 ---
 
 # Habit Skill

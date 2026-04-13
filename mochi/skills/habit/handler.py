@@ -58,42 +58,11 @@ def _is_paused(habit: dict) -> bool:
 
 class HabitSkill(Skill):
 
-    def _seed_defaults(self, user_id: int) -> None:
-        """Seed default habits from config if user has none yet."""
-        if list_habits(user_id):
-            return
-        raw = self.get_config("default_habits") or ""
-        if not raw:
-            return
-        for entry in raw.split(";"):
-            entry = entry.strip()
-            if not entry:
-                continue
-            parts = entry.split("|")
-            if len(parts) < 2:
-                continue
-            name = parts[0].strip()
-            frequency = parts[1].strip()
-            importance = parts[2].strip() if len(parts) > 2 else "normal"
-            context = parts[3].strip() if len(parts) > 3 else ""
-            if importance not in ("important", "normal"):
-                importance = "normal"
-            if not parse_frequency(frequency):
-                log.warning("Skipping invalid default habit frequency: %s", frequency)
-                continue
-            try:
-                add_habit(user_id=user_id, name=name, frequency=frequency,
-                          category="", importance=importance, context=context)
-            except Exception:
-                log.warning("Failed to seed default habit: %s", name)
-
     async def execute(self, context: SkillContext) -> SkillResult:
         """Dispatch by tool_name + action."""
         args = context.args
         action = args.get("action", "")
         uid = context.user_id
-
-        self._seed_defaults(uid)
 
         if context.tool_name == "query_habit":
             if action == "list":
