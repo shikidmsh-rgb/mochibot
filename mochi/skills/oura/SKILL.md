@@ -14,10 +14,12 @@ config:
   diary_journal:
     type: bool
     default: true
+    internal: true
     description: "Write sleep/workout events to journal"
   diary_today_ctx:
     type: bool
     default: true
+    internal: true
     description: "Write sleep/cycle summary to today context"
 ---
 

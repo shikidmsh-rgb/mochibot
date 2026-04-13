@@ -241,6 +241,9 @@ if HAS_FASTAPI:
         skill_registry.discover()
         observer_registry.discover()
         _migrate_encrypt_api_keys()
+        # Seed model config from .env on first run (DB empty)
+        from mochi.admin.admin_db import seed_models_from_env
+        seed_models_from_env()
         # Auto-start the bot if a transport is already configured
         from mochi.admin.admin_env import read_env_value
         tg_token = (read_env_value("TELEGRAM_BOT_TOKEN") or "").strip()
@@ -636,14 +639,6 @@ if HAS_FASTAPI:
             clear_tier_assignment(tier)
         except ValueError as e:
             raise HTTPException(400, str(e))
-        # Reload from .env
-        try:
-            from mochi.model_pool import get_pool
-            pool = get_pool()
-            provider, api_key, model, base_url = pool.get_tier_env_config(tier)
-            pool.reload_tier(tier, provider, api_key, model, base_url)
-        except Exception as e:
-            log.warning("Tier revert failed for '%s': %s", tier, e)
         return {"ok": True}
 
     # ── Embedding Config (shown on Models page) ─────────────────────────
@@ -990,6 +985,8 @@ if HAS_FASTAPI:
 
         config = []
         for entry in skill.config_schema:
+            if entry.get("internal"):
+                continue
             key = entry["key"]
             # Priority: DB > env > schema default
             if key in db_config:

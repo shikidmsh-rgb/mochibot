@@ -159,20 +159,25 @@ class TestSetOwnerUserId:
 
 class TestValidateConfig:
 
+    def _mock_tier_config(self, monkeypatch, *, has_model=True):
+        """Make validate_config see a DB-configured model (or not)."""
+        def fake_effective():
+            if has_model:
+                return {"chat": {"model": "m", "api_key_set": True, "source": "db:m"}}
+            return {"chat": {"model": "", "api_key_set": False, "source": "none"}}
+        monkeypatch.setattr(
+            "mochi.admin.admin_db.get_tier_effective_config", fake_effective)
+
     def test_no_critical_does_not_exit(self, monkeypatch):
-        """validate_config should not exit when no critical issues exist."""
+        """validate_config should not exit when DB has a model configured."""
         import mochi.config as cfg
-        monkeypatch.setattr(cfg, "CHAT_MODEL", "some-model")
-        monkeypatch.setattr(cfg, "CHAT_API_KEY", "some-key")
-        monkeypatch.setattr(cfg, "CHAT_PROVIDER", "openai")
+        self._mock_tier_config(monkeypatch, has_model=True)
         monkeypatch.setattr(cfg, "TELEGRAM_BOT_TOKEN", "some-token")
         cfg.validate_config()
 
     def test_ollama_skips_api_key_check(self, monkeypatch):
-        """Ollama provider should not warn about missing API key."""
+        """validate_config passes when DB has a configured model (e.g. seeded from ollama env)."""
         import mochi.config as cfg
-        monkeypatch.setattr(cfg, "CHAT_MODEL", "llama3")
-        monkeypatch.setattr(cfg, "CHAT_API_KEY", "")
-        monkeypatch.setattr(cfg, "CHAT_PROVIDER", "ollama")
+        self._mock_tier_config(monkeypatch, has_model=True)
         monkeypatch.setattr(cfg, "TELEGRAM_BOT_TOKEN", "some-token")
         cfg.validate_config()

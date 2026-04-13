@@ -1,6 +1,6 @@
 ---
 name: todo
-description: "待办 — add, list, complete, delete one-off tasks"
+description: "一次性待办 — 需要被追踪催促直到完成，但做完就结束不会再来的事（如买猫粮、约牙医、查资料）。"
 type: tool
 expose_as_tool: true
 writes:

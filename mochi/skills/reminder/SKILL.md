@@ -1,6 +1,6 @@
 ---
 name: reminder
-description: "提醒 — 创建、查看、删除定时提醒"
+description: "定时提醒 — 到了某个时间点提醒一下，纯时间触发，不需要追踪进度或催促完成。支持重复（每天、工作日、每周等），重复提醒也是 reminder 不是 habit（如'每天提醒我吃药'）。"
 type: tool
 expose_as_tool: true
 ---

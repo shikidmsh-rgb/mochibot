@@ -101,7 +101,7 @@ def run_all_checks():
     print("=== Tier Assignment ===")
     tiers = get("/api/tiers")
     check("tiers have chat", "chat" in tiers)
-    check("initial source=env", tiers["chat"]["source"] == "env")
+    check("initial source=none", tiers["chat"]["source"] == "none")
 
     r, _ = req("PUT", "/api/tiers/lite", {"model_name": "test-model"})
     check("assign tier", r.get("ok") is True)
@@ -111,7 +111,7 @@ def run_all_checks():
     r, _ = req("DELETE", "/api/tiers/lite")
     check("revert tier", r.get("ok") is True)
     tiers = get("/api/tiers")
-    check("reverted to env", tiers["lite"]["source"] == "env")
+    check("reverted to none", tiers["lite"]["source"] == "none")
 
     req("PUT", "/api/tiers/deep", {"model_name": "test-model"})
     r, code = req("DELETE", "/api/models/test-model")

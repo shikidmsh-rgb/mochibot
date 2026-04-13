@@ -3,7 +3,7 @@
 Starts all subsystems:
 1. Database initialization
 2. Skill discovery
-3. Transport(s) — Telegram (primary) and/or WeChat (secondary)
+3. Transport — Telegram or WeChat (one at a time)
 4. Heartbeat loop (includes maintenance scheduling)
 """
 
@@ -42,12 +42,16 @@ async def main():
     log.info("MochiBot starting up...")
     log.info("=" * 50)
 
-    # 0. Config validation
-    validate_config()
-
-    # 1. Database
+    # 0. Database (before config validation — tier models live in DB)
     init_db()
     log.info("Database ready")
+
+    # 0b. Seed model config from .env on first run (DB empty)
+    from mochi.admin.admin_db import seed_models_from_env
+    seed_models_from_env()
+
+    # 1. Config validation
+    validate_config()
 
     # 2. Skills
     skills = skill_registry.discover()
@@ -58,41 +62,32 @@ async def main():
     observers = discover_observers()
     log.info("Observers loaded: %s", observers)
 
-    # 3. Transport(s)
-    transports: list[Transport] = []
-    primary_transport: Transport | None = None
+    # 3. Transport — only one active at a time
+    transport: Transport | None = None
 
     if TELEGRAM_BOT_TOKEN:
+        if WEIXIN_ENABLED:
+            log.warning("Both Telegram and WeChat configured — using Telegram. "
+                        "Disable one in .env or admin portal to silence this warning.")
         from mochi.transport.telegram import TelegramTransport, set_message_handler
-        tg = TelegramTransport()
+        transport = TelegramTransport()
         set_message_handler(handle_message)
-        transports.append(tg)
-        primary_transport = tg
-
-    if WEIXIN_ENABLED:
+    elif WEIXIN_ENABLED:
         from mochi.transport.weixin import WeixinTransport
         from mochi.transport.weixin import set_message_handler as set_weixin_handler
-        wx = WeixinTransport()
+        transport = WeixinTransport()
         set_weixin_handler(handle_message)
-        transports.append(wx)
-        if primary_transport is None:
-            primary_transport = wx
 
-    # Start all transports
-    for t in transports:
-        if t is primary_transport:
-            await t.start()
-        else:
-            asyncio.create_task(t.start())
-        log.info("Transport started: %s%s", t.name,
-                 " (primary)" if t is primary_transport else "")
+    if transport:
+        await transport.start()
+        log.info("Transport started: %s", transport.name)
 
-    # 4. Heartbeat — wire up send callback to primary transport
-    if primary_transport:
-        _primary = primary_transport  # capture for closure
+    # 4. Heartbeat — wire up send callback to transport
+    if transport:
+        _t = transport  # capture for closure
 
         async def send_proactive(user_id: int, text: str):
-            await _primary.send_message(user_id, text)
+            await _t.send_message(user_id, text)
 
         set_send_callback(send_proactive)
         set_reminder_callback(send_proactive)
@@ -124,8 +119,8 @@ async def main():
             await asyncio.sleep(3600)
     except (KeyboardInterrupt, SystemExit):
         log.info("Shutting down...")
-        for t in transports:
-            await t.stop()
+        if transport:
+            await transport.stop()
 
 
 if __name__ == "__main__":

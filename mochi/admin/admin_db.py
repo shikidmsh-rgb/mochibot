@@ -1,4 +1,8 @@
-"""Admin portal — DB helpers for model registry, tier assignments, system overrides."""
+"""Admin portal — DB helpers for model registry, tier assignments, system overrides.
+
+Model config authority: DB is the single source of truth.
+.env model vars (CHAT_*, TIER_*) are seed data — auto-imported on first startup.
+"""
 
 import logging
 from datetime import datetime, timezone, timedelta
@@ -6,6 +10,9 @@ from datetime import datetime, timezone, timedelta
 from mochi.config import (
     DB_PATH, TIMEZONE_OFFSET_HOURS,
     CHAT_PROVIDER, CHAT_API_KEY, CHAT_MODEL, CHAT_BASE_URL,
+    TIER_LITE_PROVIDER, TIER_LITE_API_KEY, TIER_LITE_MODEL, TIER_LITE_BASE_URL,
+    TIER_CHAT_PROVIDER, TIER_CHAT_API_KEY, TIER_CHAT_MODEL, TIER_CHAT_BASE_URL,
+    TIER_DEEP_PROVIDER, TIER_DEEP_API_KEY, TIER_DEEP_MODEL, TIER_DEEP_BASE_URL,
 )
 from mochi.db import _connect
 from mochi.admin.admin_crypto import encrypt_api_key, decrypt_api_key
@@ -116,6 +123,91 @@ def delete_model(name: str) -> bool:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Seed from .env (first-run import)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def seed_models_from_env() -> None:
+    """Import .env model config into DB on first startup.
+
+    - If model_registry is empty and CHAT_MODEL is set: create model entries
+      from CHAT_* and any differing TIER_* env vars, then assign all tiers.
+    - If model_registry has entries but tier_assignments is incomplete:
+      fill missing tiers from env config.
+    - If everything is already populated: no-op.
+    """
+    if not CHAT_MODEL:
+        return  # user hasn't configured .env yet
+
+    conn = _connect()
+    has_models = conn.execute("SELECT 1 FROM model_registry LIMIT 1").fetchone()
+    existing_tiers = {
+        r["tier"] for r in conn.execute("SELECT tier FROM tier_assignments").fetchall()
+    }
+    conn.close()
+
+    if has_models and existing_tiers >= _VALID_TIERS:
+        return  # fully populated — nothing to do
+
+    # Build per-tier env config: (provider, api_key, model, base_url)
+    tier_env = {
+        "lite": (
+            TIER_LITE_PROVIDER or CHAT_PROVIDER,
+            TIER_LITE_API_KEY or CHAT_API_KEY,
+            TIER_LITE_MODEL or CHAT_MODEL,
+            TIER_LITE_BASE_URL or CHAT_BASE_URL,
+        ),
+        "chat": (
+            TIER_CHAT_PROVIDER or CHAT_PROVIDER,
+            TIER_CHAT_API_KEY or CHAT_API_KEY,
+            TIER_CHAT_MODEL or CHAT_MODEL,
+            TIER_CHAT_BASE_URL or CHAT_BASE_URL,
+        ),
+        "deep": (
+            TIER_DEEP_PROVIDER or CHAT_PROVIDER,
+            TIER_DEEP_API_KEY or CHAT_API_KEY,
+            TIER_DEEP_MODEL or CHAT_MODEL,
+            TIER_DEEP_BASE_URL or CHAT_BASE_URL,
+        ),
+    }
+
+    # Dedup: same (provider, key, model, base_url) → same registry name
+    seen: dict[tuple, str] = {}  # config tuple → model name
+    models_created = 0
+    tiers_assigned = 0
+
+    for tier in sorted(_VALID_TIERS):
+        if tier in existing_tiers:
+            continue  # already assigned
+
+        provider, api_key, model, base_url = tier_env[tier]
+        if not model:
+            continue
+
+        config_key = (provider, api_key, model, base_url)
+        if config_key in seen:
+            name = seen[config_key]
+        else:
+            # Derive a name: prefer the model string itself, ensure uniqueness
+            name = model
+            # Check if name already exists in registry with different config
+            existing = get_model(name, mask_key=False)
+            if existing and (existing["provider"] != provider or
+                            existing["model"] != model):
+                name = f"{model}-{tier}"
+            if not has_models or not existing:
+                upsert_model(name, provider, model, api_key, base_url)
+                models_created += 1
+            seen[config_key] = name
+
+        set_tier_assignment(tier, name)
+        tiers_assigned += 1
+
+    if models_created or tiers_assigned:
+        log.info("Seeded model config from .env: %d model(s), %d tier(s)",
+                 models_created, tiers_assigned)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Tier Assignments
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -158,25 +250,15 @@ def clear_tier_assignment(tier: str) -> None:
     conn.execute("DELETE FROM tier_assignments WHERE tier = ?", (tier,))
     conn.commit()
     conn.close()
-    log.info("Cleared tier assignment for '%s' (reverted to .env)", tier)
+    log.info("Cleared tier assignment for '%s'", tier)
 
 
 def get_tier_effective_config() -> dict[str, dict]:
-    """For each tier, return effective config: DB if assigned, .env fallback otherwise.
+    """For each tier, return effective config from DB.
 
     Returns {tier: {provider, model, base_url, api_key_set, source}}.
+    Source is "db:<model_name>" if assigned, "none" if unassigned.
     """
-    from mochi.config import (
-        TIER_LITE_PROVIDER, TIER_LITE_API_KEY, TIER_LITE_MODEL, TIER_LITE_BASE_URL,
-        TIER_CHAT_PROVIDER, TIER_CHAT_API_KEY, TIER_CHAT_MODEL, TIER_CHAT_BASE_URL,
-        TIER_DEEP_PROVIDER, TIER_DEEP_API_KEY, TIER_DEEP_MODEL, TIER_DEEP_BASE_URL,
-    )
-    env_tiers = {
-        "lite":    (TIER_LITE_PROVIDER, TIER_LITE_API_KEY, TIER_LITE_MODEL, TIER_LITE_BASE_URL),
-        "chat":    (TIER_CHAT_PROVIDER, TIER_CHAT_API_KEY, TIER_CHAT_MODEL, TIER_CHAT_BASE_URL),
-        "deep":    (TIER_DEEP_PROVIDER, TIER_DEEP_API_KEY, TIER_DEEP_MODEL, TIER_DEEP_BASE_URL),
-    }
-
     assignments = list_tier_assignments()
     result: dict[str, dict] = {}
 
@@ -194,19 +276,10 @@ def get_tier_effective_config() -> dict[str, dict]:
                 }
                 continue
 
-        # Env fallback (with CHAT_* as final fallback)
-        provider, api_key, model, base_url = env_tiers.get(tier, ("", "", "", ""))
-        eff_provider = provider or CHAT_PROVIDER
-        eff_model = model or CHAT_MODEL
-        eff_base_url = base_url or CHAT_BASE_URL
-        eff_key_set = bool(api_key or CHAT_API_KEY)
-
+        # No DB assignment — tier is unconfigured
         result[tier] = {
-            "provider": eff_provider,
-            "model": eff_model,
-            "base_url": eff_base_url,
-            "api_key_set": eff_key_set,
-            "source": "env",
+            "provider": "", "model": "", "base_url": "",
+            "api_key": "", "api_key_set": False, "source": "none",
         }
 
     return result

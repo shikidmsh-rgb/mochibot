@@ -5,7 +5,8 @@ Three tiers:
     chat  — balanced model for daily conversation (default)
     deep  — strong model for background reasoning, memory ops, analysis
 
-Priority: DB tier assignments (admin portal) > env TIER_* vars > env CHAT_* fallback.
+All tier config comes from DB. .env model vars are seed data only —
+auto-imported on first startup via seed_models_from_env().
 """
 
 import struct
@@ -15,10 +16,6 @@ import threading
 from collections import OrderedDict
 
 from mochi.config import (
-    CHAT_PROVIDER, CHAT_API_KEY, CHAT_MODEL, CHAT_BASE_URL,
-    TIER_LITE_PROVIDER, TIER_LITE_API_KEY, TIER_LITE_MODEL, TIER_LITE_BASE_URL,
-    TIER_CHAT_PROVIDER, TIER_CHAT_API_KEY, TIER_CHAT_MODEL, TIER_CHAT_BASE_URL,
-    TIER_DEEP_PROVIDER, TIER_DEEP_API_KEY, TIER_DEEP_MODEL, TIER_DEEP_BASE_URL,
     EMBEDDING_PROVIDER, EMBEDDING_API_KEY, EMBEDDING_MODEL, EMBEDDING_BASE_URL,
     AZURE_EMBEDDING_ENDPOINT, AZURE_EMBEDDING_API_KEY,
     AZURE_EMBEDDING_DEPLOYMENT, AZURE_EMBEDDING_API_VERSION,
@@ -62,17 +59,6 @@ class _TTLCache:
             self._data.move_to_end(key)
             while len(self._data) > self._max_size:
                 self._data.popitem(last=False)
-
-
-# ---------------------------------------------------------------------------
-# Tier config mapping
-# ---------------------------------------------------------------------------
-
-_TIER_CONFIGS: dict[str, tuple[str, str, str, str]] = {
-    "lite":    (TIER_LITE_PROVIDER, TIER_LITE_API_KEY, TIER_LITE_MODEL, TIER_LITE_BASE_URL),
-    "chat":    (TIER_CHAT_PROVIDER, TIER_CHAT_API_KEY, TIER_CHAT_MODEL, TIER_CHAT_BASE_URL),
-    "deep":    (TIER_DEEP_PROVIDER, TIER_DEEP_API_KEY, TIER_DEEP_MODEL, TIER_DEEP_BASE_URL),
-}
 
 
 # ---------------------------------------------------------------------------
@@ -170,26 +156,8 @@ class ModelPool:
         self._tier_models: dict[str, str] = {}
         self._lock = threading.Lock()
 
-        for tier_name, (provider, api_key, model, base_url) in _TIER_CONFIGS.items():
-            # Fallback: if tier config empty, use CHAT_* config
-            eff_provider = provider or CHAT_PROVIDER
-            eff_api_key = api_key or CHAT_API_KEY
-            eff_model = model or CHAT_MODEL
-            eff_base_url = base_url or CHAT_BASE_URL
-
-            if not eff_model:
-                log.warning("Tier '%s' has no model configured, skipping", tier_name)
-                continue
-
-            try:
-                client = _make_client(eff_provider, eff_api_key, eff_model, eff_base_url)
-                self._tiers[tier_name] = client
-                self._tier_models[tier_name] = eff_model
-            except Exception as e:
-                log.error("Failed to init tier '%s': %s", tier_name, e)
-
-        # Apply DB tier overrides (admin portal)
-        self._apply_db_overrides()
+        # Load all tiers from DB (the single authority)
+        self._load_from_db()
 
         log.info("Tier pool: %s", {t: m for t, m in self._tier_models.items()})
 
@@ -214,8 +182,8 @@ class ModelPool:
         """Get LLMProvider for a tier. Falls back to 'chat' for unknown tiers."""
         if tier not in self._tiers:
             # Tier missing — maybe models were configured after pool init.
-            # Retry DB overrides once before giving up.
-            self._apply_db_overrides()
+            # Retry DB load once before giving up.
+            self._load_from_db()
             if tier not in self._tiers:
                 log.warning("Unknown tier '%s', falling back to 'chat'", tier)
                 tier = "chat"
@@ -245,32 +213,25 @@ class ModelPool:
             self._tier_models[tier] = model
         log.info("Hot-reloaded tier '%s': provider=%s model=%s", tier, provider, model)
 
-    def get_tier_env_config(self, tier: str) -> tuple[str, str, str, str]:
-        """Get the original .env config for a tier (for revert)."""
-        provider, api_key, model, base_url = _TIER_CONFIGS.get(tier, ("", "", "", ""))
-        return (
-            provider or CHAT_PROVIDER,
-            api_key or CHAT_API_KEY,
-            model or CHAT_MODEL,
-            base_url or CHAT_BASE_URL,
-        )
-
-    def _apply_db_overrides(self) -> None:
-        """Load tier assignments from DB and override env-based clients."""
+    def _load_from_db(self) -> None:
+        """Load all tier configs exclusively from DB."""
         try:
             from mochi.admin.admin_db import get_tier_effective_config
             effective = get_tier_effective_config()
             for tier, cfg in effective.items():
-                if cfg.get("source", "").startswith("db:"):
-                    try:
-                        self.reload_tier(
-                            tier, cfg["provider"], cfg.get("api_key", ""),
-                            cfg["model"], cfg.get("base_url", ""),
-                        )
-                    except Exception as e:
-                        log.warning("DB override for tier '%s' failed: %s", tier, e)
-        except Exception:
-            pass  # admin module not available or DB not ready
+                if not cfg.get("model") or cfg.get("source") == "none":
+                    if tier not in self._tiers:
+                        log.warning("Tier '%s' has no model assigned", tier)
+                    continue
+                try:
+                    self.reload_tier(
+                        tier, cfg["provider"], cfg.get("api_key", ""),
+                        cfg["model"], cfg.get("base_url", ""),
+                    )
+                except Exception as e:
+                    log.error("Failed to load tier '%s' from DB: %s", tier, e)
+        except Exception as e:
+            log.error("Failed to load tier config from DB: %s", e)
 
     # -------------------------------------------------------------------
     # Embedding

@@ -58,9 +58,9 @@ AZURE_API_VERSION = _env("AZURE_API_VERSION", "2024-12-01-preview")
 # ═══════════════════════════════════════════════════════════════════════════
 # Model Tier Routing (3-tier system: lite / chat / deep)
 # ═══════════════════════════════════════════════════════════════════════════
-# Each tier can use a different model/provider via env vars or admin portal.
+# These env vars are seed data — auto-imported to DB on first startup.
+# After that, manage models via the admin portal (DB is the single authority).
 # If tier-specific env vars are empty, they fall back to CHAT_* config.
-# DB tier assignments (admin portal) always take priority over env.
 
 TIER_LITE_PROVIDER = _env("TIER_LITE_PROVIDER")
 TIER_LITE_API_KEY = _env("TIER_LITE_API_KEY")
@@ -373,12 +373,20 @@ def validate_config() -> None:
     _log = _logging.getLogger(__name__)
     issues: list[tuple[str, str, str]] = []
 
-    if not CHAT_MODEL:
-        issues.append(("CRITICAL", "CHAT_MODEL",
+    # Check if any model is available in DB (seeded from .env or configured via admin portal)
+    has_model_db = False
+    try:
+        from mochi.admin.admin_db import get_tier_effective_config
+        for cfg in get_tier_effective_config().values():
+            if cfg.get("model") and cfg.get("api_key_set"):
+                has_model_db = True
+                break
+    except Exception:
+        pass  # DB not initialized yet or admin_db unavailable
+
+    if not has_model_db:
+        issues.append(("CRITICAL", "MODEL_CONFIG",
                         "No LLM model configured — set CHAT_MODEL in .env or configure via admin portal"))
-    if not CHAT_API_KEY and CHAT_PROVIDER != "ollama":
-        issues.append(("CRITICAL", "CHAT_API_KEY",
-                        "No API key configured — set CHAT_API_KEY in .env or configure via admin portal"))
     if not TELEGRAM_BOT_TOKEN and not WEIXIN_ENABLED:
         issues.append(("WARN", "TELEGRAM_BOT_TOKEN / WEIXIN_ENABLED",
                         "No transport configured — bot will not receive messages"))
@@ -392,7 +400,7 @@ def validate_config() -> None:
             _log.warning("[%s] %s — %s", level, name, impact)
 
     if has_critical:
-        _log.critical("Critical config missing. Set them in .env and restart.")
+        _log.critical("Critical config missing. Set CHAT_MODEL in .env and restart, or configure via admin portal.")
         sys.exit(1)
 
     # Deprecation warnings for removed config keys

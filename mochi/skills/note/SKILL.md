@@ -1,6 +1,6 @@
 ---
 name: note
-description: "便签/备忘 — 记一下、留个笔记、稍后提醒、条件型观察 (写入 notes.md)"
+description: "工作笔记/备忘 — 不是定时的，不是打卡的，只是需要之后注意、条件触发、或持续关注的事（如'遛狗后再做XX'、'压力高时提醒我'）。heartbeat 每轮都会看到。"
 type: tool
 tier: lite
 expose_as_tool: true

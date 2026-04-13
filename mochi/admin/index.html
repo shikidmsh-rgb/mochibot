@@ -92,12 +92,10 @@ select.form-input { cursor:pointer; }
 .check-row { display:flex; align-items:center; gap:8px; padding:6px 0; font-size:14px; }
 .check-icon { font-size:16px; width:20px; text-align:center; }
 /* ── Transport selector cards ────────── */
-.tp-cards { display:flex; gap:10px; margin:8px 0 4px; }
-.tp-card { flex:1; padding:14px 10px; border:2px solid var(--border); border-radius:var(--radius); text-align:center; cursor:pointer; transition:border-color .15s,background .15s; }
-.tp-card:hover { border-color:var(--primary); }
-.tp-card-selected { border-color:var(--primary); background:var(--primary-bg); }
-.tp-card-dim { opacity:.45; filter:grayscale(.6); cursor:pointer; }
-.tp-card-label { font-size:14px; font-weight:600; margin-top:4px; }
+.tp-cfg-btns { display:flex; gap:8px; margin:8px 0 4px; }
+.tp-cfg-btn { padding:6px 14px; border:1px solid var(--border); border-radius:20px; font-size:13px; font-weight:500; cursor:pointer; background:var(--bg); color:var(--text); transition:all .15s; }
+.tp-cfg-btn:hover { border-color:var(--primary); color:var(--primary); }
+.tp-cfg-btn.active { border-color:var(--primary); background:var(--primary-bg); color:var(--primary); }
 /* ── Stat cards ───────────────────────── */
 .stat-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:12px; margin-bottom:16px; }
 .stat-card { background:var(--card); border:1px solid var(--border); border-radius:var(--radius); padding:16px; text-align:center; }
@@ -300,7 +298,7 @@ if (_urlToken) {
 const authToken = _urlToken || sessionStorage.getItem('_admin_token') || '';
 let _telegramBotInfo = null; // {username, first_name} — set after successful token test
 let _weixinConnected = false; // set after successful WeChat token test
-let _selectedTransport = null; // 'telegram' | 'weixin' | null
+let _openTransportCfg = null; // 'telegram' | 'weixin' | null — which config panel is open
 let _wxQrPollTimer = null;   // QR scan poll interval
 let _wxQrRefreshCount = 0;   // QR refresh counter (max 6)
 let _wxQrStartTime = 0;      // overall timeout tracking
@@ -347,20 +345,36 @@ function toggleSidebar() {
 loaded.welcome = true;
 loadWelcome();
 
-function selectTransport(type) {
-  _selectedTransport = type;
-  const tgCard = document.getElementById('tp-card-telegram');
-  const wxCard = document.getElementById('tp-card-weixin');
+function showTransportConfig(type) {
+  // Toggle: if already open, close it; otherwise open the selected one
+  _openTransportCfg = (_openTransportCfg === type) ? null : type;
   const tgCfg = document.getElementById('transport-cfg');
   const wxCfg = document.getElementById('weixin-cfg');
-  if (tgCard) tgCard.className = 'tp-card' + (type === 'telegram' ? ' tp-card-selected' : ' tp-card-dim');
-  if (wxCard) wxCard.className = 'tp-card' + (type === 'weixin' ? ' tp-card-selected' : ' tp-card-dim');
-  if (tgCfg) tgCfg.style.display = type === 'telegram' ? 'block' : 'none';
-  if (wxCfg) wxCfg.style.display = type === 'weixin' ? 'block' : 'none';
+  const tgBtn = document.getElementById('tp-btn-telegram');
+  const wxBtn = document.getElementById('tp-btn-weixin');
+  if (tgCfg) tgCfg.style.display = _openTransportCfg === 'telegram' ? 'block' : 'none';
+  if (wxCfg) wxCfg.style.display = _openTransportCfg === 'weixin' ? 'block' : 'none';
+  if (tgBtn) tgBtn.className = 'tp-cfg-btn' + (_openTransportCfg === 'telegram' ? ' active' : '');
+  if (wxBtn) wxBtn.className = 'tp-cfg-btn' + (_openTransportCfg === 'weixin' ? ' active' : '');
 }
 
-function toggleTransportConfig() {
-  selectTransport('telegram');
+async function unbindTransport() {
+  const which = _telegramBotInfo ? 'Telegram' : (_weixinConnected ? 'WeChat' : null);
+  if (!which) return;
+  if (!confirm('确定要解绑 ' + which + ' 吗？Bot 将停止运行。')) return;
+  try {
+    if (_telegramBotInfo) {
+      await api('PUT', '/env', {'TELEGRAM_BOT_TOKEN': ''});
+      _telegramBotInfo = null;
+    } else {
+      await api('PUT', '/env', {'WEIXIN_ENABLED': 'false', 'WEIXIN_BOT_TOKEN': ''});
+      _weixinConnected = false;
+    }
+    showToast('已解绑 ' + which);
+    await api('POST', '/bot/stop').catch(() => {});
+    loaded.welcome = false;
+    loadWelcome();
+  } catch(e) { showToast('操作失败: ' + e.message); }
 }
 
 async function saveTransportConfig() {
@@ -423,7 +437,7 @@ async function startBotAndRefresh() {
 }
 
 function toggleWeixinConfig() {
-  selectTransport('weixin');
+  showTransportConfig('weixin');
 }
 
 // ── WeChat QR Scan Flow ──────────
@@ -1016,15 +1030,6 @@ async function saveWeixinConfig() {
   }
 }
 
-async function disableWeixin() {
-  try {
-    await api('PUT', '/env', {'WEIXIN_ENABLED': 'false'});
-    _weixinConnected = false;
-    showToast('WeChat 已禁用，重启 Bot 生效');
-    startBotAndRefresh();
-  } catch(e) { showToast('操作失败: ' + e.message); }
-}
-
 // ── Welcome page bot-status polling ──────
 let _welcomePollTimer = null;
 let _welcomeLastRunning = null;
@@ -1125,35 +1130,36 @@ async function loadWelcome() {
       ${!hasModel?'<button class=\"btn btn-primary btn-sm\" onclick=\"document.querySelector(\'[data-page=models]\').click()\">去配置 →</button>':(tierCount===0?modelBadges:'')}
     </div>`;
 
-    // Step 2: Choose transport platform (mutually exclusive)
+    // Step 2: Transport platform (only one at a time)
+    const hasTransport = tgConfigured || wxConfigured;
+    const activeTransport = tgConfigured ? 'Telegram' : (wxConfigured ? 'WeChat' : null);
+    const activeIcon = tgConfigured ? '🤖' : (wxConfigured ? '💬' : '');
 
-    // Auto-detect selected transport from config (only if user hasn't explicitly picked one)
-    if (!_selectedTransport) {
-      if (hasTelegram) _selectedTransport = 'telegram';
-      else if (hasWeixin) _selectedTransport = 'weixin';
-    }
-
-    // Status badges — only for the selected transport
-    let transportBadges = '';
-    const selectedTransportConfigured = (_selectedTransport === 'telegram' && tgConfigured)
-      || (_selectedTransport === 'weixin' && wxConfigured);
-    if (selectedTransportConfigured) {
+    // Status line for connected transport
+    let transportStatus = '';
+    if (hasTransport) {
+      let statusBadge = '';
       if (botStatus.running) {
-        transportBadges = '<span class="badge badge-ok">运行中</span>';
+        statusBadge = '<span class="badge badge-ok">运行中</span>';
       } else if (botStatus.exit_code !== undefined && botStatus.exit_code !== null) {
-        transportBadges = '<span class="badge badge-err">异常退出 (code ' + botStatus.exit_code + ')</span>'
+        statusBadge = '<span class="badge badge-err">异常退出 (code ' + botStatus.exit_code + ')</span>'
           + ' <button class="btn btn-ghost btn-sm" style="padding:2px 8px;font-size:11px" onclick="startBotAndRefresh()">重启</button>';
       } else {
-        transportBadges = '<span class="badge badge-warn">启动中...</span>';
+        statusBadge = '<span class="badge badge-warn">已配置</span>';
       }
-      if (_telegramBotInfo && _selectedTransport === 'telegram') transportBadges += ' <strong style="font-size:13px">@' + esc(_telegramBotInfo.username) + '</strong>';
+      let nameLabel = '<strong style="font-size:13px">' + activeIcon + ' ' + activeTransport + '</strong>';
+      if (_telegramBotInfo && tgConfigured) nameLabel += ' <span style="color:var(--text-soft);font-size:12px">@' + esc(_telegramBotInfo.username) + '</span>';
+      transportStatus = '<div style="display:flex;align-items:center;gap:8px;margin-top:4px;flex-wrap:wrap">'
+        + nameLabel + ' ' + statusBadge
+        + ' <button class="btn btn-ghost btn-sm" style="padding:2px 8px;font-size:11px;color:var(--danger)" onclick="unbindTransport()">解绑</button>'
+        + '</div>';
     }
 
     // Owner binding info (Telegram only)
     const ownerBound = s.config_status.owner_user_id && s.config_status.owner_user_id.set;
     const ownerUid = ownerBound ? s.config_status.owner_user_id.value : '';
     let ownerLine = '';
-    if (tgConfigured && _selectedTransport === 'telegram') {
+    if (tgConfigured) {
       if (ownerBound) {
         ownerLine = '<div style="font-size:12px;color:var(--success);margin-top:2px">Owner 已绑定: <code style="font-size:11px;background:var(--primary-bg);padding:1px 5px;border-radius:4px">' + esc(ownerUid) + '</code></div>';
       } else {
@@ -1161,39 +1167,40 @@ async function loadWelcome() {
       }
     }
 
+    // Config buttons + panels (only shown when no transport is bound)
+    let transportConfigArea = '';
+    if (!hasTransport) {
+      transportConfigArea = `
+        <div style="margin-top:6px;font-size:12px;color:var(--text-soft)">推荐 Telegram — 支持表情包、语音等丰富交互</div>
+        <div class="tp-cfg-btns" style="margin-top:8px">
+          <button class="tp-cfg-btn${_openTransportCfg==='telegram'?' active':''}" id="tp-btn-telegram" onclick="showTransportConfig('telegram')">配置 Telegram</button>
+          <button class="tp-cfg-btn${_openTransportCfg==='weixin'?' active':''}" id="tp-btn-weixin" onclick="showTransportConfig('weixin')">配置 WeChat</button>
+        </div>`;
+    }
+
     html += `<div class="check-row" style="padding:10px 0;border-bottom:1px solid var(--border);flex-wrap:wrap">
       <span class="check-icon" style="font-size:20px">${transportOk?stepDone():stepCircle(2, hasModel)}</span>
       <div style="flex:1">
-        <strong>选择平台</strong>
-        <div style="font-size:12px;color:var(--text-soft)">选择 Bot 使用的消息平台</div>
-        <div class="tp-cards">
-          <div class="tp-card${_selectedTransport==='telegram'?' tp-card-selected':(_selectedTransport?' tp-card-dim':'')}" id="tp-card-telegram" onclick="selectTransport('telegram')">
-            <div style="font-size:22px">🤖</div>
-            <div class="tp-card-label">Telegram</div>
-          </div>
-          <div class="tp-card${_selectedTransport==='weixin'?' tp-card-selected':(_selectedTransport?' tp-card-dim':'')}" id="tp-card-weixin" onclick="selectTransport('weixin')">
-            <div style="font-size:22px">💬</div>
-            <div class="tp-card-label">WeChat</div>
-          </div>
-        </div>
-        ${transportBadges?'<div style="display:flex;gap:6px;margin-top:4px;align-items:center">'+transportBadges+'</div>':''}
+        <strong>消息平台</strong>
+        <div style="font-size:12px;color:var(--text-soft)">${hasTransport ? '已绑定消息平台' : '选择并配置一个消息平台'}</div>
+        ${transportStatus}
         ${ownerLine}
-        <div id="transport-cfg" style="display:none;margin-top:10px">
+        ${transportConfigArea}
+        <div id="transport-cfg" style="display:${_openTransportCfg==='telegram'?'block':'none'};margin-top:10px">
           <div style="border:1px solid var(--border);border-radius:8px;padding:14px;background:var(--bg)">
             <div style="font-weight:600;margin-bottom:8px">Telegram 配置</div>
             <div class="form-group"><label class="form-label">Bot Token</label>
-            <input class="form-input" id="cfg-TELEGRAM_BOT_TOKEN" type="password" autocomplete="new-password" placeholder="${hasTelegram ? '（已配置，粘贴新 Token 可覆盖）' : '123456:ABC-DEF...'}"></div>
+            <input class="form-input" id="cfg-TELEGRAM_BOT_TOKEN" type="password" autocomplete="new-password" placeholder="123456:ABC-DEF..."></div>
             <div style="display:flex;align-items:center;gap:8px;margin-top:4px">
             <button class="btn btn-primary btn-sm" id="tg-save-btn" onclick="saveTransportConfig()">保存并连接</button>
             </div>
             <div id="tg-connect-status" style="margin-top:10px"></div>
           </div>
         </div>
-        <div id="weixin-cfg" style="display:none;margin-top:10px">
+        <div id="weixin-cfg" style="display:${_openTransportCfg==='weixin'?'block':'none'};margin-top:10px">
           <div style="border:1px solid var(--border);border-radius:8px;padding:14px;background:var(--bg)">
             <div style="font-weight:600;margin-bottom:8px">WeChat 配置</div>
-            ${wxConfigured ? '<div id="wx-connected-section" style="text-align:center;padding:8px 0"><span class="badge badge-ok" style="font-size:13px">✅ 已连接</span><div style="margin-top:8px;color:var(--text-soft);font-size:12px">Token 已配置，可通过上方重启按钮启动 Bot</div></div>' : ''}
-            <div id="wx-qr-section"${wxConfigured ? ' style="display:none"' : ''}>
+            <div id="wx-qr-section">
             <p style="font-size:12px;color:var(--text-soft);margin-bottom:12px">用微信扫码即可完成配置，无需手动输入</p>
             <div style="text-align:center">
             <button class="btn btn-primary btn-sm" id="wx-qr-btn" onclick="startWeixinQR()">扫码登录</button>
@@ -1205,7 +1212,7 @@ async function loadWelcome() {
             <div style="margin-top:12px;text-align:center"><a href="javascript:void(0)" onclick="toggleWxManualInput()" style="font-size:12px;color:var(--text-soft)">已有 Token？手动输入 ▾</a></div>
             <div id="wx-manual-input" style="display:none;margin-top:10px">
             <div class="form-group"><label class="form-label">Bot Token</label>
-            <input class="form-input" id="cfg-WEIXIN_BOT_TOKEN" type="password" autocomplete="new-password" placeholder="${wxConfigured ? '（已配置，粘贴新 Token 可覆盖）' : '580ba3c1dc75@im.bot:...'}"></div>
+            <input class="form-input" id="cfg-WEIXIN_BOT_TOKEN" type="password" autocomplete="new-password" placeholder="580ba3c1dc75@im.bot:..."></div>
             <div class="form-group"><label class="form-label">允许的用户 <span style="font-weight:400;color:var(--text-soft)">(可选，留空允许所有人)</span></label>
             <input class="form-input" id="cfg-WEIXIN_ALLOWED_USERS" type="text" placeholder="user_id_1, user_id_2"></div>
             <div style="display:flex;align-items:center;gap:8px;margin-top:4px">
@@ -1213,7 +1220,6 @@ async function loadWelcome() {
             </div>
             <div id="wx-connect-status" style="margin-top:10px"></div>
             </div>
-            ${wxConfigured ? '<div style="margin-top:10px;text-align:center"><button class="btn btn-ghost btn-sm" onclick="disableWeixin()">禁用 WeChat</button></div>' : ''}
           </div>
         </div>
       </div>
@@ -1276,8 +1282,6 @@ async function loadWelcome() {
     html += '</div>';
 
     el.innerHTML = html;
-    // Restore transport selection state
-    if (_selectedTransport) selectTransport(_selectedTransport);
     // Restore active QR flow UI after DOM rebuild
     if (_wxQrPollTimer && _wxQrActiveContent) {
       const c = document.getElementById('wx-qr-canvas');
@@ -1338,15 +1342,15 @@ async function loadModels() {
     html += '<table class="tbl"><tr><th>层级</th><th>模型</th><th>来源</th><th></th></tr>';
     for (const tier of ['lite','chat','deep']) {
       const cfg = tiers[tier] || {};
-      const src = cfg.source || 'env';
+      const src = cfg.source || 'none';
       const isDb = src.startsWith('db:');
       html += `<tr>
         <td><strong>${esc(tier)}</strong><div style="font-size:11px;color:var(--text-soft);margin-top:2px;max-width:200px">${esc(tierDescs[tier])}</div></td>
-        <td>${esc(cfg.model||'（未设置）')}</td>
-        <td><span class="badge ${isDb?'badge-info':'badge-gray'}">${esc(src)}</span></td>
+        <td>${esc(cfg.model||'（未分配）')}</td>
+        <td><span class="badge ${isDb?'badge-info':'badge-gray'}">${isDb?esc(src):'未分配'}</span></td>
         <td style="text-align:right">
           <select class="form-input" style="width:auto;display:inline;font-size:12px" onchange="assignTier('${tier}',this.value)">
-            <option value="">使用 .env</option>
+            <option value="">未分配</option>
             ${models.map(m=>`<option value="${esc(m.name)}" ${isDb && src==='db:'+m.name?'selected':''}>${esc(m.name)}</option>`).join('')}
           </select>
         </td></tr>`;
@@ -2070,14 +2074,19 @@ async function loadSkills() {
         ${s.description?`<div class="skill-desc">${esc(s.description)}</div>`:''}
         <div class="skill-tools">${(s.tools||[]).map(t=>`<span class="pill">${esc(t)}</span>`).join('')}</div>`;
 
-      // Config section — prefer config_schema if available
-      const hasSchema = s.config_schema && s.config_schema.length > 0;
-      const hasRequires = s.requires_config && s.requires_config.length > 0;
+      // Config section — merge requires_config (connection) + config_schema (options)
+      const schemaKeys = (s.config_schema || []).filter(e => !e.internal);
+      const schemaKeySet = new Set(schemaKeys.map(e => e.key));
+      const requireKeys = (s.requires_config || []).filter(k => !schemaKeySet.has(k));
+      const hasSchema = schemaKeys.length > 0;
+      const hasRequires = requireKeys.length > 0;
 
       if (hasSchema || hasRequires) {
-        const configKeys = hasSchema
-          ? s.config_schema.map(e => ({key:e.key, secret:e.secret, desc:e.description, isSet: s.config_status && s.config_status[e.key]}))
-          : s.requires_config.map(k => ({key:k, secret:true, desc:'', isSet: s.config_status && s.config_status[k]}));
+        // requires (connection secrets) first, then schema (options)
+        const configKeys = [
+          ...requireKeys.map(k => ({key:k, secret:true, desc:'', isSet: s.config_status && s.config_status[k]})),
+          ...schemaKeys.map(e => ({key:e.key, secret:e.secret, desc:e.description, isSet: s.config_status && s.config_status[e.key]})),
+        ];
 
         html += '<div class="config-list"><div style="font-size:12px;font-weight:600;color:var(--text-soft);margin-bottom:4px">配置</div>';
         for (const c of configKeys) {

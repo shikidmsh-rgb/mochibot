@@ -1,6 +1,6 @@
 ---
 name: habit
-description: "打卡 / check in — recurring daily or weekly habits"
+description: "长期习惯打卡 — 需要反复做、持续追踪、被催促保持的事（如运动、学习、喂猫药）。不是一次性的，做完还会再来。"
 type: tool
 tier: lite
 multi_turn: true
