@@ -95,12 +95,42 @@ class _OpenAICompatChat:
     On first call, tries the modern parameter set. If the API returns 400
     for an unsupported parameter, it retries with the legacy variant and
     caches the capability so subsequent calls don't need a retry.
+
+    Learned capabilities are also persisted in a class-level cache keyed by
+    model name, so a fresh provider instance for the same model (e.g. after
+    a hot-swap) skips the probe-and-retry round-trip entirely.
     """
+
+    # Class-level cache: model → {use_max_completion_tokens, use_temperature}
+    # Survives provider instance recreation (hot-swap, pool reload).
+    # GIL-safe: dict read/write is atomic; values are write-once per model.
+    _model_caps: dict[str, dict[str, bool]] = {}
 
     # Per-instance capability flags (set after first successful call)
     # None = unknown, True = supported, False = not supported
     _use_max_completion_tokens: bool | None = None
     _use_temperature: bool | None = None
+
+    def _init_caps_from_cache(self, model: str) -> None:
+        """Seed instance flags from class-level cache if available."""
+        cached = self._model_caps.get(model)
+        if cached:
+            self._use_max_completion_tokens = cached.get("use_max_completion_tokens")
+            self._use_temperature = cached.get("use_temperature")
+            log.debug("Model %s: restored caps from cache "
+                      "(max_completion_tokens=%s, temperature=%s)",
+                      model, self._use_max_completion_tokens,
+                      self._use_temperature)
+
+    def _save_caps_to_cache(self, model: str) -> None:
+        """Persist resolved capability flags to the class-level cache."""
+        if self._use_max_completion_tokens is not None or self._use_temperature is not None:
+            caps: dict[str, bool] = {}
+            if self._use_max_completion_tokens is not None:
+                caps["use_max_completion_tokens"] = self._use_max_completion_tokens
+            if self._use_temperature is not None:
+                caps["use_temperature"] = self._use_temperature
+            self._model_caps[model] = caps
 
     def _do_chat(self, client, model: str, messages: list[dict],
                  tools: list[dict] | None, temperature: float,
@@ -138,6 +168,7 @@ class _OpenAICompatChat:
                 log.debug("Model %s: using max_completion_tokens", model)
             if self._use_temperature is None:
                 self._use_temperature = True
+            self._save_caps_to_cache(model)
             return resp
         except BadRequestError as e:
             err_msg = str(e).lower()
@@ -174,6 +205,7 @@ class _OpenAICompatChat:
                     self._use_max_completion_tokens = "max_completion_tokens" in kwargs
                 if self._use_temperature is None:
                     self._use_temperature = "temperature" in kwargs
+                self._save_caps_to_cache(model)
                 return resp
             raise
 
@@ -186,6 +218,7 @@ class OpenAIProvider(_OpenAICompatChat, LLMProvider):
         self._model = model
         self._use_max_completion_tokens = None
         self._use_temperature = None
+        self._init_caps_from_cache(model)
         kwargs: dict = {"api_key": api_key}
         if base_url:
             kwargs["base_url"] = base_url
@@ -212,6 +245,7 @@ class AzureOpenAIProvider(_OpenAICompatChat, LLMProvider):
         self._deployment = model
         self._use_max_completion_tokens = None
         self._use_temperature = None
+        self._init_caps_from_cache(model)
         self._client = AzureOpenAI(
             azure_endpoint=base_url,
             api_key=api_key,

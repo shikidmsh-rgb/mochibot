@@ -2,7 +2,8 @@
 
 import json
 import pytest
-from mochi.llm import AnthropicProvider
+from unittest.mock import MagicMock, patch
+from mochi.llm import AnthropicProvider, OpenAIProvider, _OpenAICompatChat
 
 
 class TestAnthropicConvertMessages:
@@ -109,3 +110,84 @@ class TestAnthropicConvertMessages:
         assert t["name"] == "test_tool"
         assert t["description"] == "A test tool"
         assert "input_schema" in t
+
+
+class TestCapsCache:
+    """Test that model capability flags survive provider instance recreation."""
+
+    def setup_method(self):
+        # Clear class-level cache before each test
+        _OpenAICompatChat._model_caps.clear()
+
+    def _make_mock_response(self):
+        """Create a minimal mock OpenAI chat completion response."""
+        msg = MagicMock()
+        msg.content = "hi"
+        msg.tool_calls = None
+        choice = MagicMock()
+        choice.message = msg
+        choice.finish_reason = "stop"
+        usage = MagicMock()
+        usage.prompt_tokens = 10
+        usage.completion_tokens = 5
+        usage.total_tokens = 15
+        resp = MagicMock()
+        resp.choices = [choice]
+        resp.usage = usage
+        return resp
+
+    @patch("openai.OpenAI")
+    def test_caps_restored_from_cache(self, MockOpenAI):
+        """Second instance for same model gets caps from class cache."""
+        mock_client = MagicMock()
+        MockOpenAI.return_value = mock_client
+
+        from openai import BadRequestError
+
+        # First call: 400 on temperature → retry succeeds
+        mock_client.chat.completions.create.side_effect = [
+            BadRequestError(
+                message="temperature is not supported for this model",
+                response=MagicMock(status_code=400),
+                body=None,
+            ),
+            self._make_mock_response(),
+        ]
+
+        p1 = OpenAIProvider(api_key="k", model="no-temp-model")
+        p1.chat([{"role": "user", "content": "hi"}])
+
+        assert p1._use_temperature is False
+        assert "no-temp-model" in _OpenAICompatChat._model_caps
+
+        # Second instance — should inherit from cache, no retry needed
+        mock_client.chat.completions.create.reset_mock()
+        mock_client.chat.completions.create.side_effect = [
+            self._make_mock_response(),
+        ]
+
+        p2 = OpenAIProvider(api_key="k", model="no-temp-model")
+        assert p2._use_temperature is False  # pre-populated from cache
+
+        p2.chat([{"role": "user", "content": "hello"}])
+
+        # Verify temperature was NOT in the kwargs
+        call_kwargs = mock_client.chat.completions.create.call_args[1]
+        assert "temperature" not in call_kwargs
+
+    @patch("openai.OpenAI")
+    def test_new_model_still_probes(self, MockOpenAI):
+        """A model not in cache still goes through normal negotiation."""
+        mock_client = MagicMock()
+        MockOpenAI.return_value = mock_client
+        mock_client.chat.completions.create.return_value = self._make_mock_response()
+
+        p = OpenAIProvider(api_key="k", model="brand-new-model")
+        assert p._use_temperature is None  # not in cache
+
+        p.chat([{"role": "user", "content": "hi"}])
+        assert p._use_temperature is True  # learned from success
+
+        # Now cached
+        assert "brand-new-model" in _OpenAICompatChat._model_caps
+        assert _OpenAICompatChat._model_caps["brand-new-model"]["use_temperature"] is True
