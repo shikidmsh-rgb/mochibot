@@ -25,7 +25,10 @@ class WeatherObserver(Observer):
         return False
 
     async def observe(self) -> dict:
-        city = os.getenv("WEATHER_CITY", "")
+        # DB config (admin portal) takes priority over .env
+        from mochi.db import get_skill_config
+        db_cfg = get_skill_config("weather")
+        city = db_cfg.get("WEATHER_CITY") or os.getenv("WEATHER_CITY", "")
         if not city:
             log.warning("WeatherObserver: missing WEATHER_CITY (should have been auto-disabled)")
             return {}
