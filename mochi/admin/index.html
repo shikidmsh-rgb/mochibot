@@ -623,9 +623,7 @@ async function loadModels() {
     html += `<div class="form-group"><label class="form-label">Endpoint URL</label>
         <input class="form-input" id="emb-azure-baseurl" placeholder="https://xxx.openai.azure.com/" value="${esc(embCfg.base_url)}"></div>
       <div class="form-group"><label class="form-label">Deployment</label>
-        <input class="form-input" id="emb-azure-deployment" placeholder="text-embedding-3-small" value="${esc(embCfg.azure_deployment)}"></div>
-      <div class="form-group"><label class="form-label">API Version</label>
-        <input class="form-input" id="emb-azure-apiversion" placeholder="2024-10-21" value="${esc(embCfg.azure_api_version)}"></div>`;
+        <input class="form-input" id="emb-azure-deployment" placeholder="text-embedding-3-small" value="${esc(embCfg.azure_deployment)}"></div>`;
     html += '</div>';
     // ollama fields
     html += `<div id="emb-fields-ollama" style="display:none">
@@ -646,7 +644,8 @@ async function loadModels() {
         <input class="form-input" id="emb-cache-ttl" type="number" value="${embCfg.cache_ttl_s}" placeholder="300"></div>
     </div>`;
     // save button
-    html += '<div style="margin-top:12px"><button class="btn btn-primary" onclick="saveEmbeddingConfig()">保存</button> <span style="font-size:11px;color:var(--text-soft)">保存到 .env（重启生效）</span></div>';
+    html += '<div style="margin-top:12px"><button class="btn btn-primary" onclick="saveEmbeddingConfig()">保存</button> <button class="btn btn-ghost" onclick="testEmbedding(this)">🔌 测试连接</button> <span style="font-size:11px;color:var(--text-soft)">保存到 .env（重启生效）</span></div>';
+    html += '<div id="emb-test-result" style="font-size:13px;margin-top:8px"></div>';
     html += '</div>';
 
     el.innerHTML = html;
@@ -793,7 +792,7 @@ function toggleEmbeddingAdvanced() {
   if (arrow) arrow.textContent = show ? '▾' : '▸';
 }
 
-async function saveEmbeddingConfig() {
+async function saveEmbeddingConfig(skipReload) {
   const provider = document.getElementById('emb-provider').value;
   const body = {EMBEDDING_PROVIDER: provider};
 
@@ -811,8 +810,6 @@ async function saveEmbeddingConfig() {
     if (baseUrl) body.EMBEDDING_BASE_URL = baseUrl;
     const deployment = document.getElementById('emb-azure-deployment').value.trim();
     if (deployment) body.AZURE_EMBEDDING_DEPLOYMENT = deployment;
-    const apiVersion = document.getElementById('emb-azure-apiversion').value.trim();
-    if (apiVersion) body.AZURE_EMBEDDING_API_VERSION = apiVersion;
   } else if (provider === 'ollama') {
     const model = document.getElementById('emb-ollama-model').value.trim();
     if (model) body.EMBEDDING_MODEL = model;
@@ -828,10 +825,30 @@ async function saveEmbeddingConfig() {
 
   try {
     await api('PUT', '/env', body);
-    showToast('Embedding 配置已保存（重启生效）');
-    loaded.models = false;
-    loadModels();
-  } catch(e) { showToast('错误: ' + e.message); }
+    if (!skipReload) {
+      showToast('Embedding 配置已保存（重启生效）');
+      loaded.models = false;
+      loadModels();
+    }
+  } catch(e) { showToast('错误: ' + e.message); throw e; }
+}
+
+async function testEmbedding(btn) {
+  const res = document.getElementById('emb-test-result');
+  res.innerHTML = '<span style="color:var(--text-soft)">⏳ 保存并测试中...</span>';
+  btn.disabled = true;
+  try {
+    await saveEmbeddingConfig(true);
+    const r = await api('POST', '/embedding/test');
+    if (r.ok) {
+      res.innerHTML = `<span style="color:var(--success);font-weight:600">✅ 连接成功！模型: ${esc(r.model)}，维度: ${r.dim}${r.latency_ms ? '，延迟 '+r.latency_ms+'ms' : ''}</span>`;
+      showToast('✅ Embedding 测试通过');
+    } else {
+      res.innerHTML = `<span style="color:var(--danger);font-weight:600">❌ 失败: ${esc(r.error||'未知错误')}</span>`;
+    }
+  } catch(e) {
+    res.innerHTML = `<span style="color:var(--danger);font-weight:600">❌ ${esc(e.message)}</span>`;
+  } finally { btn.disabled = false; }
 }
 
 // ═══════════════════════════════════════════
@@ -1140,10 +1157,41 @@ async function loadSkills() {
         html += `<span style="font-size:11px;color:var(--text-soft);margin-left:8px">保存到数据库（立即生效）</span>`;
         html += '</div></div>';
       }
+      // Habit skill: placeholder for read-only habit list
+      if (s.name === 'habit') {
+        html += '<div id="habit-list-section" style="margin-top:8px"></div>';
+      }
       html += '</div>';
     }
     el.innerHTML = html;
+    // Load habit list if habit skill is present
+    loadHabitList();
   } catch(e) { el.innerHTML = `<div class="card" style="color:var(--danger)">❌ ${esc(e.message)}</div>`; }
+}
+
+async function loadHabitList() {
+  const el = document.getElementById('habit-list-section');
+  if (!el) return;
+  try {
+    const data = await api('GET', '/skills/habit/habits');
+    const habits = data.habits || [];
+    if (!habits.length) {
+      el.innerHTML = '<div style="font-size:12px;color:var(--text-soft);padding:4px 0">暂无习惯 — 通过对话添加</div>';
+      return;
+    }
+    let h = '<div style="font-size:12px;font-weight:600;color:var(--text-soft);margin-bottom:4px">当前习惯</div>';
+    h += '<table class="tbl" style="font-size:12px"><thead><tr><th>名称</th><th>频率</th><th>重要性</th><th>状态</th></tr></thead><tbody>';
+    for (const hab of habits) {
+      let status, badge;
+      if (!hab.active) { status = '已停用'; badge = 'badge-gray'; }
+      else if (hab.paused_until) { status = '暂停至 ' + hab.paused_until; badge = 'badge-warn'; }
+      else { status = '活跃'; badge = 'badge-ok'; }
+      const imp = hab.importance === 'important' ? '<span class="badge badge-err" style="font-size:10px">重要</span>' : '';
+      h += `<tr><td>${esc(hab.name)}${hab.context ? ' <span style="color:var(--text-soft)">(' + esc(hab.context) + ')</span>' : ''}</td><td>${esc(hab.frequency)}</td><td>${imp || '普通'}</td><td><span class="badge ${badge}" style="font-size:10px">${esc(status)}</span></td></tr>`;
+    }
+    h += '</tbody></table>';
+    el.innerHTML = h;
+  } catch(e) { /* silently skip if endpoint unavailable */ }
 }
 
 async function toggleSkill(name, enabled) {

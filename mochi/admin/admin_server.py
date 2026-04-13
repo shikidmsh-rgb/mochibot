@@ -361,7 +361,7 @@ if HAS_FASTAPI:
         from mochi.config import (
             CHAT_MODEL, CHAT_API_KEY, CHAT_PROVIDER,
             TELEGRAM_BOT_TOKEN,
-            OWNER_USER_ID, TIER_ROUTING_ENABLED,
+            OWNER_USER_ID,
             OURA_CLIENT_ID, OURA_CLIENT_SECRET, OURA_REFRESH_TOKEN,
             EMBEDDING_PROVIDER,
             AZURE_EMBEDDING_ENDPOINT, AZURE_EMBEDDING_API_KEY,
@@ -403,7 +403,6 @@ if HAS_FASTAPI:
                 "set": bool(OWNER_USER_ID) or bool((read_env_value("OWNER_USER_ID") or "").strip()),
                 "value": str(OWNER_USER_ID) if OWNER_USER_ID else (read_env_value("OWNER_USER_ID") or ""),
             },
-            "tier_routing_enabled": {"set": TIER_ROUTING_ENABLED, "value": str(TIER_ROUTING_ENABLED)},
         }
 
         integrations = {
@@ -638,12 +637,63 @@ if HAS_FASTAPI:
             "model": read_env_value("EMBEDDING_MODEL") or "",
             "base_url": read_env_value("EMBEDDING_BASE_URL") or "",
             "azure_deployment": read_env_value("AZURE_EMBEDDING_DEPLOYMENT") or "text-embedding-3-small",
-            "azure_api_version": read_env_value("AZURE_EMBEDDING_API_VERSION") or "2024-10-21",
             "cache_max_size": int(read_env_value("EMBEDDING_CACHE_MAX_SIZE") or 128),
             "cache_ttl_s": int(read_env_value("EMBEDDING_CACHE_TTL_S") or 300),
             "configured": status.get("configured", False),
             "disabled": status.get("disabled", False),
         }
+
+    @app.post("/api/embedding/test", dependencies=[Depends(_verify_token)])
+    async def api_test_embedding():
+        """Test embedding config by generating an embedding for a short string.
+
+        Reads fresh values from .env (not cached config module) so the user
+        can save and test without restarting.
+        """
+        _check_test_rate()
+        from mochi.admin.admin_env import read_env_value
+        from mochi.model_pool import _make_embed_client
+
+        provider = (read_env_value("EMBEDDING_PROVIDER") or "").strip().lower()
+        if not provider or provider == "none":
+            return {"ok": False, "error": "Embedding 未配置（EMBEDDING_PROVIDER 为空或 none）"}
+
+        # Resolve config from fresh .env values
+        api_key = (read_env_value("EMBEDDING_API_KEY") or "").strip()
+        model = (read_env_value("EMBEDDING_MODEL") or "").strip()
+        base_url = (read_env_value("EMBEDDING_BASE_URL") or "").strip()
+
+        if provider == "openai":
+            model = model or "text-embedding-3-small"
+        elif provider == "azure_openai":
+            api_key = api_key or (read_env_value("AZURE_EMBEDDING_API_KEY") or "").strip()
+            model = model or (read_env_value("AZURE_EMBEDDING_DEPLOYMENT") or "text-embedding-3-small").strip()
+            base_url = base_url or (read_env_value("AZURE_EMBEDDING_ENDPOINT") or "").strip()
+        elif provider == "ollama":
+            api_key = api_key or "ollama"
+            model = model or "nomic-embed-text"
+            base_url = base_url or "http://localhost:11434/v1"
+        else:
+            return {"ok": False, "error": f"未知的 EMBEDDING_PROVIDER: {provider}"}
+
+        try:
+            client, eff_model = _make_embed_client(provider, api_key, model, base_url)
+        except Exception as e:
+            return {"ok": False, "error": f"创建客户端失败: {str(e)[:500]}"}
+
+        if not client:
+            return {"ok": False, "error": "Embedding 客户端未创建，请检查 API Key 和 Endpoint"}
+
+        try:
+            start = time.monotonic()
+            resp = await asyncio.to_thread(
+                client.embeddings.create, model=eff_model, input="hello",
+            )
+            elapsed = int((time.monotonic() - start) * 1000)
+            dim = len(resp.data[0].embedding)
+            return {"ok": True, "model": eff_model, "dim": dim, "latency_ms": elapsed}
+        except Exception as e:
+            return {"ok": False, "error": str(e)[:500]}
 
     # ═══════════════════════════════════════════════════════════════════════
     # Page 2: Heartbeat Config
@@ -929,6 +979,27 @@ if HAS_FASTAPI:
             })
 
         return {"ok": True, "skill": name, "config": config}
+
+    @app.get("/api/skills/habit/habits", dependencies=[Depends(_verify_token)])
+    async def api_list_habit_habits():
+        """Return current habit list for display in admin panel (read-only)."""
+        from mochi.config import OWNER_USER_ID
+        from mochi.db import list_habits
+        if not OWNER_USER_ID:
+            return {"habits": []}
+        rows = list_habits(OWNER_USER_ID, active_only=False)
+        return {"habits": [
+            {
+                "id": h["id"],
+                "name": h["name"],
+                "frequency": h.get("frequency", "daily"),
+                "importance": h.get("importance", "normal"),
+                "context": h.get("context", ""),
+                "active": bool(h.get("active", 1)),
+                "paused_until": h.get("paused_until"),
+            }
+            for h in rows
+        ]}
 
     # ── Generic .env writer ───────────────────────────────────────────────
 
