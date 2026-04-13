@@ -155,10 +155,12 @@ async def main():
                 if transport:
                     await transport.stop()
                 sys.exit(RESTART_EXIT_CODE)
-    except (KeyboardInterrupt, SystemExit):
+    except KeyboardInterrupt:
         log.info("Shutting down...")
         if transport:
             await transport.stop()
+    except SystemExit:
+        raise  # preserve exit code (42 = restart)
 
 
 if __name__ == "__main__":
