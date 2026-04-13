@@ -404,7 +404,6 @@ if HAS_FASTAPI:
             CHAT_MODEL, CHAT_API_KEY, CHAT_PROVIDER,
             TELEGRAM_BOT_TOKEN,
             OWNER_USER_ID,
-            OURA_CLIENT_ID, OURA_CLIENT_SECRET, OURA_REFRESH_TOKEN,
             EMBEDDING_PROVIDER,
             AZURE_EMBEDDING_ENDPOINT, AZURE_EMBEDDING_API_KEY,
             DB_PATH,
@@ -451,9 +450,6 @@ if HAS_FASTAPI:
         }
 
         integrations = {
-            "weather": _integration_status("weather", ["WEATHER_CITY"]),
-            "oura": _integration_status("oura", ["OURA_CLIENT_ID", "OURA_CLIENT_SECRET", "OURA_REFRESH_TOKEN"]),
-            "web_search": {"configured": True, "missing": [], "note": "DuckDuckGo — no API key needed"},
             "embedding": _embedding_integration_status(EMBEDDING_PROVIDER, _integration_status),
         }
 
