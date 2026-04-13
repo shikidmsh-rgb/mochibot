@@ -1857,12 +1857,6 @@ async function loadHeartbeat() {
       THINK_FALLBACK_MINUTES:        ['思考回退（分钟）',    '没有事件时多久强制思考一次'],
       LLM_HEARTBEAT_TIMEOUT_SECONDS: ['LLM 超时（秒）',      '心跳 LLM 调用超时上限'],
       FALLBACK_WAKE_HOUR:            ['兜底唤醒时间',        '睡眠状态下到几点自动唤醒'],
-      AWAKE_HOUR_END:                ['活跃结束时间',        '几点后认为可能进入睡眠'],
-      SLEEP_KEYWORD_HOUR_START:      ['晚安关键词开始',      '几点后开始检测晚安关键词'],
-      SLEEP_KEYWORD_HOUR_END:        ['晚安关键词结束',      '几点前检测晚安关键词'],
-      SLEEP_KEYWORDS:                ['晚安关键词',          '触发睡眠的关键词，逗号分隔'],
-      SILENCE_SLEEP_AFTER_HOUR:      ['静默入睡时间',        '几点后开始检测静默入睡'],
-      SILENCE_SLEEP_THRESHOLD_HOURS: ['静默入睡阈值（小时）','沉默多久后判断为睡着了'],
       SILENCE_PAUSE_DAYS:            ['静默暂停（天）',      '用户消失多少天后暂停主动消息'],
       BEDTIME_TIDY_ENABLED:          ['启用睡前整理',        '睡觉前自动整理笔记和待办'],
       BEDTIME_TIDY_TIMEOUT_S:        ['睡前整理超时（秒）',  '睡前整理的 LLM 调用超时'],
@@ -1871,7 +1865,7 @@ async function loadHeartbeat() {
     // Config groups
     const groups = [
       { title:'心跳配置', keys:['HEARTBEAT_INTERVAL_MINUTES','MAX_DAILY_PROACTIVE','PROACTIVE_COOLDOWN_SECONDS','THINK_FALLBACK_MINUTES','LLM_HEARTBEAT_TIMEOUT_SECONDS'] },
-      { title:'睡眠/唤醒', keys:['FALLBACK_WAKE_HOUR','AWAKE_HOUR_END','SLEEP_KEYWORD_HOUR_START','SLEEP_KEYWORD_HOUR_END','SLEEP_KEYWORDS','SILENCE_SLEEP_AFTER_HOUR','SILENCE_SLEEP_THRESHOLD_HOURS','SILENCE_PAUSE_DAYS'] },
+      { title:'睡眠/唤醒', keys:['FALLBACK_WAKE_HOUR','SILENCE_PAUSE_DAYS'] },
       { title:'睡前整理', keys:['BEDTIME_TIDY_ENABLED','BEDTIME_TIDY_TIMEOUT_S'] },
     ];
 

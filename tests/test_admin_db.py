@@ -70,9 +70,9 @@ class TestGetSystemConfig:
 
     def test_float_from_db(self):
         """Float type is correctly cast from DB string."""
-        set_system_override("SILENCE_SLEEP_THRESHOLD_HOURS", "2.5")
+        set_system_override("SILENCE_PAUSE_DAYS", "2.5")
         invalidate_system_config_cache()
-        assert get_system_config("SILENCE_SLEEP_THRESHOLD_HOURS") == 2.5
+        assert get_system_config("SILENCE_PAUSE_DAYS") == 2.5
 
     def test_str_from_db(self):
         """Str type is returned as-is from DB."""

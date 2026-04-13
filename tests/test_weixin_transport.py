@@ -549,7 +549,7 @@ class TestDispatchStateSignals:
 
     def test_wake_up_when_sleeping(self, monkeypatch):
         wake_calls = []
-        monkeypatch.setattr("mochi.heartbeat.get_state", lambda: "SLEEPING")
+        monkeypatch.setattr("mochi.heartbeat.should_wake_on_message", lambda: True)
         monkeypatch.setattr("mochi.heartbeat.wake_up",
                             lambda reason: wake_calls.append(reason))
         monkeypatch.setattr("mochi.heartbeat.clear_morning_hold", lambda: None)
@@ -560,7 +560,7 @@ class TestDispatchStateSignals:
 
     def test_clears_holds(self, monkeypatch):
         cleared = []
-        monkeypatch.setattr("mochi.heartbeat.get_state", lambda: "AWAKE")
+        monkeypatch.setattr("mochi.heartbeat.should_wake_on_message", lambda: False)
         monkeypatch.setattr("mochi.heartbeat.wake_up", lambda r: None)
         monkeypatch.setattr("mochi.heartbeat.clear_morning_hold",
                             lambda: cleared.append("morning"))
@@ -573,7 +573,7 @@ class TestDispatchStateSignals:
 
     def test_no_wake_when_awake(self, monkeypatch):
         wake_calls = []
-        monkeypatch.setattr("mochi.heartbeat.get_state", lambda: "AWAKE")
+        monkeypatch.setattr("mochi.heartbeat.should_wake_on_message", lambda: False)
         monkeypatch.setattr("mochi.heartbeat.wake_up",
                             lambda reason: wake_calls.append(reason))
         monkeypatch.setattr("mochi.heartbeat.clear_morning_hold", lambda: None)

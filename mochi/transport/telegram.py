@@ -206,8 +206,8 @@ class TelegramTransport(Transport):
     @staticmethod
     def _dispatch_state_signals() -> None:
         """Dispatch heartbeat state transitions on user activity."""
-        from mochi.heartbeat import get_state, wake_up, clear_morning_hold, clear_silent_pause
-        if get_state() == "SLEEPING":
+        from mochi.heartbeat import should_wake_on_message, wake_up, clear_morning_hold, clear_silent_pause
+        if should_wake_on_message():
             wake_up("user_message")
         clear_morning_hold()
         clear_silent_pause()

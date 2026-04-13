@@ -296,7 +296,8 @@ _SYSTEM_SKILL_NAME = "_system"
 # Excluded keys (internal tuning, not user-facing):
 #   PROACTIVE_CHAT_MAX_TOKENS, PROACTIVE_CHAT_HISTORY_TURNS — LLM output tuning
 #   BEDTIME_TIDY_MAX_ROUNDS, BEDTIME_TIDY_MAX_TOKENS, BEDTIME_TIDY_TOOLS — internal behavior
-#   AWAKE_HOUR_START — only used at startup for initial state detection
+#   AWAKE_HOUR_START, AWAKE_HOUR_END — DEPRECATED
+#   SLEEP_KEYWORD_HOUR_START/END, SILENCE_SLEEP_AFTER_HOUR, SILENCE_SLEEP_THRESHOLD_HOURS — DEPRECATED
 SYSTEM_DEFAULTS: dict[str, tuple[str, any]] = {
     # ── Heartbeat ──
     "HEARTBEAT_INTERVAL_MINUTES":     ("int",   20),
@@ -305,15 +306,10 @@ SYSTEM_DEFAULTS: dict[str, tuple[str, any]] = {
     "THINK_FALLBACK_MINUTES":         ("int",   60),
     "LLM_HEARTBEAT_TIMEOUT_SECONDS":  ("int",   120),
     "FALLBACK_WAKE_HOUR":             ("int",   10),
-    "AWAKE_HOUR_END":                 ("int",   23),
     "BEDTIME_TIDY_ENABLED":           ("bool",  True),
     "BEDTIME_TIDY_TIMEOUT_S":         ("int",   60),
     # ── Sleep/Wake ──
-    "SLEEP_KEYWORD_HOUR_START":       ("int",   21),
-    "SLEEP_KEYWORD_HOUR_END":         ("int",   4),
     "SLEEP_KEYWORDS":                 ("str",   "晚安,睡了,去睡了,good night,gn"),
-    "SILENCE_SLEEP_AFTER_HOUR":       ("int",   23),
-    "SILENCE_SLEEP_THRESHOLD_HOURS":  ("float", 1.0),
     "SILENCE_PAUSE_DAYS":             ("float", 3.0),
     # ── Basic ──
     "TIMEZONE_OFFSET_HOURS":          ("int",   8),

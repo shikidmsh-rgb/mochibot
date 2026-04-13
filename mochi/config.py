@@ -162,8 +162,6 @@ def _persist_owner(user_id: int) -> None:
 # ═══════════════════════════════════════════════════════════════════════════
 
 HEARTBEAT_INTERVAL_MINUTES = _env_int("HEARTBEAT_INTERVAL_MINUTES", 20)
-AWAKE_HOUR_START = _env_int("AWAKE_HOUR_START", 7)      # startup-only: init state
-AWAKE_HOUR_END = _env_int("AWAKE_HOUR_END", 23)         # startup-only: init state
 MAX_DAILY_PROACTIVE = _env_int("MAX_DAILY_PROACTIVE", 10)
 PROACTIVE_COOLDOWN_SECONDS = _env_int("PROACTIVE_COOLDOWN_SECONDS", 1800)
 THINK_FALLBACK_MINUTES = _env_int("THINK_FALLBACK_MINUTES", 60)
@@ -172,13 +170,19 @@ PROACTIVE_CHAT_MAX_TOKENS = _env_int("PROACTIVE_CHAT_MAX_TOKENS", 512)
 PROACTIVE_CHAT_HISTORY_TURNS = _env_int("PROACTIVE_CHAT_HISTORY_TURNS", 10)
 
 # Sleep/Wake State Machine
-SLEEP_KEYWORD_HOUR_START = _env_int("SLEEP_KEYWORD_HOUR_START", 21)
-SLEEP_KEYWORD_HOUR_END = _env_int("SLEEP_KEYWORD_HOUR_END", 4)
+WAKE_EARLIEST_HOUR = _env_int("WAKE_EARLIEST_HOUR", 6)   # don't wake on user msg before this
+SLEEP_AFTER_HOUR = _env_int("SLEEP_AFTER_HOUR", 21)      # keyword + silence sleep start
+SILENCE_THRESHOLD_HOURS = _env_float("SILENCE_THRESHOLD_HOURS", 1.0)  # silence → sleep
 SLEEP_KEYWORDS = _env("SLEEP_KEYWORDS", "晚安,睡了,去睡了,good night,gn").split(",")
-SILENCE_SLEEP_AFTER_HOUR = _env_int("SILENCE_SLEEP_AFTER_HOUR", 23)
-SILENCE_SLEEP_THRESHOLD_HOURS = _env_float("SILENCE_SLEEP_THRESHOLD_HOURS", 1.0)
 SILENCE_PAUSE_DAYS = _env_float("SILENCE_PAUSE_DAYS", 3.0)
 FALLBACK_WAKE_HOUR = _env_int("FALLBACK_WAKE_HOUR", 10)
+# DEPRECATED — kept for .env backward compat, no longer used by heartbeat
+AWAKE_HOUR_START = _env_int("AWAKE_HOUR_START", 7)       # DEPRECATED
+AWAKE_HOUR_END = _env_int("AWAKE_HOUR_END", 23)          # DEPRECATED
+SLEEP_KEYWORD_HOUR_START = _env_int("SLEEP_KEYWORD_HOUR_START", 21)  # DEPRECATED
+SLEEP_KEYWORD_HOUR_END = _env_int("SLEEP_KEYWORD_HOUR_END", 4)      # DEPRECATED
+SILENCE_SLEEP_AFTER_HOUR = _env_int("SILENCE_SLEEP_AFTER_HOUR", 23)  # DEPRECATED
+SILENCE_SLEEP_THRESHOLD_HOURS = _env_float("SILENCE_SLEEP_THRESHOLD_HOURS", 1.0)  # DEPRECATED
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Memory
