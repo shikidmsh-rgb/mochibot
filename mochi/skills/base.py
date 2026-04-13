@@ -955,9 +955,18 @@ def scan_skill_metadata(skills_dir: str | None = None) -> list[SkillMeta]:
     return result
 
 
-def _has_missing_env(requires_env: list[str]) -> bool:
-    """Check if any required env vars are missing."""
-    return bool(requires_env) and any(not os.getenv(k) for k in requires_env)
+def _has_missing_env(requires_env: list[str], skill_name: str = "") -> bool:
+    """Check if any required env vars are missing (env OR DB config)."""
+    if not requires_env:
+        return False
+    db_cfg: dict = {}
+    if skill_name:
+        try:
+            from mochi.db import get_skill_config
+            db_cfg = get_skill_config(skill_name)
+        except Exception:
+            pass
+    return any(not os.getenv(k) and not db_cfg.get(k) for k in requires_env)
 
 
 def build_skill_descriptions(metas: list[SkillMeta],
@@ -975,7 +984,7 @@ def build_skill_descriptions(metas: list[SkillMeta],
             continue
         if not m.tools:
             continue
-        if _has_missing_env(m.requires_env):
+        if _has_missing_env(m.requires_env, m.name):
             continue
         if transport and transport in m.exclude_transports:
             continue
@@ -994,7 +1003,7 @@ def build_tool_metadata(metas: list[SkillMeta]) -> dict[str, dict]:
     """
     result: dict[str, dict] = {}
     for m in metas:
-        if _has_missing_env(m.requires_env):
+        if _has_missing_env(m.requires_env, m.name):
             continue
         for tool in m.tools:
             result[tool.name] = {
@@ -1016,7 +1025,7 @@ def build_tier_defaults(metas: list[SkillMeta]) -> dict[str, str]:
     for m in metas:
         if m.skill_type not in ("tool", "hybrid"):
             continue
-        if _has_missing_env(m.requires_env):
+        if _has_missing_env(m.requires_env, m.name):
             continue
         if m.tier != "chat":
             result[m.name] = m.tier
