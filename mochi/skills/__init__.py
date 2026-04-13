@@ -153,6 +153,11 @@ def get_tools() -> list[dict]:
 def get_tools_by_names(skill_names: list[str]) -> list[dict]:
     """Get tool definitions for tools belonging to named skills.
 
+    Ignores expose_as_tool — if you ask by name, you get it.
+    This is intentional: expose_as_tool controls the *default* full injection
+    (get_tools), but pre-router already classified the message and decided
+    these skills are needed, so we honour the request.
+
     Invalid names are silently skipped (logged at debug level).
     Skips skills with missing required config.
     """
@@ -164,8 +169,7 @@ def get_tools_by_names(skill_names: list[str]) -> list[dict]:
             continue
         if getattr(skill, "_config_missing", None):
             continue
-        if skill.expose_as_tool:
-            tools.extend(skill.get_tools())
+        tools.extend(skill.get_tools())
     return tools
 
 

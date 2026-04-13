@@ -323,7 +323,7 @@ LIFE_LOG_MONTHLY_AFTER_DAYS = _env_int("LIFE_LOG_MONTHLY_AFTER_DAYS", 30)
 # ═══════════════════════════════════════════════════════════════════════════
 
 TOOL_ROUTER_ENABLED = _env_bool("TOOL_ROUTER_ENABLED", True)
-TOOL_ROUTER_MAX_TOKENS = _env_int("TOOL_ROUTER_MAX_TOKENS", 100)
+TOOL_ROUTER_MAX_TOKENS = _env_int("TOOL_ROUTER_MAX_TOKENS", 300)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Tool Escalation
