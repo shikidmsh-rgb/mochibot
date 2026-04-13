@@ -5,6 +5,7 @@ type: tool
 expose_as_tool: true
 tier: lite
 multi_turn: true
+diary_status_order: 40
 writes:
   diary: [diary]
   db: [health_log]

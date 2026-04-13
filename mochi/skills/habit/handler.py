@@ -3,8 +3,7 @@
 Port of private Mochi's habit skill, adapted to MochiBot conventions:
 - SkillContext / SkillResult pattern
 - TZ from mochi.config
-- No nightly settlement (Phase 2)
-- No diary integration (Phase 2)
+- diary_status() for pluggable diary integration
 """
 
 import logging
@@ -377,4 +376,55 @@ class HabitSkill(Skill):
         delete_habit_checkin(latest["id"])
         remaining = len(existing) - 1
         return SkillResult(output=f"↩️ {habit['name']} last checkin undone ({remaining}/{target})")
+
+    # ── Diary integration ─────────────────────────────────────
+
+    def diary_status(self, user_id: int, today: str, now: datetime) -> list[str] | None:
+        habits = list_habits(user_id, active_only=True)
+        if not habits:
+            return None
+
+        this_week = now.strftime("%G-W%V")
+        weekday = now.weekday()
+        lines: list[str] = []
+
+        for h in habits:
+            paused_until = h.get("paused_until")
+            if paused_until and paused_until >= today:
+                continue
+
+            parsed = parse_frequency(h["frequency"])
+            if not parsed:
+                continue
+            cycle, target = parsed
+            period = today if cycle == "daily" else this_week
+
+            checkins = get_habit_checkins(h["id"], period)
+            done = len(checkins)
+
+            allowed = get_allowed_days(h["frequency"])
+            if allowed is not None and weekday not in allowed and done < target:
+                continue
+
+            name = h["name"]
+            imp = "⚡" if h.get("importance") == "important" else ""
+            ctx = h.get("context", "")
+            ctx_tag = f" ({ctx})" if ctx else ""
+
+            last_tag = ""
+            if 0 < done < target and checkins:
+                last_at = checkins[-1].get("logged_at")
+                if last_at:
+                    try:
+                        t = datetime.fromisoformat(last_at)
+                        last_tag = f" last:{t.strftime('%H:%M')}"
+                    except (ValueError, TypeError):
+                        pass
+
+            if done >= target:
+                lines.append(f"- {imp}{name} ({done}/{target}) ✅")
+            else:
+                lines.append(f"- {imp}{name} ({done}/{target}){ctx_tag}{last_tag} ⏳")
+
+        return lines if lines else None
 

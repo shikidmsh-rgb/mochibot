@@ -261,3 +261,35 @@ class MealSkill(Skill):
         deleted = delete_health_log_items(to_delete)
         log.info("Meal deleted: %d records [%s] on %s", deleted, meal_type, date_str)
         return SkillResult(output=f"✅ 已删除 {date_str} 的{label}记录 ({deleted}条)")
+
+    # ── Diary integration ─────────────────────────────────────
+
+    def diary_status(self, user_id: int, today: str, now: datetime) -> list[str] | None:
+        records = query_health_log(user_id=user_id, types=["meal"], date=today)
+        if not records:
+            return None
+
+        lines: list[str] = []
+        day_total_cal = 0
+
+        for r in records:
+            try:
+                m = json.loads(r.get("metrics") or "{}")
+            except (json.JSONDecodeError, TypeError):
+                m = {}
+
+            mt = m.get("meal_type", "?")
+            label = MEAL_LABELS.get(mt, mt)
+            total = m.get("total", {})
+            cal = total.get("calories", 0)
+            day_total_cal += cal
+
+            item_names = ", ".join(it.get("name", "?") for it in m.get("items", [])[:3])
+            if len(m.get("items", [])) > 3:
+                item_names += "..."
+            lines.append(f"- {label}: {item_names} ~{cal}kcal")
+
+        if day_total_cal > 0:
+            lines.append(f"- 累計: {day_total_cal}kcal")
+
+        return lines if lines else None

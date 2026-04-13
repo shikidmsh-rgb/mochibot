@@ -157,6 +157,7 @@ def _parse_skill_md(md_path: str) -> dict:
         "has_sense": False,
         "core": False,
         "diary": [],
+        "diary_status_order": 50,
         "config_schema": [],
         "sub_skills": {},
         "nudge_meta": None,
@@ -336,6 +337,11 @@ def _parse_skill_md(md_path: str) -> dict:
             elif key == "diary":
                 tags = re.findall(r"[a-z_][a-z0-9_]*", val)
                 result["diary"] = tags
+            elif key == "diary_status_order":
+                try:
+                    result["diary_status_order"] = int(val)
+                except ValueError:
+                    log.warning("Invalid diary_status_order '%s' in %s", val, md_path)
             else:
                 result["meta"][key] = val
 
@@ -631,6 +637,7 @@ class Skill(ABC):
         self.sub_skills: dict[str, str] = {}
         self.core: bool = False                       # core skills cannot be disabled
         self.config: dict = {}                       # resolved config values
+        self.diary_status_order: int = 50            # diary panel ordering (lower = higher)
 
     @property
     def name(self) -> str:
@@ -674,6 +681,7 @@ class Skill(ABC):
         self.core = parsed.get("core", False)
         self.diary_tags = parsed.get("diary", [])
         self.sub_skills = parsed.get("sub_skills", {})
+        self.diary_status_order = int(parsed.get("diary_status_order", 50))
 
         # Merge requires_config and requires_env
         rc = set(parsed.get("requires_config", []))
@@ -807,6 +815,22 @@ class Skill(ABC):
         except Exception as e:
             log.error("Skill %s failed: %s", self.name, e, exc_info=True)
             return SkillResult(output=f"Skill error: {e}", success=False)
+
+    def diary_status(self, user_id: int, today: str, now: "datetime") -> list[str] | None:
+        """Return lines for the 今日状態 diary panel.
+
+        Override in subclasses to contribute status lines.
+        Called by collect_diary_status() on every heartbeat tick.
+
+        Args:
+            user_id: Owner user ID.
+            today: Logical date string (YYYY-MM-DD).
+            now: Current datetime (TZ-aware).
+
+        Returns:
+            List of markdown lines, or None to opt out.
+        """
+        return None
 
 
 # ---------------------------------------------------------------------------

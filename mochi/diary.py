@@ -376,7 +376,7 @@ diary = DailyFile(
 def refresh_diary_status(user_id: int | None = None) -> str:
     """Rebuild the 今日状態 section of diary.md from current DB state.
 
-    Queries habits, todos, and reminders to produce a structured snapshot.
+    Delegates to each skill's diary_status() method via the skill registry.
     Called by heartbeat tick and after habit checkins.
     """
     if user_id is None:
@@ -387,93 +387,14 @@ def refresh_diary_status(user_id: int | None = None) -> str:
     now = datetime.now(TZ)
     from mochi.config import logical_today
     today = logical_today(now)
-    lines: list[str] = []
 
-    # -- Habits --
     try:
-        from mochi.db import list_habits, get_habit_checkins, get_latest_habit_checkins_for_period
-        from mochi.skills.habit.logic import parse_frequency, get_allowed_days
-
-        habits = list_habits(user_id, active_only=True)
-        this_week = now.strftime("%G-W%V")
-        weekday = now.weekday()
-
-        for h in habits:
-            # Skip paused
-            paused_until = h.get("paused_until")
-            if paused_until and paused_until >= today:
-                continue
-
-            parsed = parse_frequency(h["frequency"])
-            if not parsed:
-                continue
-            cycle, target = parsed
-            period = today if cycle == "daily" else this_week
-
-            checkins = get_habit_checkins(h["id"], period)
-            done = len(checkins)
-
-            # Skip weekly_on habits on non-active days (unless already done)
-            allowed = get_allowed_days(h["frequency"])
-            if allowed is not None and weekday not in allowed and done < target:
-                continue
-
-            name = h["name"]
-            imp = "⚡" if h.get("importance") == "important" else ""
-            ctx = h.get("context", "")
-            ctx_tag = f" ({ctx})" if ctx else ""
-
-            # Last checkin time for partially done habits
-            last_tag = ""
-            if 0 < done < target and checkins:
-                last_at = checkins[-1].get("logged_at")
-                if last_at:
-                    try:
-                        t = datetime.fromisoformat(last_at)
-                        last_tag = f" last:{t.strftime('%H:%M')}"
-                    except (ValueError, TypeError):
-                        pass
-
-            if done >= target:
-                lines.append(f"- {imp}{name} ({done}/{target}) ✅")
-            else:
-                lines.append(f"- {imp}{name} ({done}/{target}){ctx_tag}{last_tag} ⏳")
+        from mochi.skills import collect_diary_status
+        lines = collect_diary_status(user_id, today, now)
     except Exception:
-        log.exception("diary_status: failed to query habits")
+        log.exception("diary_status: collect_diary_status failed")
+        lines = []
 
-    # -- Todos --
-    try:
-        from mochi.skills.todo.queries import get_visible_todos
-        todos = get_visible_todos(today)
-        for t in todos:
-            overdue = t.get("nudge_date") and t["nudge_date"] < today
-            tag = " ⚠️逾期" if overdue else ""
-            lines.append(f"- [ ] {t['task']} [todo_id={t['id']}]{tag}")
-    except Exception:
-        log.exception("diary_status: failed to query todos")
-
-    # -- Reminders --
-    try:
-        from mochi.db import get_pending_reminders
-        from datetime import date as date_type
-
-        pending_reminders = get_pending_reminders()
-        logical_date = date_type.fromisoformat(today)
-        for r in pending_reminders:
-            remind_at_str = r["remind_at"]
-            try:
-                remind_at = datetime.fromisoformat(remind_at_str)
-                if remind_at.date() == logical_date:
-                    time_str = remind_at.strftime("%H:%M")
-                    fired = remind_at <= now
-                    mark = "✅" if fired else "⏳"
-                    lines.append(f"- {time_str} {r['message']} {mark}")
-            except (ValueError, TypeError):
-                pass
-    except Exception:
-        log.exception("diary_status: failed to query reminders")
-
-    # -- Write to diary --
     if lines:
         return diary.rewrite_section("今日状態", lines)
     return diary.rewrite_section("今日状態", ["- (nothing tracked today)"])

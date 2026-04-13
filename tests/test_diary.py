@@ -215,7 +215,7 @@ class TestRefreshDiaryStatus:
         assert "No user configured" in result
 
     def test_with_habits(self, monkeypatch, tmp_path):
-        """refresh_diary_status writes habit statuses to diary."""
+        """refresh_diary_status delegates to collect_diary_status and writes to diary."""
         import mochi.config as cfg
         monkeypatch.setattr(cfg, "OWNER_USER_ID", 1)
 
@@ -232,14 +232,10 @@ class TestRefreshDiaryStatus:
                             lambda: datetime(2025, 6, 15, 10, 0, tzinfo=UTC))
         monkeypatch.setattr(diary_mod, "_today_str", lambda: "2025-06-15")
 
-        # Mock DB calls — patch at their origin modules (lazy imports)
-        with patch("mochi.db.list_habits", return_value=[
-            {"id": 1, "name": "Drink Water", "frequency": "daily:3",
-             "paused_until": None, "importance": None, "context": ""}
-        ]), patch("mochi.db.get_habit_checkins", return_value=[]), \
-             patch("mochi.db.get_latest_habit_checkins_for_period", return_value=[]), \
-             patch("mochi.db.get_pending_reminders", return_value=[]), \
-             patch("mochi.skills.todo.queries.get_visible_todos", return_value=[]):
+        # Mock collect_diary_status to return habit lines
+        with patch("mochi.skills.collect_diary_status", return_value=[
+            "- Drink Water (0/3) ⏳",
+        ]):
             result = diary_mod.refresh_diary_status(user_id=1)
 
         assert "rewritten" in result.lower()

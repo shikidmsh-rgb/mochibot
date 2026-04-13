@@ -20,6 +20,7 @@ v2 additions:
 import importlib
 import logging
 import os
+from datetime import datetime
 from pathlib import Path
 
 from mochi.skills.base import Skill, SkillContext, SkillResult
@@ -134,6 +135,35 @@ def discover() -> list[str]:
 def get_skill(name: str) -> Skill | None:
     """Get a skill by name."""
     return _skills.get(name)
+
+
+def collect_diary_status(user_id: int, today: str, now: datetime) -> list[str]:
+    """Collect diary status lines from all enabled skills.
+
+    Iterates registered skills in diary_status_order, calls diary_status()
+    on each enabled skill, collects lines.  One skill's failure never affects
+    others.
+    """
+    if not _skills:
+        return []
+    disabled = get_disabled_skills()
+    ordered = sorted(
+        _skills.values(),
+        key=lambda s: (s.diary_status_order, s.name),
+    )
+    all_lines: list[str] = []
+    for skill in ordered:
+        if skill.name in disabled:
+            continue
+        if getattr(skill, "_config_missing", None):
+            continue
+        try:
+            lines = skill.diary_status(user_id, today, now)
+            if lines:
+                all_lines.extend(lines)
+        except Exception:
+            log.exception("diary_status failed for skill %s", skill.name)
+    return all_lines
 
 
 def get_tools() -> list[dict]:

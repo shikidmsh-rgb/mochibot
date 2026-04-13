@@ -1,5 +1,7 @@
 """Todo skill handler — execute logic only. Tool defs in SKILL.md."""
 
+from datetime import datetime
+
 from mochi.skills.base import Skill, SkillContext, SkillResult
 from mochi.db import create_todo, get_todos, complete_todo, delete_todo, update_todo
 
@@ -70,3 +72,19 @@ class TodoSkill(Skill):
                 output=f"Todo #{todo_id} updated: {parts}." if ok else f"Todo #{todo_id} not found.")
 
         return SkillResult(output=f"Unknown todo action: {action}", success=False)
+
+    # ── Diary integration ─────────────────────────────────────
+
+    def diary_status(self, user_id: int, today: str, now: datetime) -> list[str] | None:
+        from mochi.skills.todo.queries import get_visible_todos
+
+        todos = get_visible_todos(today)
+        if not todos:
+            return None
+
+        lines: list[str] = []
+        for t in todos:
+            overdue = t.get("nudge_date") and t["nudge_date"] < today
+            tag = " ⚠️逾期" if overdue else ""
+            lines.append(f"- [ ] {t['task']} [todo_id={t['id']}]{tag}")
+        return lines if lines else None

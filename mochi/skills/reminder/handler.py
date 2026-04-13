@@ -1,5 +1,7 @@
 """Reminder skill — create, list, and delete reminders via unified tool."""
 
+from datetime import datetime, date as date_type
+
 from mochi.skills.base import Skill, SkillContext, SkillResult
 from mochi.db import create_reminder, get_pending_reminders, mark_reminder_fired
 
@@ -38,3 +40,35 @@ class ReminderSkill(Skill):
             return SkillResult(output=f"Reminder #{rid} deleted.")
 
         return SkillResult(output=f"Unknown action: {action}", success=False)
+
+    # ── Diary integration ─────────────────────────────────────
+
+    def diary_status(self, user_id: int, today: str, now: datetime) -> list[str] | None:
+        from mochi.db import _connect
+        from mochi.config import TZ
+
+        # Query all unfired reminders for today (including future times)
+        conn = _connect()
+        rows = conn.execute(
+            "SELECT message, remind_at, fired FROM reminders "
+            "WHERE user_id = ? AND remind_at >= ? AND remind_at < ? "
+            "ORDER BY remind_at",
+            (user_id, today, today + "T99"),  # date prefix range
+        ).fetchall()
+        conn.close()
+
+        if not rows:
+            return None
+
+        lines: list[str] = []
+        for r in rows:
+            try:
+                remind_at = datetime.fromisoformat(r["remind_at"])
+                time_str = remind_at.strftime("%H:%M")
+                fired = bool(r["fired"]) or remind_at <= now
+                mark = "✅" if fired else "⏳"
+                lines.append(f"- {time_str} {r['message']} {mark}")
+            except (ValueError, TypeError):
+                pass
+
+        return lines if lines else None
