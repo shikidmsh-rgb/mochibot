@@ -62,6 +62,12 @@ def _build_system_prompt(user_id: int, usage_rules: str = "",
     if agent_desc:
         parts.append(agent_desc)
 
+    # Dynamic capability list (cached, refreshed on skill toggle)
+    from mochi.skills import get_capability_summary
+    cap = get_capability_summary()
+    if cap:
+        parts.append(cap)
+
     # Always inject current time so relative reminders ("in 5 minutes") can be resolved
     parts.append(f"## Current time\nRight now it is **{now_str}** (UTC{TIMEZONE_OFFSET_HOURS:+d}).")
 

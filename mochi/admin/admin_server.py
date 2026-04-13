@@ -898,6 +898,8 @@ if HAS_FASTAPI:
                 return {"ok": False, "error": f"需要先配置: {missing}"}
         from mochi.db import set_skill_enabled
         set_skill_enabled(name, enabled)
+        from mochi.skills import refresh_capability_summary
+        refresh_capability_summary()
         return {"ok": True, "skill": name, "enabled": enabled}
 
     @app.put("/api/skills/{name}/config", dependencies=[Depends(_verify_token)])
@@ -945,6 +947,9 @@ if HAS_FASTAPI:
                 obs = get_observer(name)
                 if obs and not obs.meta.enabled:
                     obs.meta.enabled = True
+            # Capability summary may change (skill became available/unavailable)
+            from mochi.skills import refresh_capability_summary
+            refresh_capability_summary()
 
         return {"ok": len(errors) == 0, "written": written, "errors": errors}
 

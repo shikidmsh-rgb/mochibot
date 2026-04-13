@@ -123,6 +123,7 @@ def discover() -> list[str]:
             log.error("Failed to load skill %s: %s", entry.name, e, exc_info=True)
 
     log.info("Skill discovery complete: %d skills registered", len(registered))
+    refresh_capability_summary()
     return registered
 
 
@@ -308,3 +309,50 @@ def list_skills() -> list[dict]:
         }
         for s in _skills.values()
     ]
+
+
+# ---------------------------------------------------------------------------
+# Dynamic capability summary (for system prompt)
+# ---------------------------------------------------------------------------
+
+_capability_summary: str = ""
+
+
+def _build_capability_summary() -> str:
+    """Build a Chinese markdown section listing currently available skills.
+
+    Filters:
+    - Excludes admin-disabled skills
+    - Excludes skills with missing required config
+    - Excludes type=automation (internal, e.g. maintenance)
+    """
+    disabled = get_disabled_skills()
+    lines: list[str] = []
+
+    for s in _skills.values():
+        if s.name in disabled:
+            continue
+        if getattr(s, "_config_missing", None):
+            continue
+        if s.skill_type == "automation":
+            continue
+        if s.description:
+            lines.append(f"- {s.description}")
+
+    if not lines:
+        return ""
+    return "### 当前技能\n" + "\n".join(lines)
+
+
+def get_capability_summary() -> str:
+    """Return cached capability summary for system prompt injection."""
+    global _capability_summary
+    if not _capability_summary:
+        _capability_summary = _build_capability_summary()
+    return _capability_summary
+
+
+def refresh_capability_summary() -> None:
+    """Rebuild the cached capability summary (call after skill toggle/config change)."""
+    global _capability_summary
+    _capability_summary = _build_capability_summary()
