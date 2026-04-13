@@ -130,12 +130,12 @@ def discover() -> list[str]:
 
             _skills[skill.name] = skill
 
-            # Map tool names to skill
-            if skill.expose_as_tool:
-                for tool in skill.get_tools():
-                    tool_name = tool.get("function", {}).get("name", "")
-                    if tool_name:
-                        _tool_map[tool_name] = skill.name
+            # Map tool names to skill (all skills, regardless of expose_as_tool;
+            # expose_as_tool only controls default injection in get_tools())
+            for tool in skill.get_tools():
+                tool_name = tool.get("function", {}).get("name", "")
+                if tool_name:
+                    _tool_map[tool_name] = skill.name
 
             registered.append(skill.name)
             log.info("Registered skill: %s (type=%s, tools=%s, triggers=%s)",
