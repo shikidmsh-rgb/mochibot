@@ -308,7 +308,17 @@ def get_skill_info_all() -> list[dict]:
     disabled = get_disabled_skills()
     result = []
     for s in _skills.values():
-        config_missing = getattr(s, "_config_missing", [])
+        # Re-check config at call time (DB values may have been added since
+        # discovery, so the stale _config_missing from startup can be wrong).
+        try:
+            from mochi.db import get_skill_config as _gsc
+            db_cfg = _gsc(s.name)
+        except Exception:
+            db_cfg = {}
+        config_missing = [
+            key for key in getattr(s, "requires_config", [])
+            if not os.getenv(key) and not s.config.get(key) and not db_cfg.get(key)
+        ]
         admin_disabled = s.name in disabled
         auto_disabled = bool(config_missing)
         result.append({

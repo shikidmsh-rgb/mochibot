@@ -168,8 +168,11 @@ class Observer(ABC):
 
         try:
             data = await self.observe()
-            self._last_data = data
-            self._last_collected_at = now
+            if data:
+                # Only cache non-empty results; empty {} from missing config
+                # should not block retries for the full interval.
+                self._last_data = data
+                self._last_collected_at = now
             self._consecutive_errors = 0
             return data
         except Exception as e:
