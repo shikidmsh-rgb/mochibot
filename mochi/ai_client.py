@@ -37,7 +37,8 @@ class ChatResult:
 def _build_system_prompt(user_id: int, usage_rules: str = "",
                          tool_names: list[str] | None = None,
                          core_memory: str = "",
-                         habits: list[dict] | None = None) -> str:
+                         habits: list[dict] | None = None,
+                         transport: str = "") -> str:
     """Build the system prompt: personality(Chat) + heartbeat context + core memory.
 
     Args:
@@ -46,6 +47,7 @@ def _build_system_prompt(user_id: int, usage_rules: str = "",
         tool_names: Tool names available this turn (for dynamic context injection).
         core_memory: Pre-fetched core memory string (avoids redundant DB call).
         habits: Pre-fetched habit list (avoids redundant DB call).
+        transport: Transport name for transport-aware capability summary.
     """
     from mochi.config import HEARTBEAT_INTERVAL_MINUTES, TIMEZONE_OFFSET_HOURS
     personality = get_prompt("system_chat/soul")
@@ -64,7 +66,7 @@ def _build_system_prompt(user_id: int, usage_rules: str = "",
 
     # Dynamic capability list (cached, refreshed on skill toggle)
     from mochi.skills import get_capability_summary
-    cap = get_capability_summary()
+    cap = get_capability_summary(transport=transport)
     if cap:
         parts.append(cap)
 
@@ -139,27 +141,34 @@ async def chat(message: IncomingMessage) -> ChatResult:
     raw = message.raw or {}
     sticker_data = raw.get("sticker")
     if sticker_data and sticker_data.get("file_id"):
-        from mochi.skills.sticker.handler import StickerSkill
-
-        result = await StickerSkill().learn_sticker(
-            user_id=user_id,
-            file_id=sticker_data["file_id"],
-            set_name=sticker_data.get("set_name", ""),
-            emoji=sticker_data.get("emoji", ""),
-            caption=text,
+        # Gate: skip sticker learning if skill is excluded for this transport
+        sticker_skill = skill_registry.get_skill("sticker")
+        sticker_excluded = (
+            sticker_skill is not None
+            and message.transport in sticker_skill.exclude_transports
         )
+        if not sticker_excluded:
+            from mochi.skills.sticker.handler import StickerSkill
 
-        if result["learned"]:
-            emoji = sticker_data.get("emoji", "")
-            confirm = (
-                f"学会了！{emoji} 标签：{result['tags']}\n"
-                f"（已收集 {result['count']} 个贴纸）"
+            result = await StickerSkill().learn_sticker(
+                user_id=user_id,
+                file_id=sticker_data["file_id"],
+                set_name=sticker_data.get("set_name", ""),
+                emoji=sticker_data.get("emoji", ""),
+                caption=text,
             )
-            return ChatResult(text=confirm)
 
-        # Already known — rewrite as text description for chat
-        emoji = sticker_data.get("emoji", "")
-        text = f"[用户发了一个贴纸 {emoji}]" + (f" {text}" if text else "")
+            if result["learned"]:
+                emoji = sticker_data.get("emoji", "")
+                confirm = (
+                    f"学会了！{emoji} 标签：{result['tags']}\n"
+                    f"（已收集 {result['count']} 个贴纸）"
+                )
+                return ChatResult(text=confirm)
+
+            # Already known — rewrite as text description for chat
+            emoji = sticker_data.get("emoji", "")
+            text = f"[用户发了一个贴纸 {emoji}]" + (f" {text}" if text else "")
 
     # Save user message
     save_message(user_id, "user", text)
@@ -177,12 +186,14 @@ async def chat(message: IncomingMessage) -> ChatResult:
         )
         # Launch router (with habits hint) + remaining DB fetches concurrently
         skill_names, core_memory, history = await asyncio.gather(
-            classify_skills(text, user_id=user_id, habits=habits),
+            classify_skills(text, user_id=user_id, habits=habits,
+                            transport=message.transport),
             asyncio.to_thread(get_core_memory, user_id),
             asyncio.to_thread(get_recent_messages, user_id, 20),
         )
         if skill_names:
-            tools = skill_registry.get_tools_by_names(skill_names)
+            tools = skill_registry.get_tools_by_names(
+                skill_names, transport=message.transport)
             # Resolve model tier from classified skills
             tier = resolve_tier(llm_skills=set(skill_names))
             # Collect usage rules for selected tools only
@@ -197,7 +208,7 @@ async def chat(message: IncomingMessage) -> ChatResult:
         if TOOL_ESCALATION_ENABLED:
             tools.append(REQUEST_TOOLS_DEF)
     else:
-        tools = skill_registry.get_tools()
+        tools = skill_registry.get_tools(transport=message.transport)
         # Parallel DB fetches even when router is off
         core_memory, history = await asyncio.gather(
             asyncio.to_thread(get_core_memory, user_id),
@@ -212,7 +223,7 @@ async def chat(message: IncomingMessage) -> ChatResult:
     active_tool_names = [t["function"]["name"] for t in tools if "function" in t]
     system_prompt = _build_system_prompt(
         user_id, usage_rules=usage_rules, tool_names=active_tool_names,
-        core_memory=core_memory, habits=habits,
+        core_memory=core_memory, habits=habits, transport=message.transport,
     )
 
     # Build messages array
@@ -273,7 +284,8 @@ async def chat(message: IncomingMessage) -> ChatResult:
                     new_skills = validate_escalation(tc["arguments"])
                     if new_skills:
                         new_tool_defs = filter_tools(
-                            skill_registry.get_tools_by_names(new_skills)
+                            skill_registry.get_tools_by_names(
+                                new_skills, transport=message.transport)
                         )
                         # Rebind tools — add new tools not already present
                         existing_names = {
@@ -311,6 +323,7 @@ async def chat(message: IncomingMessage) -> ChatResult:
             result = await skill_registry.dispatch(
                 tc["name"], tc["arguments"],
                 user_id=user_id, channel_id=message.channel_id,
+                transport=message.transport,
             )
 
             # Extract [STICKER:file_id] markers from tool result

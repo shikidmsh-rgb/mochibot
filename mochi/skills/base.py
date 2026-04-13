@@ -32,6 +32,7 @@ class SkillContext:
     trigger: str            # "tool_call" | "heartbeat" | "cron" | "slash" | "script"
     user_id: int = 0
     channel_id: int = 0
+    transport: str = ""     # "telegram" | "wechat" — from IncomingMessage
     tool_name: str = ""     # only set for trigger="tool_call"
     args: dict = field(default_factory=dict)
     observation: dict | None = None  # only set for trigger="heartbeat"
@@ -101,6 +102,7 @@ class SkillMeta:
     writes_meta: WritesMeta | None = None
     triggers: list[dict] = field(default_factory=list)
     has_sense: bool = False  # whether skill declares sense: block
+    exclude_transports: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -162,6 +164,7 @@ def _parse_skill_md(md_path: str) -> dict:
         "sub_skills": {},
         "nudge_meta": None,
         "writes_meta": None,
+        "exclude_transports": [],
     }
 
     if not os.path.exists(md_path):
@@ -342,6 +345,9 @@ def _parse_skill_md(md_path: str) -> dict:
                     result["diary_status_order"] = int(val)
                 except ValueError:
                     log.warning("Invalid diary_status_order '%s' in %s", val, md_path)
+            elif key == "exclude_transports":
+                transports = re.findall(r"[a-z_][a-z0-9_]*", val)
+                result["exclude_transports"] = transports
             else:
                 result["meta"][key] = val
 
@@ -638,6 +644,7 @@ class Skill(ABC):
         self.core: bool = False                       # core skills cannot be disabled
         self.config: dict = {}                       # resolved config values
         self.diary_status_order: int = 50            # diary panel ordering (lower = higher)
+        self.exclude_transports: list[str] = []      # transports where this skill is unavailable
 
     @property
     def name(self) -> str:
@@ -682,6 +689,7 @@ class Skill(ABC):
         self.diary_tags = parsed.get("diary", [])
         self.sub_skills = parsed.get("sub_skills", {})
         self.diary_status_order = int(parsed.get("diary_status_order", 50))
+        self.exclude_transports = parsed.get("exclude_transports", [])
 
         # Merge requires_config and requires_env
         rc = set(parsed.get("requires_config", []))
@@ -816,6 +824,16 @@ class Skill(ABC):
             log.error("Skill %s failed: %s", self.name, e, exc_info=True)
             return SkillResult(output=f"Skill error: {e}", success=False)
 
+    def init_schema(self, conn) -> None:
+        """Create DB tables needed by this skill.
+
+        Called once at startup (after init_db, during discover).
+        Use CREATE TABLE IF NOT EXISTS only — no destructive DDL.
+        The conn is provided by the framework; do NOT close it.
+        Use ``ensure_column()`` from ``mochi.db`` for migrations.
+        """
+        pass
+
     def diary_status(self, user_id: int, today: str, now: "datetime") -> list[str] | None:
         """Return lines for the 今日状態 diary panel.
 
@@ -919,6 +937,7 @@ def scan_skill_metadata(skills_dir: str | None = None) -> list[SkillMeta]:
             writes_meta=parsed.get("writes_meta"),
             triggers=parsed.get("triggers", []),
             has_sense=parsed.get("has_sense", False),
+            exclude_transports=parsed.get("exclude_transports", []),
         ))
 
     # ── Startup lint validation ──
@@ -941,11 +960,13 @@ def _has_missing_env(requires_env: list[str]) -> bool:
     return bool(requires_env) and any(not os.getenv(k) for k in requires_env)
 
 
-def build_skill_descriptions(metas: list[SkillMeta]) -> dict[str, str]:
+def build_skill_descriptions(metas: list[SkillMeta],
+                             transport: str = "") -> dict[str, str]:
     """Build {skill_name: description} for pre-router catalog.
 
     Includes only type=tool/hybrid skills that have at least one tool.
     Excludes skills whose required env vars are missing (auto-disabled).
+    Excludes skills incompatible with the given transport.
     Also includes sub_skills as separate entries.
     """
     result: dict[str, str] = {}
@@ -955,6 +976,8 @@ def build_skill_descriptions(metas: list[SkillMeta]) -> dict[str, str]:
         if not m.tools:
             continue
         if _has_missing_env(m.requires_env):
+            continue
+        if transport and transport in m.exclude_transports:
             continue
         result[m.name] = m.description
         for sub_name, sub_val in m.sub_skills.items():

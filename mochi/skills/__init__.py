@@ -166,10 +166,11 @@ def collect_diary_status(user_id: int, today: str, now: datetime) -> list[str]:
     return all_lines
 
 
-def get_tools() -> list[dict]:
+def get_tools(transport: str = "") -> list[dict]:
     """Get all exposed tool definitions (for LLM tools array).
 
-    Excludes tools from admin-disabled or config-missing skills.
+    Excludes tools from admin-disabled, config-missing, or
+    transport-incompatible skills.
     """
     disabled = get_disabled_skills()
     tools = []
@@ -178,12 +179,15 @@ def get_tools() -> list[dict]:
             continue
         if getattr(skill, "_config_missing", None):
             continue
+        if transport and transport in skill.exclude_transports:
+            continue
         if skill.expose_as_tool:
             tools.extend(skill.get_tools())
     return tools
 
 
-def get_tools_by_names(skill_names: list[str]) -> list[dict]:
+def get_tools_by_names(skill_names: list[str],
+                       transport: str = "") -> list[dict]:
     """Get tool definitions for tools belonging to named skills.
 
     Ignores expose_as_tool — if you ask by name, you get it.
@@ -192,7 +196,7 @@ def get_tools_by_names(skill_names: list[str]) -> list[dict]:
     these skills are needed, so we honour the request.
 
     Invalid names are silently skipped (logged at debug level).
-    Skips skills with missing required config.
+    Skips skills with missing required config or transport exclusion.
     """
     tools = []
     for name in skill_names:
@@ -201,6 +205,8 @@ def get_tools_by_names(skill_names: list[str]) -> list[dict]:
             log.debug("get_tools_by_names: unknown skill %s, skipped", name)
             continue
         if getattr(skill, "_config_missing", None):
+            continue
+        if transport and transport in skill.exclude_transports:
             continue
         tools.extend(skill.get_tools())
     return tools
@@ -216,7 +222,7 @@ skill_for_tool = get_tool_skill
 
 
 async def dispatch(tool_name: str, args: dict, user_id: int = 0,
-                   channel_id: int = 0) -> SkillResult:
+                   channel_id: int = 0, transport: str = "") -> SkillResult:
     """Dispatch a tool call to the appropriate skill."""
     skill_name = _tool_map.get(tool_name)
     if not skill_name:
@@ -232,10 +238,17 @@ async def dispatch(tool_name: str, args: dict, user_id: int = 0,
     if getattr(skill, "_config_missing", None):
         return SkillResult(output=f"Skill '{skill_name}' is unavailable (missing config).", success=False)
 
+    if transport and transport in skill.exclude_transports:
+        return SkillResult(
+            output=f"Skill '{skill_name}' is not available on this platform.",
+            success=False,
+        )
+
     context = SkillContext(
         trigger="tool_call",
         user_id=user_id,
         channel_id=channel_id,
+        transport=transport,
         tool_name=tool_name,
         args=args,
     )
@@ -324,6 +337,7 @@ def get_skill_info_all() -> list[dict]:
             "config_missing": config_missing,
             "config_schema": s.config_schema,
             "sub_skills": s.sub_skills,
+            "exclude_transports": s.exclude_transports,
         })
     return result
 
@@ -345,19 +359,21 @@ def list_skills() -> list[dict]:
 # Dynamic capability summary (for system prompt)
 # ---------------------------------------------------------------------------
 
-_capability_summary: str = ""
+_capability_summary: dict[str, str] = {}
 
 
-def _build_capability_summary() -> str:
+def _build_capability_summary(transport: str = "") -> str:
     """Build a Chinese markdown section listing currently available skills.
 
     Filters:
     - Excludes admin-disabled skills
     - Excludes skills with missing required config
     - Excludes type=automation (internal, e.g. maintenance)
+    - Excludes skills incompatible with the given transport (noted separately)
     """
     disabled = get_disabled_skills()
     lines: list[str] = []
+    excluded_names: list[str] = []
 
     for s in _skills.values():
         if s.name in disabled:
@@ -366,23 +382,29 @@ def _build_capability_summary() -> str:
             continue
         if s.skill_type == "automation":
             continue
+        if transport and transport in s.exclude_transports:
+            excluded_names.append(s.description or s.name)
+            continue
         if s.description:
             lines.append(f"- {s.description}")
+
+    if excluded_names:
+        lines.append(f"- (此平台不可用: {', '.join(excluded_names)})")
 
     if not lines:
         return ""
     return "### 当前技能\n" + "\n".join(lines)
 
 
-def get_capability_summary() -> str:
+def get_capability_summary(transport: str = "") -> str:
     """Return cached capability summary for system prompt injection."""
     global _capability_summary
-    if not _capability_summary:
-        _capability_summary = _build_capability_summary()
-    return _capability_summary
+    if transport not in _capability_summary:
+        _capability_summary[transport] = _build_capability_summary(transport)
+    return _capability_summary[transport]
 
 
 def refresh_capability_summary() -> None:
     """Rebuild the cached capability summary (call after skill toggle/config change)."""
     global _capability_summary
-    _capability_summary = _build_capability_summary()
+    _capability_summary = {}

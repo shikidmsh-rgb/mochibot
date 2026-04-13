@@ -4,6 +4,7 @@ description: "贴纸 — send contextual stickers"
 type: tool
 expose_as_tool: true
 tier: lite
+exclude_transports: [wechat]
 sub_skills:
   sticker_manage: "贴纸管理 — delete stickers from registry"
 ---

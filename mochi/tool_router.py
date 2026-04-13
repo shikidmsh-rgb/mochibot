@@ -33,6 +33,7 @@ log = logging.getLogger(__name__)
 TOOL_METADATA: dict[str, dict] = {}
 _SKILL_DESCRIPTIONS: dict[str, str] = {}
 _SKILL_DEFAULT_TIER: dict[str, str] = {}
+_SKILL_METAS: list = []
 _metadata_initialized = False
 
 
@@ -42,7 +43,7 @@ def _ensure_skill_metadata():
     Safe to call multiple times (idempotent). Uses file-only scan — no handler imports.
     """
     global TOOL_METADATA, _SKILL_DESCRIPTIONS, _SKILL_DEFAULT_TIER
-    global _metadata_initialized
+    global _SKILL_METAS, _metadata_initialized
 
     if _metadata_initialized:
         return
@@ -54,6 +55,7 @@ def _ensure_skill_metadata():
         )
 
         metas = scan_skill_metadata()
+        _SKILL_METAS = metas
         TOOL_METADATA = build_tool_metadata(metas)
         _SKILL_DESCRIPTIONS = build_skill_descriptions(metas)
         _SKILL_DEFAULT_TIER = build_tier_defaults(metas)
@@ -141,13 +143,20 @@ _SKILL_KEYWORDS: dict[str, tuple[str, ...]] = {
 }
 
 
-def _build_skill_descriptions() -> dict[str, str]:
+def _build_skill_descriptions(transport: str = "") -> dict[str, str]:
     """Build {skill_name: description} from SKILL.md metadata (SSOT).
 
     Uses the lazy-initialized metadata scan — no handler imports needed.
+    When transport is specified, rebuilds from metas to exclude incompatible skills.
     Falls back to registry for skills without descriptions.
     """
     _ensure_skill_metadata()
+
+    # When transport is specified, rebuild with transport filtering
+    if transport and _SKILL_METAS:
+        from mochi.skills.base import build_skill_descriptions
+        return build_skill_descriptions(_SKILL_METAS, transport=transport)
+
     if _SKILL_DESCRIPTIONS:
         return dict(_SKILL_DESCRIPTIONS)
 
@@ -221,7 +230,8 @@ def _build_habit_hint(active_habits: list[str] | None) -> str:
 
 
 async def classify_skills_llm(message: str, user_id: int | None = None,
-                              habits: list[dict] | None = None) -> Optional[list[str]]:
+                              habits: list[dict] | None = None,
+                              transport: str = "") -> Optional[list[str]]:
     """Classify which skills a message needs using LITE tier LLM.
 
     Returns list of skill names, or None on failure (triggers keyword fallback).
@@ -233,7 +243,7 @@ async def classify_skills_llm(message: str, user_id: int | None = None,
         log.warning("LLM imports failed, router falling back to keywords")
         return None
 
-    descriptions = _build_skill_descriptions()
+    descriptions = _build_skill_descriptions(transport=transport)
     if not descriptions:
         return None
 
@@ -299,12 +309,14 @@ def keyword_fallback(message: str) -> list[str]:
 
 
 async def classify_skills(message: str, user_id: int | None = None,
-                          habits: list[dict] | None = None) -> list[str]:
+                          habits: list[dict] | None = None,
+                          transport: str = "") -> list[str]:
     """Main entry point: classify skills for a message.
 
     LLM first, keyword fallback ONLY when LLM fails or returns empty.
     """
-    skills = await classify_skills_llm(message, user_id=user_id, habits=habits)
+    skills = await classify_skills_llm(message, user_id=user_id, habits=habits,
+                                       transport=transport)
     if skills is not None and len(skills) > 0:
         return skills
     # LLM failed or returned empty — fall back to keywords
