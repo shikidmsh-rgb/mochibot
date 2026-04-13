@@ -8,7 +8,8 @@ from mochi.heartbeat import (
     wake_up, go_to_sleep, force_wake, get_state, get_stats,
     set_send_callback, check_sleep_entry, check_silence_sleep,
     clear_morning_hold, enter_silent_pause, clear_silent_pause,
-    is_silent_pause, SLEEPING, AWAKE, RESLEEP_WINDOW_HOURS,
+    is_silent_pause, should_wake_on_message,
+    SLEEPING, AWAKE, RESLEEP_WINDOW_HOURS,
 )
 
 
@@ -355,9 +356,8 @@ class TestFallbackWakeE2E:
         # Replicate the fallback wake logic from heartbeat_loop
         hour = fake_now.hour
         fallback_hour = hb._effective('FALLBACK_WAKE_HOUR')
-        awake_end = hb._effective('AWAKE_HOUR_END')
 
-        if hb._state == SLEEPING and fallback_hour <= hour < awake_end:
+        if hb._state == SLEEPING and fallback_hour <= hour < 23:
             hb.wake_up(f"fallback_{fallback_hour}:00")
 
         assert hb.get_state() == AWAKE
@@ -389,3 +389,68 @@ class TestSleepKeywordE2E:
 
         result = hb.check_sleep_entry("ok gn")
         assert result is True
+
+
+class TestShouldWakeOnMessage:
+    """E2E: 6 AM gate — should_wake_on_message respects WAKE_EARLIEST_HOUR."""
+
+    def test_wake_after_6am(self, monkeypatch):
+        """should_wake_on_message returns True when SLEEPING and hour >= 6."""
+        import mochi.heartbeat as hb
+        monkeypatch.setattr(hb, "_state", SLEEPING)
+        fake_now = datetime(2026, 3, 29, 8, 0, tzinfo=hb.TZ)
+        monkeypatch.setattr(hb, "datetime", _FakeDatetime(fake_now))
+
+        assert should_wake_on_message() is True
+
+    def test_no_wake_before_6am(self, monkeypatch):
+        """should_wake_on_message returns False before WAKE_EARLIEST_HOUR."""
+        import mochi.heartbeat as hb
+        monkeypatch.setattr(hb, "_state", SLEEPING)
+        fake_now = datetime(2026, 3, 29, 4, 0, tzinfo=hb.TZ)
+        monkeypatch.setattr(hb, "datetime", _FakeDatetime(fake_now))
+
+        assert should_wake_on_message() is False
+
+    def test_no_wake_when_awake(self, monkeypatch):
+        """should_wake_on_message returns False when already AWAKE."""
+        import mochi.heartbeat as hb
+        fake_now = datetime(2026, 3, 29, 10, 0, tzinfo=hb.TZ)
+        monkeypatch.setattr(hb, "datetime", _FakeDatetime(fake_now))
+
+        assert should_wake_on_message() is False
+
+
+class TestMidnightBoundary:
+    """E2E: sleep logic works correctly across midnight boundary."""
+
+    def test_keyword_at_midnight_triggers_sleep(self, monkeypatch):
+        """Sleep keyword at 0:30 (past midnight) still triggers sleep."""
+        import mochi.heartbeat as hb
+        fake_now = datetime(2026, 3, 29, 0, 30, tzinfo=hb.TZ)
+        monkeypatch.setattr(hb, "datetime", _FakeDatetime(fake_now))
+
+        result = hb.check_sleep_entry("晚安~")
+        assert result is True
+
+    def test_silence_at_midnight_triggers_sleep(self, monkeypatch):
+        """Silence at midnight triggers silence sleep."""
+        import mochi.heartbeat as hb
+        fake_now = datetime(2026, 3, 29, 0, 0, tzinfo=hb.TZ)
+        monkeypatch.setattr(hb, "datetime", _FakeDatetime(fake_now))
+        two_hours_ago = (fake_now - timedelta(hours=2)).isoformat()
+        monkeypatch.setattr(hb, "get_last_user_message_time", lambda uid: two_hours_ago)
+        monkeypatch.setattr("mochi.config.OWNER_USER_ID", 123)
+
+        result = check_silence_sleep()
+        assert result is not None
+        assert result["context_hint"] == "first_sleep"
+
+    def test_keyword_at_7am_does_not_trigger(self, monkeypatch):
+        """Sleep keyword at 7 AM does NOT trigger sleep (daytime)."""
+        import mochi.heartbeat as hb
+        fake_now = datetime(2026, 3, 29, 7, 0, tzinfo=hb.TZ)
+        monkeypatch.setattr(hb, "datetime", _FakeDatetime(fake_now))
+
+        result = hb.check_sleep_entry("晚安")
+        assert result is False
