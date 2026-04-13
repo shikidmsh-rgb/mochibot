@@ -68,6 +68,7 @@ class TelegramTransport(Transport):
         self._app.add_handler(CommandHandler("help", self._cmd_help))
         self._app.add_handler(CommandHandler("status", self._cmd_status))
         self._app.add_handler(CommandHandler("cost", self._cmd_cost))
+        self._app.add_handler(CommandHandler("restart", self._cmd_restart))
         self._app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message)
         )
@@ -124,8 +125,16 @@ class TelegramTransport(Transport):
             "指令：\n"
             "/help — 显示本帮助\n"
             "/status — 系统状态\n"
-            "/cost — Token 用量统计"
+            "/cost — Token 用量统计\n"
+            "/restart — 重启 Bot"
         )
+
+    async def _cmd_restart(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not _is_owner(update.effective_user.id):
+            return
+        await update.message.reply_text("正在重启...")
+        from mochi.shutdown import request_restart
+        request_restart(update.effective_chat.id)
 
     async def _cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not _is_owner(update.effective_user.id):

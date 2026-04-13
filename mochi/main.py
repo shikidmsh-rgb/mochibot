@@ -9,6 +9,7 @@ Starts all subsystems:
 
 import asyncio
 import logging
+import sys
 
 from mochi.config import (
     TELEGRAM_BOT_TOKEN,
@@ -22,6 +23,9 @@ from mochi.ai_client import chat, ChatResult
 from mochi.transport import Transport, IncomingMessage
 from mochi.heartbeat import heartbeat_loop, set_send_callback
 from mochi.reminder_timer import reminder_loop, set_send_callback as set_reminder_callback
+from mochi.shutdown import (
+    init_restart_event, consume_restart_flag, RESTART_EXIT_CODE,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -59,6 +63,7 @@ async def main():
 
     # 2. Skills
     skills = skill_registry.discover()
+    skill_registry.init_all_skill_schemas()
     log.info("Skills loaded: %s", skills)
 
     # 2b. Observers
@@ -85,6 +90,16 @@ async def main():
     if transport:
         await transport.start()
         log.info("Transport started: %s", transport.name)
+
+    # 3b. Send restart-complete notification if restarting
+    restart_channel = consume_restart_flag()
+    if restart_channel and transport:
+        try:
+            await transport.send_message(restart_channel, "重启完成 ✅")
+            log.info("Sent restart-complete notification to channel %s",
+                     restart_channel)
+        except Exception as e:
+            log.warning("Failed to send restart-complete notification: %s", e)
 
     # 4. Heartbeat — wire up send callback to transport
     if transport:
@@ -117,10 +132,24 @@ async def main():
     log.info("MochiBot is alive!")
     log.info("=" * 50)
 
-    # Keep running
+    # Keep running — also watch for restart signal
+    restart_event = init_restart_event()
     try:
         while True:
-            await asyncio.sleep(3600)
+            sleep_task = asyncio.create_task(asyncio.sleep(3600))
+            restart_task = asyncio.create_task(restart_event.wait())
+            done, pending = await asyncio.wait(
+                {sleep_task, restart_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for t in pending:
+                t.cancel()
+            if restart_event.is_set():
+                log.info("Restart requested — shutting down (exit code %d)",
+                         RESTART_EXIT_CODE)
+                if transport:
+                    await transport.stop()
+                sys.exit(RESTART_EXIT_CODE)
     except (KeyboardInterrupt, SystemExit):
         log.info("Shutting down...")
         if transport:
