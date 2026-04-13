@@ -283,14 +283,23 @@ if HAS_FASTAPI:
     _AUTH_LOCKOUT_SECONDS = 60.0
 
     async def _verify_token(request: Request):
-        """Optional token auth. If ADMIN_TOKEN is set, require it."""
+        """Token auth — required only for non-localhost access.
+
+        Localhost connections (127.0.0.1, ::1) are trusted and skip auth.
+        Remote connections require ADMIN_TOKEN.
+        """
         from mochi.config import ADMIN_TOKEN
-        if not ADMIN_TOKEN:
-            log.warning("ADMIN_TOKEN is not set — admin portal is unauthenticated!")
+
+        # Localhost is trusted — no token needed
+        client_ip = request.client.host if request.client else "unknown"
+        if client_ip in _LOCALHOST_HOSTS:
             return
 
-        # Per-IP rate limiting on auth failures
-        client_ip = request.client.host if request.client else "unknown"
+        if not ADMIN_TOKEN:
+            raise HTTPException(
+                status_code=403,
+                detail="Remote access requires ADMIN_TOKEN. Set it in .env.",
+            )
         now = time.monotonic()
         timestamps = _auth_failures.get(client_ip, [])
         timestamps[:] = [t for t in timestamps if now - t < _AUTH_FAILURE_WINDOW]

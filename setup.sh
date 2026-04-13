@@ -58,23 +58,44 @@ echo "  Installing dependencies..."
 .venv/bin/pip install -r requirements.txt fastapi uvicorn sqlite-vec aiohttp --quiet
 echo "  [OK] Dependencies installed."
 
+# ── Detect desktop environment ──
+HAS_DESKTOP=false
+if [ -n "$DISPLAY" ] || [ -n "$WAYLAND_DISPLAY" ] || [ "$(uname)" = "Darwin" ]; then
+    HAS_DESKTOP=true
+fi
+
 # ── Launch ──
 echo ""
 echo "  =========================================="
 echo "    Setup complete!"
-echo "    Opening admin portal..."
-echo "    http://127.0.0.1:8080"
 echo "  =========================================="
 echo ""
-echo "  Configure your API keys and bot token in the browser."
-echo "  When done, click \"启动 Bot\" in the admin portal to start the bot."
-echo ""
 
-# Open browser (best-effort)
-if command -v open &>/dev/null; then
-    open http://127.0.0.1:8080 2>/dev/null &
-elif command -v xdg-open &>/dev/null; then
-    xdg-open http://127.0.0.1:8080 2>/dev/null &
+if [ "$HAS_DESKTOP" = true ]; then
+    echo "  Opening admin portal at http://127.0.0.1:8080"
+    echo ""
+    echo "  Configure your API keys and bot token in the browser."
+    echo "  When done, click \"启动 Bot\" in the admin portal to start the bot."
+    echo ""
+
+    # Open browser (best-effort)
+    if command -v open &>/dev/null; then
+        open http://127.0.0.1:8080 2>/dev/null &
+    elif command -v xdg-open &>/dev/null; then
+        xdg-open http://127.0.0.1:8080 2>/dev/null &
+    fi
+else
+    echo "  No desktop detected (cloud server?)."
+    echo "  Admin portal will start at http://127.0.0.1:8080"
+    echo "  A token will be auto-generated for security."
+    echo ""
+    echo "  To access from your local computer, run this on your machine:"
+    echo ""
+    echo "    ssh -L 8080:localhost:8080 user@your-server-ip"
+    echo ""
+    echo "  Then open http://localhost:8080?token=YOUR_TOKEN in your browser."
+    echo "  (The token will be printed below when admin portal starts.)"
+    echo ""
 fi
 
 .venv/bin/python -m mochi.admin

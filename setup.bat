@@ -55,12 +55,15 @@ REM Launch
 echo.
 echo  ------------------------------------------
 echo    Setup complete!
-echo    Opening admin portal...
-echo    http://127.0.0.1:8080
 echo  ------------------------------------------
 echo.
+echo  Opening admin portal at http://127.0.0.1:8080
 echo  Configure your API keys and bot token in the browser.
 echo  When done, click the start button in the admin portal.
+echo.
+echo  Cloud server? Run this on your local machine:
+echo    ssh -L 8080:localhost:8080 user@your-server-ip
+echo  Then open http://localhost:8080?token=YOUR_TOKEN
 echo.
 
 .venv\Scripts\python.exe -m mochi.admin

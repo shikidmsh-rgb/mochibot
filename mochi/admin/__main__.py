@@ -55,9 +55,6 @@ def main():
         log.critical("Admin portal requires: pip install fastapi uvicorn")
         sys.exit(1)
 
-    # Auto-generate ADMIN_TOKEN before importing config (so config reads it)
-    token = _ensure_admin_token(log)
-
     from mochi.config import ADMIN_PORT, ADMIN_BIND
 
     parser = argparse.ArgumentParser(description="MochiBot Admin Portal")
@@ -67,22 +64,27 @@ def main():
                         help="Don't auto-open browser on startup")
     args = parser.parse_args()
 
-    # Warn if binding to a non-localhost address
     _LOCALHOST = {"127.0.0.1", "localhost", "::1"}
+
+    # Only require token for non-localhost binds
+    token = None
     if args.bind not in _LOCALHOST:
+        token = _ensure_admin_token(log)
         log.warning(
             "=" * 60 + "\n"
-            "  WARNING: Binding to %s (network-accessible)\n"
-            "  The admin portal will be exposed to your network.\n"
-            "  Consider using a reverse proxy with HTTPS.\n" +
-            "=" * 60, args.bind
+            "  Binding to %s (network-accessible)\n"
+            "  Remote access requires ADMIN_TOKEN.\n"
+            "  Consider using SSH tunnel instead:\n"
+            "    ssh -L %d:localhost:%d user@this-server\n" +
+            "=" * 60, args.bind, args.port, args.port
         )
 
     from mochi.admin.admin_server import app
 
-    url = f"http://{args.bind}:{args.port}?token={token}"
+    url = f"http://{args.bind}:{args.port}"
+    if token:
+        url += f"?token={token}"
     log.info("Admin portal: %s", url)
-    log.info("Stop this process before running python -m mochi.main")
 
     if not args.no_browser:
         webbrowser.open(url)
