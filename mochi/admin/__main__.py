@@ -89,9 +89,22 @@ def main():
     if not args.no_browser:
         webbrowser.open(url)
 
+    from mochi.admin.admin_server import _check_port
+    _check_port(args.bind, args.port)
+
     config = uvicorn.Config(app, host=args.bind, port=args.port, log_level="info")
     server = uvicorn.Server(config)
-    asyncio.run(server.serve())
+    try:
+        asyncio.run(server.serve())
+    except OSError as e:
+        if "address" in str(e).lower() or getattr(e, "errno", 0) in (98, 10048):
+            log.error(
+                "端口 %d 被其他程序占用。"
+                "请关闭该程序，或在 .env 中设置 ADMIN_PORT=其他端口号",
+                args.port,
+            )
+            sys.exit(1)
+        raise
 
 
 if __name__ == "__main__":
