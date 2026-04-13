@@ -134,6 +134,11 @@ class WeixinTransport(Transport):
         """True when iLink session is expired and awaiting QR re-scan."""
         return self._session_expired
 
+    def restore_owner_id(self, weixin_id: str) -> None:
+        """Pre-set the owner WeChat ID (used after restart)."""
+        self._owner_weixin_id = weixin_id
+        log.info("WeChat: owner ID restored from restart flag: %s", weixin_id)
+
     async def start(self) -> None:
         try:
             import aiohttp
@@ -338,7 +343,133 @@ class WeixinTransport(Transport):
             except Exception as e:
                 log.warning("WeChat: failed to send restart ack: %s", e)
             from mochi.shutdown import request_restart
-            request_restart(OWNER_USER_ID or 0)
+            request_restart(OWNER_USER_ID or 0, weixin_id=from_user)
+            return
+
+        # System command: /help
+        if text.strip() == "/help":
+            help_text = (
+                "我是你的 AI 伙伴，会记住我们的对话，在需要时提醒你。\n\n"
+                "直接跟我聊天就行，不用特殊格式。\n\n"
+                "指令：\n"
+                "/help — 显示本帮助\n"
+                "/heartbeat — 心跳状态\n"
+                "/cost — Token 用量统计\n"
+                "/notes — 查看笔记\n"
+                "/diary — 查看今日日記\n"
+                "/restart — 重启 Bot"
+            )
+            try:
+                await self._weixin_send_message(
+                    from_user, help_text, context_token)
+            except Exception as e:
+                log.warning("WeChat: failed to send help: %s", e)
+            return
+
+        # System command: /heartbeat (owner only)
+        if text.strip() == "/heartbeat":
+            if from_user != self._owner_weixin_id:
+                return
+            from mochi.heartbeat import get_stats
+            from mochi.db import get_last_heartbeat_log
+            stats = get_stats()
+            entry = get_last_heartbeat_log()
+            lines = [
+                "📊 心跳状态",
+                "",
+                f"状态: {stats['state']}",
+                f"今日主动推送: {stats['proactive_today']}/{stats['proactive_limit']}",
+                f"上次思考: {stats['last_think_at'] or '无'}",
+            ]
+            if entry:
+                summary = entry.get("summary") or "(无)"
+                if len(summary) > 600:
+                    summary = summary[:600] + "…(截断)"
+                lines += [
+                    "",
+                    "── 最近一次心跳 ──",
+                    f"时间: {entry.get('created_at', '?')}",
+                    f"状态: {entry.get('state', '?')}  |  动作: {entry.get('action', '(无)')}",
+                    "",
+                    summary,
+                ]
+            try:
+                await self._weixin_send_message(
+                    from_user, "\n".join(lines), context_token)
+            except Exception as e:
+                log.warning("WeChat: failed to send heartbeat: %s", e)
+            return
+
+        # System command: /cost (owner only)
+        if text.strip() == "/cost":
+            if from_user != self._owner_weixin_id:
+                return
+            from mochi.db import get_usage_summary
+            s = get_usage_summary()
+
+            def _format_block(title: str, by_model: dict) -> list[str]:
+                block = [title]
+                if not by_model:
+                    block.append("  (无记录)")
+                    return block
+                for model, data in sorted(by_model.items()):
+                    block.append(f"  {model}")
+                    block.append(f"    input {data['prompt']:,}  |  output {data['completion']:,}")
+                return block
+
+            lines = _format_block("📊 今日", s["today"]["by_model"])
+            lines.append("")
+            lines += _format_block("📊 本月", s["month"]["by_model"])
+            try:
+                await self._weixin_send_message(
+                    from_user, "\n".join(lines), context_token)
+            except Exception as e:
+                log.warning("WeChat: failed to send cost: %s", e)
+            return
+
+        # System command: /notes (owner only)
+        if text.strip() == "/notes":
+            if from_user != self._owner_weixin_id:
+                return
+            from pathlib import Path
+            notes_path = Path(__file__).resolve().parent.parent.parent / "data" / "notes.md"
+            notes = []
+            if notes_path.exists():
+                for line in notes_path.read_text(encoding="utf-8").splitlines():
+                    stripped = line.strip()
+                    if stripped.startswith("- "):
+                        notes.append(stripped[2:])
+            if not notes:
+                reply = "No notes."
+            else:
+                reply = "📝 Notes\n" + "\n".join(
+                    f"{i+1}. {n}" for i, n in enumerate(notes))
+            try:
+                await self._weixin_send_message(
+                    from_user, reply, context_token)
+            except Exception as e:
+                log.warning("WeChat: failed to send notes: %s", e)
+            return
+
+        # System command: /diary (owner only)
+        if text.strip() == "/diary":
+            if from_user != self._owner_weixin_id:
+                return
+            from mochi.diary import diary
+            from mochi.config import logical_today
+            status = diary.read(section="今日状態") or "(无)"
+            journal = diary.read(section="今日日記") or "(无)"
+            today = logical_today()
+            reply = (
+                f"📖 今日日記 ({today})\n\n"
+                f"── 今日状態 ──\n{status}\n\n"
+                f"── 今日日記 ──\n{journal}"
+            )
+            try:
+                await self._weixin_send_message(
+                    from_user, reply, context_token)
+            except Exception as e:
+                log.warning("WeChat: failed to send diary: %s", e)
             return
 
         # Heartbeat wake signals

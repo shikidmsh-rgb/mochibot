@@ -92,12 +92,17 @@ async def main():
         log.info("Transport started: %s", transport.name)
 
     # 3b. Send restart-complete notification if restarting
-    restart_channel = consume_restart_flag()
-    if restart_channel and transport:
+    restart_info = consume_restart_flag()
+    if restart_info and transport:
+        # Restore transport-specific state so send_message works immediately
+        weixin_id = restart_info.get("weixin_id")
+        if weixin_id and hasattr(transport, "restore_owner_id"):
+            transport.restore_owner_id(weixin_id)
         try:
-            await transport.send_message(restart_channel, "重启完成 ✅")
+            await transport.send_message(
+                restart_info["channel_id"], "重启完成 ✅")
             log.info("Sent restart-complete notification to channel %s",
-                     restart_channel)
+                     restart_info["channel_id"])
         except Exception as e:
             log.warning("Failed to send restart-complete notification: %s", e)
 
