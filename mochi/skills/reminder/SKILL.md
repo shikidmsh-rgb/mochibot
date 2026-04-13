@@ -1,6 +1,6 @@
 ---
 name: reminder
-description: "定时提醒 — 到了某个时间点提醒一下，纯时间触发，不需要追踪进度或催促完成。支持重复（每天、工作日、每周等），重复提醒也是 reminder 不是 habit（如'每天提醒我吃药'）。"
+description: "定时提醒 — 到点通知一下，不追踪完成情况。"
 type: tool
 expose_as_tool: true
 diary_status_order: 30

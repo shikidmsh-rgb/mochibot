@@ -1,9 +1,10 @@
 ---
 name: habit
-description: "长期习惯打卡 — 需要反复做、持续追踪、被催促保持的事（如运动、学习、喂猫药）。不是一次性的，做完还会再来。"
+description: "习惯打卡 — 需要长期坚持并追踪'做了没有'的事（如运动、喝水、学习）。"
 type: tool
 tier: lite
 multi_turn: true
+keywords: [打卡, 习惯, habit, 坚持, 监督]
 diary_status_order: 10
 expose_as_tool: false
 writes:
