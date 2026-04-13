@@ -427,10 +427,20 @@ async function saveTransportConfig() {
 }
 
 async function startBotAndRefresh() {
+  // Disable all restart buttons and show loading state
+  document.querySelectorAll('[data-restart-btn]').forEach(b => {
+    b.disabled = true; b.textContent = '重启中...';
+  });
   try {
     await api('POST', '/bot/start');
-    showToast('Bot 启动中...');
-  } catch(e) { showToast('启动失败: ' + e.message); }
+    showToast('✅ Bot 重启成功，正在启动...');
+  } catch(e) {
+    showToast('❌ 启动失败: ' + e.message);
+    document.querySelectorAll('[data-restart-btn]').forEach(b => {
+      b.disabled = false; b.textContent = '重启';
+    });
+    return;
+  }
   // Give it a moment then refresh welcome to show running state
   setTimeout(() => { loaded.welcome = false; loadWelcome(); }, 2000);
 }
@@ -1140,10 +1150,10 @@ async function loadWelcome() {
       let statusBadge = '';
       if (botStatus.running) {
         statusBadge = '<span class="badge badge-ok">运行中</span>'
-          + ' <button class="btn btn-ghost btn-sm" style="padding:2px 8px;font-size:11px" onclick="startBotAndRefresh()">重启</button>';
+          + ' <button class="btn btn-ghost btn-sm" data-restart-btn style="padding:2px 8px;font-size:11px" onclick="startBotAndRefresh()">重启</button>';
       } else if (botStatus.exit_code !== undefined && botStatus.exit_code !== null) {
         statusBadge = '<span class="badge badge-err">异常退出 (code ' + botStatus.exit_code + ')</span>'
-          + ' <button class="btn btn-ghost btn-sm" style="padding:2px 8px;font-size:11px" onclick="startBotAndRefresh()">重启</button>';
+          + ' <button class="btn btn-ghost btn-sm" data-restart-btn style="padding:2px 8px;font-size:11px" onclick="startBotAndRefresh()">重启</button>';
       } else {
         statusBadge = '<span class="badge badge-warn">已配置</span>';
       }
