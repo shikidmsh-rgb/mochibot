@@ -3,6 +3,7 @@ name: oura
 description: "Oura 智能戒指 — 睡眠、活动、准备度、压力、心率、血氧"
 type: tool
 expose_as_tool: true
+keywords: [sleep, 睡眠, heart rate, 心率, hrv, readiness, stress, oura]
 requires:
   env: [OURA_CLIENT_ID, OURA_CLIENT_SECRET, OURA_REFRESH_TOKEN]
 sense:

@@ -103,6 +103,7 @@ class SkillMeta:
     triggers: list[dict] = field(default_factory=list)
     has_sense: bool = False  # whether skill declares sense: block
     exclude_transports: list[str] = field(default_factory=list)
+    keywords: list[str] = field(default_factory=list)  # prerouter keyword fallback
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +166,7 @@ def _parse_skill_md(md_path: str) -> dict:
         "nudge_meta": None,
         "writes_meta": None,
         "exclude_transports": [],
+        "keywords": [],
     }
 
     if not os.path.exists(md_path):
@@ -348,6 +350,8 @@ def _parse_skill_md(md_path: str) -> dict:
             elif key == "exclude_transports":
                 transports = re.findall(r"[a-z_][a-z0-9_]*", val)
                 result["exclude_transports"] = transports
+            elif key == "keywords":
+                result["keywords"] = [k.strip() for k in val.strip("[]").split(",") if k.strip()]
             else:
                 result["meta"][key] = val
 
@@ -938,6 +942,7 @@ def scan_skill_metadata(skills_dir: str | None = None) -> list[SkillMeta]:
             triggers=parsed.get("triggers", []),
             has_sense=parsed.get("has_sense", False),
             exclude_transports=parsed.get("exclude_transports", []),
+            keywords=parsed.get("keywords", []),
         ))
 
     # ── Startup lint validation ──
@@ -1040,4 +1045,17 @@ def build_tier_defaults(metas: list[SkillMeta]) -> dict[str, str]:
                 result[sub_name] = sub_tier
             elif sub_tier is None and m.tier != "chat":
                 result[sub_name] = m.tier
+    return result
+
+
+def build_skill_keywords(metas: list[SkillMeta]) -> dict[str, tuple[str, ...]]:
+    """Build {skill_name: (keyword, ...)} from SKILL.md keywords fields.
+
+    Only includes skills that declare keywords. Used by the prerouter
+    keyword fallback (zero LLM calls).
+    """
+    result: dict[str, tuple[str, ...]] = {}
+    for m in metas:
+        if m.keywords:
+            result[m.name] = tuple(m.keywords)
     return result

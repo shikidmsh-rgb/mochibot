@@ -33,8 +33,29 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
+def ensure_column(conn: sqlite3.Connection, table: str, column: str, typedef: str) -> bool:
+    """Add *column* to *table* if it does not already exist.
+
+    Safe to call repeatedly (idempotent).  Intended for use inside
+    ``Skill.init_schema()`` for lightweight schema migrations.
+
+    Returns True if the column was added, False if it already existed.
+    """
+    cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {typedef}")
+        logger.info("Migrated %s: added %s", table, column)
+        return True
+    return False
+
+
 def init_db() -> None:
-    """Create tables if they don't exist."""
+    """Create framework-level tables if they don't exist.
+
+    Skill-specific tables are created by each skill's ``init_schema()``
+    method, called separately via ``init_all_skill_schemas()`` after
+    ``discover()``.
+    """
     conn = _connect()
     conn.executescript("""
         -- Chat messages
@@ -70,30 +91,6 @@ def init_db() -> None:
             updated_at TEXT    NOT NULL
         );
 
-        -- Reminders
-        CREATE TABLE IF NOT EXISTS reminders (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id    INTEGER NOT NULL,
-            channel_id INTEGER NOT NULL DEFAULT 0,
-            message    TEXT    NOT NULL,
-            remind_at  TEXT    NOT NULL,
-            fired      INTEGER NOT NULL DEFAULT 0
-        );
-        CREATE INDEX IF NOT EXISTS idx_reminders_pending
-            ON reminders(fired, remind_at);
-
-        -- Todos
-        CREATE TABLE IF NOT EXISTS todos (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id    INTEGER NOT NULL,
-            task       TEXT    NOT NULL,
-            done       INTEGER NOT NULL DEFAULT 0,
-            category   TEXT    NOT NULL DEFAULT '',
-            created_at TEXT    NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_todos_user
-            ON todos(user_id, done);
-
         -- LLM usage tracking
         CREATE TABLE IF NOT EXISTS usage_log (
             id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -128,44 +125,7 @@ def init_db() -> None:
             created_at TEXT    NOT NULL
         );
 
-        -- Habits (defined by user)
-        CREATE TABLE IF NOT EXISTS habits (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id     INTEGER NOT NULL,
-            name        TEXT    NOT NULL,
-            description TEXT    NOT NULL DEFAULT '',
-            active      INTEGER NOT NULL DEFAULT 1,
-            created_at  TEXT    NOT NULL
-        );
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_habits_user_name
-            ON habits(user_id, name);
-
-        -- Habit log entries (each time user marks a habit done)
-        CREATE TABLE IF NOT EXISTS habit_logs (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            habit_id   INTEGER NOT NULL REFERENCES habits(id),
-            user_id    INTEGER NOT NULL,
-            logged_at  TEXT    NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_habit_logs_habit
-            ON habit_logs(habit_id, logged_at);
-
-        -- ──────────────────────────────────────────────────────────
-        -- New tables (Phase 1 parity with private Mochi)
-        -- ──────────────────────────────────────────────────────────
-
-        -- Notes
-        CREATE TABLE IF NOT EXISTS notes (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id    INTEGER NOT NULL,
-            title      TEXT    NOT NULL,
-            content    TEXT    NOT NULL DEFAULT '',
-            category   TEXT    NOT NULL DEFAULT '',
-            created_at TEXT    NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_notes_user ON notes(user_id);
-
-        -- Domain knowledge
+        -- Domain knowledge (reserved)
         CREATE TABLE IF NOT EXISTS knowledge (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id    INTEGER NOT NULL,
@@ -198,23 +158,7 @@ def init_db() -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_ops_context_user_type ON ops_context_items(user_id, context_type);
 
-        -- Health time-series (oura, meals, symptoms, vitals)
-        CREATE TABLE IF NOT EXISTS health_log (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id    INTEGER NOT NULL,
-            date       TEXT    NOT NULL,
-            type       TEXT    NOT NULL,
-            source     TEXT    NOT NULL DEFAULT 'oura_daily',
-            content    TEXT    NOT NULL,
-            metrics    TEXT    DEFAULT NULL,
-            importance INTEGER NOT NULL DEFAULT 1,
-            created_at TEXT    NOT NULL,
-            updated_at TEXT    NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_hl_type_date ON health_log(user_id, type, date DESC);
-        CREATE INDEX IF NOT EXISTS idx_hl_date ON health_log(user_id, date DESC);
-
-        -- Pet device snapshots
+        -- Pet device snapshots (reserved)
         CREATE TABLE IF NOT EXISTS pet_log (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id    INTEGER NOT NULL,
@@ -228,7 +172,7 @@ def init_db() -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_pl_pet_date ON pet_log(user_id, pet_name, date DESC);
 
-        -- Life events triage (events/mood/work)
+        -- Life events triage (reserved)
         CREATE TABLE IF NOT EXISTS life_log (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id    INTEGER NOT NULL,
@@ -242,7 +186,18 @@ def init_db() -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_ll_cat_date ON life_log(user_id, category, date DESC);
 
-        -- Notification queue
+        -- Notes (reserved — NoteSkill uses file-based storage)
+        CREATE TABLE IF NOT EXISTS notes (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id    INTEGER NOT NULL,
+            title      TEXT    NOT NULL,
+            content    TEXT    NOT NULL DEFAULT '',
+            category   TEXT    NOT NULL DEFAULT '',
+            created_at TEXT    NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_notes_user ON notes(user_id);
+
+        -- Notification queue (reserved)
         CREATE TABLE IF NOT EXISTS notifications (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id    INTEGER NOT NULL,
@@ -280,17 +235,6 @@ def init_db() -> None:
             value      TEXT    NOT NULL DEFAULT '',
             updated_at TEXT    NOT NULL,
             UNIQUE(skill_name, key)
-        );
-
-        -- Telegram sticker cache
-        CREATE TABLE IF NOT EXISTS sticker_registry (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id    INTEGER NOT NULL,
-            file_id    TEXT    NOT NULL UNIQUE,
-            set_name   TEXT    DEFAULT '',
-            emoji      TEXT    DEFAULT '',
-            tags       TEXT    DEFAULT '',
-            created_at TEXT    NOT NULL
         );
 
         -- Model registry (admin portal)
@@ -331,7 +275,10 @@ _VEC_AVAILABLE = False
 
 
 def _run_migrations(conn: sqlite3.Connection) -> None:
-    """Safe column additions for existing databases (ALTER TABLE + PRAGMA guard)."""
+    """Safe column additions for framework-level tables.
+
+    Skill-specific migrations live in each skill's ``init_schema()`` method.
+    """
 
     def _has_col(table: str, col: str) -> bool:
         return col in [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
@@ -349,14 +296,6 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
     _add_col("memory_items", "access_count", "INTEGER NOT NULL DEFAULT 0")
     _add_col("memory_items", "last_accessed", "TEXT NOT NULL DEFAULT ''")
     _add_col("memory_items", "embedding", "BLOB DEFAULT NULL")
-
-    # reminders
-    _add_col("reminders", "recurrence", "TEXT DEFAULT NULL")
-
-    # todos
-    _add_col("todos", "nudge_date", "TEXT DEFAULT NULL")
-    _add_col("todos", "source", "TEXT DEFAULT ''")
-    _add_col("todos", "completed_at", "TEXT DEFAULT NULL")
 
     # usage_log
     for col, typedef in [
@@ -379,29 +318,6 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE heartbeat_log ADD COLUMN thought TEXT NOT NULL DEFAULT ''")
         conn.execute("UPDATE heartbeat_log SET trigger = state, thought = summary")
         logger.info("Migrated heartbeat_log: state/action/summary → trigger/observations/actions/thought")
-
-    # habits
-    for col, typedef in [
-        ("frequency", "TEXT NOT NULL DEFAULT 'daily'"),
-        ("category", "TEXT NOT NULL DEFAULT ''"),
-        ("downstream", "TEXT NOT NULL DEFAULT ''"),
-        ("importance", "TEXT NOT NULL DEFAULT 'normal'"),
-        ("context", "TEXT NOT NULL DEFAULT ''"),
-        ("paused_until", "TEXT DEFAULT NULL"),
-    ]:
-        _add_col("habits", col, typedef)
-
-    # habit_logs
-    _add_col("habit_logs", "note", "TEXT NOT NULL DEFAULT ''")
-    _add_col("habit_logs", "period", "TEXT NOT NULL DEFAULT ''")
-
-    # habit snooze support
-    _add_col("habits", "snoozed_until", "TEXT DEFAULT NULL")
-
-    # sticker_registry index
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_sticker_tags ON sticker_registry(tags)"
-    )
 
     conn.commit()
 
@@ -1320,161 +1236,22 @@ def update_core_memory(user_id: int, content: str) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Reminders
+# Reminders — DEPRECATED: import from mochi.skills.reminder.queries instead
 # ═══════════════════════════════════════════════════════════════════════════
 
-def create_reminder(user_id: int, channel_id: int, message: str, remind_at: str) -> int:
-    conn = _connect()
-    cur = conn.execute(
-        "INSERT INTO reminders (user_id, channel_id, message, remind_at) VALUES (?, ?, ?, ?)",
-        (user_id, channel_id, message, remind_at),
-    )
-    conn.commit()
-    rid = cur.lastrowid
-    conn.close()
-    return rid
-
-
-def get_pending_reminders() -> list[dict]:
-    now = datetime.now(TZ).isoformat()
-    conn = _connect()
-    rows = conn.execute(
-        "SELECT id, user_id, channel_id, message, remind_at FROM reminders WHERE fired = 0 AND remind_at <= ?",
-        (now,),
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
-def mark_reminder_fired(reminder_id: int) -> None:
-    conn = _connect()
-    conn.execute("UPDATE reminders SET fired = 1 WHERE id = ?", (reminder_id,))
-    conn.commit()
-    conn.close()
-
-
-def get_next_pending_reminder() -> dict | None:
-    """Return the earliest unfired reminder, or None."""
-    conn = _connect()
-    row = conn.execute(
-        "SELECT id, user_id, channel_id, message, remind_at, recurrence "
-        "FROM reminders WHERE fired = 0 ORDER BY remind_at ASC LIMIT 1",
-    ).fetchone()
-    conn.close()
-    return dict(row) if row else None
-
-
-def reschedule_reminder(reminder_id: int, new_remind_at: str) -> None:
-    """Update remind_at for a recurring reminder (reset fired to 0)."""
-    conn = _connect()
-    conn.execute(
-        "UPDATE reminders SET remind_at = ?, fired = 0 WHERE id = ?",
-        (new_remind_at, reminder_id),
-    )
-    conn.commit()
-    conn.close()
-
+from mochi.skills.reminder.queries import (  # noqa: E402, F401  # re-export
+    create_reminder, get_pending_reminders, mark_reminder_fired,
+    get_next_pending_reminder, reschedule_reminder,
+)
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Todos
+# Todos — DEPRECATED: import from mochi.skills.todo.queries instead
 # ═══════════════════════════════════════════════════════════════════════════
 
-def create_todo(user_id: int, task: str,
-                nudge_date: str | None = None) -> int:
-    """Add a todo item. Returns the new todo id."""
-    now = datetime.now(TZ).isoformat()
-    conn = _connect()
-    cur = conn.execute(
-        "INSERT INTO todos (user_id, task, created_at, nudge_date)"
-        " VALUES (?, ?, ?, ?)",
-        (user_id, task, now, nudge_date),
-    )
-    conn.commit()
-    tid = cur.lastrowid
-    conn.close()
-    return tid
-
-
-def get_todos(user_id: int, include_done: bool = False) -> list[dict]:
-    """Return todos for a user."""
-    conn = _connect()
-    conditions = ["user_id = ?"]
-    params: list = [user_id]
-    if not include_done:
-        conditions.append("done = 0")
-    where = " AND ".join(conditions)
-    rows = conn.execute(
-        f"SELECT id, task, done, created_at, nudge_date FROM todos"
-        f" WHERE {where} ORDER BY id",
-        params,
-    ).fetchall()
-    conn.close()
-    return [
-        {"id": r["id"], "task": r["task"], "done": bool(r["done"]),
-         "created_at": r["created_at"], "nudge_date": r["nudge_date"]}
-        for r in rows
-    ]
-
-
-def complete_todo(user_id: int, todo_id: int) -> bool:
-    """Mark a todo as done. Returns True if updated."""
-    now = datetime.now(TZ).isoformat()
-    conn = _connect()
-    cursor = conn.execute(
-        "UPDATE todos SET done = 1, completed_at = ? WHERE id = ? AND user_id = ?",
-        (now, todo_id, user_id),
-    )
-    updated = cursor.rowcount > 0
-    conn.commit()
-    conn.close()
-    return updated
-
-
-def delete_todo(user_id: int, todo_id: int) -> bool:
-    """Delete a todo. Returns True if deleted."""
-    conn = _connect()
-    cursor = conn.execute(
-        "DELETE FROM todos WHERE id = ? AND user_id = ?", (todo_id, user_id)
-    )
-    deleted = cursor.rowcount > 0
-    conn.commit()
-    conn.close()
-    return deleted
-
-
-def update_todo(user_id: int, todo_id: int, **fields) -> bool:
-    """Update mutable fields on a todo. Returns True if updated.
-
-    Supported fields: task, nudge_date.
-    """
-    allowed = {"task", "nudge_date"}
-    to_set = {k: v for k, v in fields.items() if k in allowed}
-    if not to_set:
-        return False
-    set_clause = ", ".join(f"{k} = ?" for k in to_set)
-    params = list(to_set.values()) + [todo_id, user_id]
-    conn = _connect()
-    cursor = conn.execute(
-        f"UPDATE todos SET {set_clause} WHERE id = ? AND user_id = ?", params
-    )
-    updated = cursor.rowcount > 0
-    conn.commit()
-    conn.close()
-    return updated
-
-
-def purge_done_todos(days: int = 30) -> int:
-    """Delete completed todos older than *days*. Returns count deleted."""
-    cutoff = (datetime.now(TZ) - timedelta(days=days)).isoformat()
-    conn = _connect()
-    cursor = conn.execute(
-        "DELETE FROM todos WHERE done = 1 AND completed_at IS NOT NULL AND completed_at < ?",
-        (cutoff,),
-    )
-    deleted = cursor.rowcount
-    conn.commit()
-    conn.close()
-    return deleted
+from mochi.skills.todo.queries import (  # noqa: E402, F401  # re-export
+    create_todo, get_todos, complete_todo, delete_todo, update_todo,
+    purge_done_todos,
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1586,91 +1363,12 @@ def get_awake_tick_count_today() -> int:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Health Log
+# Health Log — DEPRECATED: import from mochi.skills.meal.queries instead
 # ═══════════════════════════════════════════════════════════════════════════
 
-def save_health_log(user_id: int, date: str, log_type: str, content: str,
-                    source: str = "oura_daily", importance: int = 1,
-                    metrics: str | None = None) -> int:
-    """Insert or upsert a health log record.
-
-    Upsert rule: same (user_id, date, type, source) → UPDATE content/metrics/updated_at.
-    Different source with same date+type → INSERT (allows multiple sources to coexist).
-    """
-    now = datetime.now(TZ).isoformat()
-    conn = _connect()
-    existing = conn.execute(
-        "SELECT id FROM health_log "
-        "WHERE user_id = ? AND date = ? AND type = ? AND source = ? LIMIT 1",
-        (user_id, date, log_type, source),
-    ).fetchone()
-
-    if existing:
-        conn.execute(
-            "UPDATE health_log SET content = ?, metrics = ?, importance = MAX(importance, ?), "
-            "updated_at = ? WHERE id = ?",
-            (content, metrics, importance, now, existing["id"]),
-        )
-        conn.commit()
-        conn.close()
-        return existing["id"]
-
-    conn.execute(
-        "INSERT INTO health_log (user_id, date, type, source, content, metrics, "
-        "importance, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (user_id, date, log_type, source, content, metrics, importance, now, now),
-    )
-    row_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-    conn.commit()
-    conn.close()
-    return row_id
-
-
-def query_health_log(user_id: int, types: list[str] | None = None,
-                     days: int = 7, date: str | None = None,
-                     limit: int = 200) -> list[dict]:
-    """Query health_log by type(s) and date range.
-
-    Returns list of dicts sorted by date ASC.
-    If date is given, returns only that day's records (ignores days param).
-    types=None returns all types.
-    """
-    conn = _connect()
-    params: list = [user_id]
-    sql = ("SELECT id, date, type, source, content, metrics, importance, "
-           "created_at, updated_at FROM health_log WHERE user_id = ?")
-
-    if date:
-        sql += " AND date = ?"
-        params.append(date)
-    else:
-        cutoff = (datetime.now(TZ) - timedelta(days=days)).strftime("%Y-%m-%d")
-        sql += " AND date >= ?"
-        params.append(cutoff)
-
-    if types:
-        type_ph = ",".join("?" * len(types))
-        sql += f" AND type IN ({type_ph})"
-        params.extend(types)
-
-    sql += " ORDER BY date ASC LIMIT ?"
-    params.append(limit)
-
-    rows = conn.execute(sql, params).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
-def delete_health_log_items(item_ids: list[int]) -> int:
-    """Hard delete health_log rows by id list. Returns count deleted."""
-    if not item_ids:
-        return 0
-    conn = _connect()
-    ph = ",".join("?" * len(item_ids))
-    conn.execute(f"DELETE FROM health_log WHERE id IN ({ph})", item_ids)
-    conn.commit()
-    conn.close()
-    return len(item_ids)
+from mochi.skills.meal.queries import (  # noqa: E402, F401  # re-export
+    save_health_log, query_health_log, delete_health_log_items,
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1763,226 +1461,16 @@ def get_active_todo_count(user_id: int) -> int:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Habits
+# Habits — DEPRECATED: import from mochi.skills.habit.queries instead
 # ═══════════════════════════════════════════════════════════════════════════
 
-def add_habit(user_id: int, name: str, frequency: str,
-              category: str = "", importance: str = "normal",
-              context: str = "") -> int:
-    """Create a new habit. Returns the habit id.
-
-    frequency: "daily:N" (N times/day) or "weekly:N" (N times/week)
-               or "weekly_on:DAY,...:N".
-    importance: "important" or "normal".
-    context: descriptive note (e.g. "morning and evening, after meals").
-    """
-    now = datetime.now(TZ).isoformat()
-    conn = _connect()
-    cursor = conn.execute(
-        "INSERT INTO habits (user_id, name, frequency, category, "
-        "importance, context, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (user_id, name, frequency, category, importance, context, now),
-    )
-    habit_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
-    return habit_id
-
-
-def list_habits(user_id: int, active_only: bool = True) -> list[dict]:
-    """Return habits for a user."""
-    conn = _connect()
-    if active_only:
-        rows = conn.execute(
-            "SELECT * FROM habits WHERE user_id = ? AND active = 1 ORDER BY id",
-            (user_id,),
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            "SELECT * FROM habits WHERE user_id = ? ORDER BY id",
-            (user_id,),
-        ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
-def deactivate_habit(user_id: int, habit_id: int) -> bool:
-    """Deactivate (soft-delete) a habit. Returns True if updated."""
-    conn = _connect()
-    cursor = conn.execute(
-        "UPDATE habits SET active = 0 WHERE id = ? AND user_id = ?",
-        (habit_id, user_id),
-    )
-    updated = cursor.rowcount > 0
-    conn.commit()
-    conn.close()
-    return updated
-
-
-def update_habit(habit_id: int, **fields) -> bool:
-    """Update mutable fields on a habit. Returns True if updated.
-
-    Allowed fields: name, context, importance, frequency.
-    """
-    allowed = {"name", "context", "importance", "frequency"}
-    updates = {k: v for k, v in fields.items() if k in allowed and v is not None}
-    if not updates:
-        return False
-    set_clause = ", ".join(f"{k} = ?" for k in updates)
-    values = list(updates.values()) + [habit_id]
-    conn = _connect()
-    cursor = conn.execute(
-        f"UPDATE habits SET {set_clause} WHERE id = ? AND active = 1",
-        values,
-    )
-    updated = cursor.rowcount > 0
-    conn.commit()
-    conn.close()
-    return updated
-
-
-def checkin_habit(habit_id: int, user_id: int, period: str,
-                  note: str = "") -> int:
-    """Record a check-in for a habit. Returns the log id."""
-    now = datetime.now(TZ).isoformat()
-    conn = _connect()
-    cursor = conn.execute(
-        "INSERT INTO habit_logs (habit_id, user_id, note, logged_at, period) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (habit_id, user_id, note, now, period),
-    )
-    log_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
-    return log_id
-
-
-def get_habit_checkins(habit_id: int, period: str) -> list[dict]:
-    """Return check-in logs for a habit in a specific period."""
-    conn = _connect()
-    rows = conn.execute(
-        "SELECT * FROM habit_logs WHERE habit_id = ? AND period = ? "
-        "ORDER BY logged_at",
-        (habit_id, period),
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
-def delete_habit_checkin(log_id: int) -> bool:
-    """Delete a specific habit check-in log by its id. Returns True if deleted."""
-    conn = _connect()
-    cursor = conn.execute("DELETE FROM habit_logs WHERE id = ?", (log_id,))
-    conn.commit()
-    conn.close()
-    return cursor.rowcount > 0
-
-
-def get_habit_stats(habit_id: int, periods: list[str]) -> dict:
-    """Return check-in counts keyed by period for a habit.
-
-    periods: list of period strings, e.g. ["2026-02-22", "2026-02-21"].
-    Returns {period: count}.
-    """
-    if not periods:
-        return {}
-    conn = _connect()
-    placeholders = ",".join("?" for _ in periods)
-    rows = conn.execute(
-        f"SELECT period, COUNT(*) as cnt FROM habit_logs "
-        f"WHERE habit_id = ? AND period IN ({placeholders}) "
-        f"GROUP BY period",
-        [habit_id] + periods,
-    ).fetchall()
-    conn.close()
-    return {r["period"]: r["cnt"] for r in rows}
-
-
-def get_all_habit_checkins_for_period(user_id: int, period: str) -> dict[int, int]:
-    """Return {habit_id: checkin_count} for all habits for a given period."""
-    conn = _connect()
-    rows = conn.execute(
-        "SELECT habit_id, COUNT(*) as cnt FROM habit_logs "
-        "WHERE user_id = ? AND period = ? GROUP BY habit_id",
-        (user_id, period),
-    ).fetchall()
-    conn.close()
-    return {r["habit_id"]: r["cnt"] for r in rows}
-
-
-def get_latest_habit_checkins_for_period(user_id: int, period: str) -> dict[int, str]:
-    """Return {habit_id: latest_logged_at} for all habits in a period."""
-    conn = _connect()
-    rows = conn.execute(
-        "SELECT habit_id, MAX(logged_at) as latest FROM habit_logs "
-        "WHERE user_id = ? AND period = ? GROUP BY habit_id",
-        (user_id, period),
-    ).fetchall()
-    conn.close()
-    return {r["habit_id"]: r["latest"] for r in rows}
-
-
-def get_habit_streak(
-    habit_id: int, cycle: str, target: int,
-    allowed_days: set[int] | None = None, max_lookback: int = 90,
-) -> int:
-    """Compute current streak (consecutive completed periods) for a habit.
-
-    For daily habits: walks backwards from yesterday, skipping non-allowed days.
-    For weekly habits: walks backwards from last week.
-    Returns 0 if the most recent eligible period was missed.
-    """
-    now = datetime.now(TZ)
-    if cycle == "daily":
-        periods = []
-        for i in range(1, max_lookback + 1):
-            d = now - timedelta(days=i)
-            if allowed_days is not None and d.weekday() not in allowed_days:
-                continue
-            periods.append(d.strftime("%Y-%m-%d"))
-    else:
-        periods = []
-        for i in range(1, max_lookback // 7 + 1):
-            d = now - timedelta(weeks=i)
-            periods.append(d.strftime("%G-W%V"))
-
-    if not periods:
-        return 0
-
-    stats = get_habit_stats(habit_id, periods)
-    streak = 0
-    for p in periods:
-        if stats.get(p, 0) >= target:
-            streak += 1
-        else:
-            break
-    return streak
-
-
-def pause_habit(user_id: int, habit_id: int, until_date: str) -> bool:
-    """Pause a habit until the given ISO date (inclusive). Returns True if updated."""
-    conn = _connect()
-    cur = conn.execute(
-        "UPDATE habits SET paused_until = ? WHERE id = ? AND user_id = ? AND active = 1",
-        (until_date, habit_id, user_id),
-    )
-    conn.commit()
-    ok = cur.rowcount > 0
-    conn.close()
-    return ok
-
-
-def resume_habit(user_id: int, habit_id: int) -> bool:
-    """Resume a paused habit (clear paused_until). Returns True if updated."""
-    conn = _connect()
-    cur = conn.execute(
-        "UPDATE habits SET paused_until = NULL WHERE id = ? AND user_id = ? AND active = 1",
-        (habit_id, user_id),
-    )
-    conn.commit()
-    ok = cur.rowcount > 0
-    conn.close()
-    return ok
+from mochi.skills.habit.queries import (  # noqa: E402, F401  # re-export
+    add_habit, list_habits, deactivate_habit, update_habit,
+    checkin_habit, get_habit_checkins, delete_habit_checkin,
+    get_habit_stats, get_all_habit_checkins_for_period,
+    get_latest_habit_checkins_for_period, get_habit_streak,
+    pause_habit, resume_habit,
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2057,58 +1545,9 @@ def delete_skill_config(skill_name: str, key: str) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Sticker Registry
+# Sticker Registry — DEPRECATED: import from mochi.skills.sticker.queries instead
 # ═══════════════════════════════════════════════════════════════════════════
 
-def save_sticker(user_id: int, file_id: str, set_name: str = "",
-                 emoji: str = "", tags: str = "") -> int | None:
-    """Save a learned sticker. Returns rowid on success, None if duplicate."""
-    conn = _connect()
-    try:
-        cur = conn.execute(
-            "INSERT OR IGNORE INTO sticker_registry "
-            "(user_id, file_id, set_name, emoji, tags, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (user_id, file_id, set_name, emoji, tags,
-             datetime.now(TZ).isoformat()),
-        )
-        conn.commit()
-        return cur.lastrowid if cur.rowcount > 0 else None
-    finally:
-        conn.close()
-
-
-def get_stickers_by_tag(tag: str, user_id: int = 0) -> list[dict]:
-    """Find stickers whose tags contain the given keyword."""
-    conn = _connect()
-    rows = conn.execute(
-        "SELECT id, user_id, file_id, set_name, emoji, tags, created_at "
-        "FROM sticker_registry WHERE tags LIKE ? "
-        "AND (user_id = ? OR user_id = 0)",
-        (f"%{tag}%", user_id),
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
-def get_sticker_count(user_id: int = 0) -> int:
-    """Count learned stickers for a user."""
-    conn = _connect()
-    row = conn.execute(
-        "SELECT COUNT(*) FROM sticker_registry "
-        "WHERE user_id = ? OR user_id = 0",
-        (user_id,),
-    ).fetchone()
-    conn.close()
-    return row[0] if row else 0
-
-
-def delete_sticker(file_id: str) -> bool:
-    """Delete a sticker by file_id. Returns True if deleted."""
-    conn = _connect()
-    cur = conn.execute(
-        "DELETE FROM sticker_registry WHERE file_id = ?", (file_id,)
-    )
-    conn.commit()
-    conn.close()
-    return cur.rowcount > 0
+from mochi.skills.sticker.queries import (  # noqa: E402, F401  # re-export
+    save_sticker, get_stickers_by_tag, get_sticker_count, delete_sticker,
+)

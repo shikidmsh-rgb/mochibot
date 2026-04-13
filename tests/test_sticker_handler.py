@@ -81,7 +81,7 @@ class TestStickerSkillExecute:
     async def test_send_no_stickers_learned(self):
         """send_sticker when no stickers exist returns guidance message."""
         ctx = self._make_context("send_sticker", {"mood": "开心"})
-        with patch("mochi.db.get_sticker_count", return_value=0):
+        with patch("mochi.skills.sticker.queries.get_sticker_count", return_value=0):
             result = await StickerSkill().execute(ctx)
         assert "No stickers" in result.output or "no stickers" in result.output.lower()
 
@@ -90,8 +90,8 @@ class TestStickerSkillExecute:
         """send_sticker finds sticker by exact tag match."""
         sticker = {"file_id": "ABC123", "tags": "开心,快乐", "emoji": "😊"}
         ctx = self._make_context("send_sticker", {"mood": "开心"})
-        with patch("mochi.db.get_sticker_count", return_value=5), \
-             patch("mochi.db.get_stickers_by_tag", return_value=[sticker]):
+        with patch("mochi.skills.sticker.queries.get_sticker_count", return_value=5), \
+             patch("mochi.skills.sticker.queries.get_stickers_by_tag", return_value=[sticker]):
             result = await StickerSkill().execute(ctx)
         assert "STICKER:ABC123" in result.output
         assert result.success
@@ -101,8 +101,8 @@ class TestStickerSkillExecute:
         """send_sticker falls back to random when no tag matches."""
         sticker = {"file_id": "RAND1", "tags": "无关", "emoji": "🤔"}
         ctx = self._make_context("send_sticker", {"mood": "xyz"})
-        with patch("mochi.db.get_sticker_count", return_value=3), \
-             patch("mochi.db.get_stickers_by_tag", return_value=[]), \
+        with patch("mochi.skills.sticker.queries.get_sticker_count", return_value=3), \
+             patch("mochi.skills.sticker.queries.get_stickers_by_tag", return_value=[]), \
              patch("mochi.skills.sticker.handler._get_all_stickers", return_value=[sticker]):
             result = await StickerSkill().execute(ctx)
         assert "STICKER:RAND1" in result.output
@@ -123,8 +123,8 @@ class TestStickerSkillLearn:
         """learn_sticker saves to DB and returns success info."""
         skill = StickerSkill()
         with patch("mochi.skills.sticker.handler.generate_sticker_tags", new_callable=AsyncMock, return_value="开心,快乐"), \
-             patch("mochi.db.save_sticker", return_value=42), \
-             patch("mochi.db.get_sticker_count", return_value=10):
+             patch("mochi.skills.sticker.queries.save_sticker", return_value=42), \
+             patch("mochi.skills.sticker.queries.get_sticker_count", return_value=10):
             result = await skill.learn_sticker(
                 user_id=1, file_id="FILE1", set_name="set", emoji="😊", caption="test"
             )
@@ -137,8 +137,8 @@ class TestStickerSkillLearn:
         """learn_sticker when DB returns None (duplicate) sets learned=False."""
         skill = StickerSkill()
         with patch("mochi.skills.sticker.handler.generate_sticker_tags", new_callable=AsyncMock, return_value="tag"), \
-             patch("mochi.db.save_sticker", return_value=None), \
-             patch("mochi.db.get_sticker_count", return_value=5):
+             patch("mochi.skills.sticker.queries.save_sticker", return_value=None), \
+             patch("mochi.skills.sticker.queries.get_sticker_count", return_value=5):
             result = await skill.learn_sticker(
                 user_id=1, file_id="DUP", set_name="set", emoji="😊"
             )
@@ -155,7 +155,7 @@ class TestDeleteLastSticker:
             trigger="tool_call", user_id=1, channel_id=100,
             tool_name="delete_last_sticker",
         )
-        with patch("mochi.db.delete_sticker", return_value=True):
+        with patch("mochi.skills.sticker.queries.delete_sticker", return_value=True):
             result = await StickerSkill().execute(ctx)
         assert result.success
         assert "删除" in result.output

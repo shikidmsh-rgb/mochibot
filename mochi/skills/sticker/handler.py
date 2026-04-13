@@ -72,11 +72,26 @@ def get_last_sent_sticker(chat_id: int) -> str | None:
 
 class StickerSkill(Skill):
 
+    def init_schema(self, conn) -> None:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS sticker_registry (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id    INTEGER NOT NULL,
+                file_id    TEXT    NOT NULL UNIQUE,
+                set_name   TEXT    DEFAULT '',
+                emoji      TEXT    DEFAULT '',
+                tags       TEXT    DEFAULT '',
+                created_at TEXT    NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_sticker_tags
+                ON sticker_registry(tags);
+        """)
+
     async def learn_sticker(self, user_id: int, file_id: str,
                             set_name: str, emoji: str,
                             caption: str = "") -> dict:
         """Learn a new sticker. Returns {learned, tags, count}."""
-        from mochi.db import save_sticker, get_sticker_count
+        from mochi.skills.sticker.queries import save_sticker, get_sticker_count
 
         tags = await generate_sticker_tags(emoji, set_name, caption)
         row_id = save_sticker(
@@ -99,7 +114,7 @@ class StickerSkill(Skill):
         if not mood:
             return SkillResult(output="Please specify a mood or tag for the sticker.", success=False)
 
-        from mochi.db import get_stickers_by_tag, get_sticker_count
+        from mochi.skills.sticker.queries import get_stickers_by_tag, get_sticker_count
 
         total = get_sticker_count(context.user_id)
         log.info("send_sticker: mood=%s, user_id=%s, total=%d", mood, context.user_id, total)
@@ -139,7 +154,7 @@ class StickerSkill(Skill):
 
     @staticmethod
     def _delete_last(chat_id: int) -> SkillResult:
-        from mochi.db import delete_sticker
+        from mochi.skills.sticker.queries import delete_sticker
 
         file_id = get_last_sent_sticker(chat_id)
         if not file_id:

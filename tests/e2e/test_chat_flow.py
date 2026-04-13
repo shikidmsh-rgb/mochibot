@@ -4,7 +4,9 @@ import pytest
 
 from mochi.transport import IncomingMessage
 from mochi.ai_client import chat
-from mochi.db import get_recent_messages, recall_memory, get_pending_reminders, get_todos
+from mochi.db import get_recent_messages, recall_memory
+from mochi.skills.reminder.queries import get_pending_reminders
+from mochi.skills.todo.queries import get_todos
 from tests.e2e.mock_llm import make_response, make_tool_call
 
 

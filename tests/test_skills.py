@@ -402,8 +402,10 @@ class TestSkillExecution:
     async def test_todo_skill_add(self, tmp_path, monkeypatch):
         """Test todo skill execution."""
         import mochi.db as db_module
+        import mochi.skills as skill_registry
         monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "test.db")
         db_module.init_db()
+        skill_registry.init_all_skill_schemas()
 
         from mochi.skills.todo.handler import TodoSkill
         skill = TodoSkill()
@@ -420,8 +422,10 @@ class TestSkillExecution:
     async def test_reminder_skill_create(self, tmp_path, monkeypatch):
         """Test reminder skill execution."""
         import mochi.db as db_module
+        import mochi.skills as skill_registry
         monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "test.db")
         db_module.init_db()
+        skill_registry.init_all_skill_schemas()
 
         from mochi.skills.reminder.handler import ReminderSkill
         skill = ReminderSkill()
@@ -511,8 +515,10 @@ class TestSkillConfigDb:
     @pytest.fixture(autouse=True)
     def fresh_db(self, tmp_path, monkeypatch):
         import mochi.db as db_module
+        import mochi.skills as skill_registry
         monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "test.db")
         db_module.init_db()
+        skill_registry.init_all_skill_schemas()
 
     def test_get_set_skill_config(self):
         from mochi.db import get_skill_config, set_skill_config
@@ -559,8 +565,10 @@ class TestSkillGetConfig:
     @pytest.fixture(autouse=True)
     def fresh_db(self, tmp_path, monkeypatch):
         import mochi.db as db_module
+        import mochi.skills as skill_registry
         monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "test.db")
         db_module.init_db()
+        skill_registry.init_all_skill_schemas()
 
     def test_get_config_from_env(self, monkeypatch):
         """get_config() should fall back to env when DB is empty."""

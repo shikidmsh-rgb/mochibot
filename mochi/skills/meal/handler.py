@@ -12,13 +12,33 @@ from datetime import datetime
 
 from mochi.config import TZ, logical_today
 from mochi.skills.base import Skill, SkillContext, SkillResult
-from mochi.skills.meal.queries import MEAL_LABELS, VALID_MEAL_TYPES
-from mochi.db import save_health_log, query_health_log, delete_health_log_items
+from mochi.skills.meal.constants import MEAL_LABELS, VALID_MEAL_TYPES
+from mochi.skills.meal.queries import save_health_log, query_health_log, delete_health_log_items
 
 log = logging.getLogger(__name__)
 
 
 class MealSkill(Skill):
+
+    def init_schema(self, conn) -> None:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS health_log (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id    INTEGER NOT NULL,
+                date       TEXT    NOT NULL,
+                type       TEXT    NOT NULL,
+                source     TEXT    NOT NULL DEFAULT 'oura_daily',
+                content    TEXT    NOT NULL,
+                metrics    TEXT    DEFAULT NULL,
+                importance INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT    NOT NULL,
+                updated_at TEXT    NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_hl_type_date
+                ON health_log(user_id, type, date DESC);
+            CREATE INDEX IF NOT EXISTS idx_hl_date
+                ON health_log(user_id, date DESC);
+        """)
 
     async def execute(self, context: SkillContext) -> SkillResult:
         args = context.args

@@ -3,10 +3,28 @@
 from datetime import datetime
 
 from mochi.skills.base import Skill, SkillContext, SkillResult
-from mochi.db import create_todo, get_todos, complete_todo, delete_todo, update_todo
+from mochi.skills.todo.queries import create_todo, get_todos, complete_todo, delete_todo, update_todo
 
 
 class TodoSkill(Skill):
+
+    def init_schema(self, conn) -> None:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS todos (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id    INTEGER NOT NULL,
+                task       TEXT    NOT NULL,
+                done       INTEGER NOT NULL DEFAULT 0,
+                category   TEXT    NOT NULL DEFAULT '',
+                created_at TEXT    NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_todos_user
+                ON todos(user_id, done);
+        """)
+        from mochi.db import ensure_column
+        ensure_column(conn, "todos", "nudge_date", "TEXT DEFAULT NULL")
+        ensure_column(conn, "todos", "source", "TEXT DEFAULT ''")
+        ensure_column(conn, "todos", "completed_at", "TEXT DEFAULT NULL")
 
     async def execute(self, context: SkillContext) -> SkillResult:
         args = context.args

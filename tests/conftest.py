@@ -9,18 +9,27 @@ import pytest
 from datetime import timezone, timedelta
 
 from mochi.db import init_db
+import mochi.skills as skill_registry
 
 
 UTC = timezone.utc
+
+# Ensure skills are discovered once (module-level state)
+_skills_discovered = False
 
 
 @pytest.fixture(autouse=True)
 def fresh_db(tmp_path, monkeypatch):
     """Fresh SQLite database for each test."""
+    global _skills_discovered
     db_path = tmp_path / "unit_test.db"
     import mochi.db as db_module
     monkeypatch.setattr(db_module, "DB_PATH", db_path)
     init_db()
+    if not _skills_discovered:
+        skill_registry.discover()
+        _skills_discovered = True
+    skill_registry.init_all_skill_schemas()
     yield db_path
 
 

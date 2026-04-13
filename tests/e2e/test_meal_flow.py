@@ -8,7 +8,7 @@ import pytest
 
 from mochi.transport import IncomingMessage
 from mochi.ai_client import chat
-from mochi.db import query_health_log
+from mochi.skills.meal.queries import query_health_log
 from tests.e2e.mock_llm import make_response, make_tool_call
 
 

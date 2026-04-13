@@ -20,8 +20,10 @@ def fresh_db(tmp_path, monkeypatch):
     """Fresh SQLite database for each test."""
     db_path = tmp_path / "e2e_test.db"
     import mochi.db as db_module
+    import mochi.skills as skill_registry
     monkeypatch.setattr(db_module, "DB_PATH", db_path)
     init_db()
+    skill_registry.init_all_skill_schemas()
     yield db_path
 
 
@@ -77,6 +79,7 @@ def discover_skills():
     import mochi.skills as skill_registry
     if not skill_registry.get_tools():
         skill_registry.discover()
+        skill_registry.init_all_skill_schemas()
 
 
 # ── Tool policy reset ──

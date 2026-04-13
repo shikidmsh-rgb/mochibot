@@ -329,12 +329,14 @@ class TestHabitDb:
     @pytest.fixture(autouse=True)
     def fresh_db(self, tmp_path, monkeypatch):
         import mochi.db as db_module
+        import mochi.skills as skill_registry
         from mochi.db import init_db
         monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "test.db")
         init_db()
+        skill_registry.init_all_skill_schemas()
 
     def test_create_and_list(self):
-        from mochi.db import add_habit, list_habits
+        from mochi.skills.habit.queries import add_habit, list_habits
         add_habit(1, "meditation", frequency="daily:1")
         habits = list_habits(1)
         assert len(habits) == 1
@@ -342,7 +344,7 @@ class TestHabitDb:
         assert habits[0]["frequency"] == "daily:1"
 
     def test_checkin_habit(self):
-        from mochi.db import add_habit, checkin_habit, get_habit_checkins
+        from mochi.skills.habit.queries import add_habit, checkin_habit, get_habit_checkins
         hid = add_habit(1, "exercise", frequency="daily:1")
         checkin_habit(hid, 1, "2026-04-11", note="morning run")
         checkins = get_habit_checkins(hid, "2026-04-11")
@@ -350,7 +352,7 @@ class TestHabitDb:
         assert checkins[0]["note"] == "morning run"
 
     def test_deactivate_habit(self):
-        from mochi.db import add_habit, deactivate_habit, list_habits
+        from mochi.skills.habit.queries import add_habit, deactivate_habit, list_habits
         hid = add_habit(1, "reading", frequency="daily:1")
         assert len(list_habits(1)) == 1
         ok = deactivate_habit(1, hid)
@@ -359,7 +361,7 @@ class TestHabitDb:
 
     def test_streak_accumulates(self):
         from datetime import datetime, timezone, timedelta
-        from mochi.db import add_habit, get_habit_streak
+        from mochi.skills.habit.queries import add_habit, get_habit_streak
         import mochi.db as db_mod
 
         hid = add_habit(1, "running", frequency="daily:1")
@@ -458,9 +460,11 @@ class TestActivityPatternObserver:
     @pytest.fixture(autouse=True)
     def fresh_db(self, tmp_path, monkeypatch):
         import mochi.db as db_module
+        import mochi.skills as skill_registry
         from mochi.db import init_db
         monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "test.db")
         init_db()
+        skill_registry.init_all_skill_schemas()
 
     def _set_owner(self, monkeypatch, uid=1):
         import mochi.config as cfg
@@ -545,9 +549,11 @@ class TestDailyMessageCounts:
     @pytest.fixture(autouse=True)
     def fresh_db(self, tmp_path, monkeypatch):
         import mochi.db as db_module
+        import mochi.skills as skill_registry
         from mochi.db import init_db
         monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "test.db")
         init_db()
+        skill_registry.init_all_skill_schemas()
 
     def test_returns_n_days(self):
         from mochi.db import get_daily_message_counts
@@ -577,9 +583,11 @@ class TestRecentConversationObserver:
     @pytest.fixture(autouse=True)
     def fresh_db(self, tmp_path, monkeypatch):
         import mochi.db as db_module
+        import mochi.skills as skill_registry
         from mochi.db import init_db
         monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "test.db")
         init_db()
+        skill_registry.init_all_skill_schemas()
 
     def _set_owner(self, monkeypatch, uid=1):
         import mochi.config as cfg

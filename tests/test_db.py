@@ -46,8 +46,10 @@ def fresh_db(tmp_path, monkeypatch):
     db_path = tmp_path / "test.db"
     # Patch the DB_PATH used by db.py
     import mochi.db as db_module
+    import mochi.skills as skill_registry
     monkeypatch.setattr(db_module, "DB_PATH", db_path)
     init_db()
+    skill_registry.init_all_skill_schemas()
     yield db_path
 
 
