@@ -328,6 +328,19 @@ class WeixinTransport(Transport):
             self._owner_weixin_id = from_user
             log.info("WeChat: owner ID learned: %s", from_user)
 
+        # System command: /restart (owner only)
+        if text.strip() == "/restart":
+            if from_user != self._owner_weixin_id:
+                return
+            try:
+                await self._weixin_send_message(
+                    from_user, "正在重启...", context_token)
+            except Exception as e:
+                log.warning("WeChat: failed to send restart ack: %s", e)
+            from mochi.shutdown import request_restart
+            request_restart(OWNER_USER_ID or 0)
+            return
+
         # Heartbeat wake signals
         try:
             self._dispatch_state_signals()

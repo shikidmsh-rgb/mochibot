@@ -1151,6 +1151,8 @@ async function loadWelcome() {
       if (botStatus.running) {
         statusBadge = '<span class="badge badge-ok">运行中</span>'
           + ' <button class="btn btn-ghost btn-sm" data-restart-btn style="padding:2px 8px;font-size:11px" onclick="startBotAndRefresh()">重启</button>';
+      } else if (botStatus.exit_code === 42) {
+        statusBadge = '<span class="badge badge-warn">重启中...</span>';
       } else if (botStatus.exit_code !== undefined && botStatus.exit_code !== null) {
         statusBadge = '<span class="badge badge-err">异常退出 (code ' + botStatus.exit_code + ')</span>'
           + ' <button class="btn btn-ghost btn-sm" data-restart-btn style="padding:2px 8px;font-size:11px" onclick="startBotAndRefresh()">重启</button>';

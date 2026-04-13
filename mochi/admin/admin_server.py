@@ -35,6 +35,7 @@ _PROMPTS_DIR = _PROJECT_ROOT / "prompts"
 _bot_process: subprocess.Popen | None = None
 _bot_log_lines: collections.deque = collections.deque(maxlen=500)
 _bot_lock = threading.Lock()
+_restart_enabled = True          # False after manual _kill_bot(); True on _start
 
 
 def _bot_reader_thread(proc: subprocess.Popen):
@@ -47,9 +48,25 @@ def _bot_reader_thread(proc: subprocess.Popen):
         pass
 
 
+_RESTART_EXIT_CODE = 42
+
+
+def _bot_monitor_thread(proc: subprocess.Popen):
+    """Watch for bot exit. Auto-restart on RESTART_EXIT_CODE."""
+    try:
+        rc = proc.wait()
+        if rc == _RESTART_EXIT_CODE and _restart_enabled:
+            log.info("Bot exited with restart code %d — auto-restarting...",
+                     _RESTART_EXIT_CODE)
+            time.sleep(2)  # let old transport connections close
+            _start_bot_process()
+    except Exception as e:
+        log.warning("Bot monitor thread error: %s", e)
+
+
 def _start_bot_process():
     """Start (or restart) the bot subprocess. Returns the new PID."""
-    global _bot_process
+    global _bot_process, _restart_enabled
     _kill_orphaned_bots()
     with _bot_lock:
         if _bot_process and _bot_process.poll() is None:
@@ -59,6 +76,7 @@ def _start_bot_process():
             except subprocess.TimeoutExpired:
                 _bot_process.kill()
             _bot_process = None
+        _restart_enabled = True
         env = {**os.environ, "ADMIN_ENABLED": "false"}
         _bot_log_lines.clear()
         _bot_process = subprocess.Popen(
@@ -72,12 +90,17 @@ def _start_bot_process():
             target=_bot_reader_thread, args=(_bot_process,), daemon=True,
         )
         t.start()
+        m = threading.Thread(
+            target=_bot_monitor_thread, args=(_bot_process,), daemon=True,
+        )
+        m.start()
     return _bot_process.pid
 
 
 def _kill_bot():
     """Terminate the bot subprocess if running."""
-    global _bot_process
+    global _bot_process, _restart_enabled
+    _restart_enabled = False       # prevent monitor from auto-restarting
     with _bot_lock:
         if _bot_process and _bot_process.poll() is None:
             _bot_process.terminate()
