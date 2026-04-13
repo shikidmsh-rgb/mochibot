@@ -66,8 +66,11 @@ class TelegramTransport(Transport):
 
         # Register handlers
         self._app.add_handler(CommandHandler("help", self._cmd_help))
-        self._app.add_handler(CommandHandler("status", self._cmd_status))
+        self._app.add_handler(CommandHandler("heartbeat", self._cmd_heartbeat))
+        self._app.add_handler(CommandHandler("status", self._cmd_heartbeat))
         self._app.add_handler(CommandHandler("cost", self._cmd_cost))
+        self._app.add_handler(CommandHandler("notes", self._cmd_notes))
+        self._app.add_handler(CommandHandler("diary", self._cmd_diary))
         self._app.add_handler(CommandHandler("restart", self._cmd_restart))
         self._app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message)
@@ -124,8 +127,10 @@ class TelegramTransport(Transport):
             "直接跟我聊天就行，不用特殊格式。\n\n"
             "指令：\n"
             "/help — 显示本帮助\n"
-            "/status — 系统状态\n"
+            "/heartbeat — 心跳状态\n"
             "/cost — Token 用量统计\n"
+            "/notes — 查看笔记\n"
+            "/diary — 查看今日日記\n"
             "/restart — 重启 Bot"
         )
 
@@ -136,7 +141,7 @@ class TelegramTransport(Transport):
         from mochi.shutdown import request_restart
         request_restart(update.effective_chat.id)
 
-    async def _cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def _cmd_heartbeat(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not _is_owner(update.effective_user.id):
             return
         from mochi.heartbeat import get_stats
@@ -188,6 +193,38 @@ class TelegramTransport(Transport):
         lines += _format_block("📊 本月", s["month"]["by_model"])
 
         await update.message.reply_text("\n".join(lines))
+
+    async def _cmd_notes(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not _is_owner(update.effective_user.id):
+            return
+        from pathlib import Path
+        notes_path = Path(__file__).resolve().parent.parent.parent / "data" / "notes.md"
+        notes = []
+        if notes_path.exists():
+            for line in notes_path.read_text(encoding="utf-8").splitlines():
+                stripped = line.strip()
+                if stripped.startswith("- "):
+                    notes.append(stripped[2:])
+        if not notes:
+            await update.message.reply_text("No notes.")
+            return
+        lines = ["📝 Notes"] + [f"{i+1}. {n}" for i, n in enumerate(notes)]
+        await update.message.reply_text("\n".join(lines))
+
+    async def _cmd_diary(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not _is_owner(update.effective_user.id):
+            return
+        from mochi.diary import diary
+        from mochi.config import logical_today
+        status = diary.read(section="今日状態") or "(无)"
+        journal = diary.read(section="今日日記") or "(无)"
+        today = logical_today()
+        text = (
+            f"📖 今日日記 ({today})\n\n"
+            f"── 今日状態 ──\n{status}\n\n"
+            f"── 今日日記 ──\n{journal}"
+        )
+        await update.message.reply_text(text)
 
     # ── Handlers ──────────────────────────────────────────────
 
