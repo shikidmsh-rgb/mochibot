@@ -132,6 +132,25 @@ select.form-input { cursor:pointer; }
   .sidebar.open { left:0; }
   .sidebar-backdrop.open { display:block; }
   .content { margin-left:0; padding:60px 16px 24px; }
+  /* Modal: fit mobile screens */
+  .modal { width:calc(100vw - 32px); max-width:520px; padding:16px; }
+  /* Cards: stack vertically */
+  .card-row { flex-direction:column; }
+  .card { overflow-x:auto; }
+  /* Stat grid: 2 columns */
+  .stat-grid { grid-template-columns:1fr 1fr; }
+  /* Touch targets */
+  .btn-sm { padding:8px 14px; font-size:13px; }
+  /* Tables: smaller font */
+  .tbl { font-size:12px; }
+  /* Page title */
+  .page-title { font-size:18px; }
+  /* Config form rows: stack label + input vertically */
+  .config-form-row { flex-direction:column !important; align-items:stretch !important; gap:6px !important; }
+  .config-form-row > div[style*="min-width"] { min-width:0 !important; width:100% !important; }
+  .config-form-row .form-input { width:100% !important; min-width:0 !important; }
+  .config-form-row input[style*="width:100px"] { width:100% !important; }
+  .config-form-row input[style*="width:260px"] { width:100% !important; }
 }
 </style>
 </head>
@@ -152,6 +171,7 @@ select.form-input { cursor:pointer; }
     <button class="nav-item" data-page="skills"><span class="nav-icon">⚡</span> 技能</button>
     <button class="nav-item" data-page="prompts"><span class="nav-icon">📝</span> 人格 & Prompts</button>
     <button class="nav-item" data-page="memory"><span class="nav-icon">🧠</span> 记忆库</button>
+    <button class="nav-item" data-page="promptdump" id="nav-promptdump" style="display:none"><span class="nav-icon">🔍</span> Prompt Dump</button>
   </nav>
   <div style="padding:8px 12px; border-top:1px solid var(--border);">
     <button onclick="restartAdminServer()" style="display:flex;align-items:center;gap:6px;padding:8px 10px;border-radius:8px;cursor:pointer;font-size:13px;color:var(--text-dim);border:none;background:none;width:100%;text-align:left;transition:background .15s;" onmouseover="this.style.background='var(--primary-bg)'" onmouseout="this.style.background='none'" id="admin-restart-btn">🔄 重启管理后台</button>
@@ -238,6 +258,21 @@ select.form-input { cursor:pointer; }
     </div>
   </div>
 </section>
+
+<!-- Prompt Dump (debug only, ?debug=1) -->
+<section id="page-promptdump" class="page">
+  <div class="section-header">
+    <h2>Prompt Dump</h2>
+    <div style="display:flex;gap:6px">
+      <button id="pd-mode-chat" class="btn btn-primary btn-sm" onclick="loadPromptDump('chat')">Chat</button>
+      <button id="pd-mode-think" class="btn btn-ghost btn-sm" onclick="loadPromptDump('think')">Think</button>
+      <button class="btn btn-ghost btn-sm" onclick="loadPromptDump()">刷新</button>
+    </div>
+  </div>
+  <div id="promptdump-content">
+    <div class="loading"><div class="spinner"></div> 点击上方按钮加载...</div>
+  </div>
+</section>
 </main>
 
 <!-- Modal -->
@@ -246,7 +281,7 @@ select.form-input { cursor:pointer; }
     <h3 id="model-modal-title">添加模型</h3>
     <div class="form-group"><label class="form-label">名称</label><input class="form-input" id="mm-name" placeholder="例如 my-gpt4o"></div>
     <div class="form-group"><label class="form-label">服务商</label>
-      <select class="form-input" id="mm-provider"><option value="openai">OpenAI（兼容）</option><option value="azure_openai">Azure OpenAI</option><option value="anthropic">Anthropic</option></select>
+      <select class="form-input" id="mm-vendor" onchange="onVendorChange()"><option value="openai">OpenAI</option><option value="deepseek">DeepSeek</option><option value="ollama">Ollama（本地）</option><option value="azure">Azure OpenAI</option><option value="anthropic">Anthropic</option><option value="custom">自定义 OpenAI 兼容</option></select>
     </div>
     <div class="form-group"><label class="form-label">模型</label><input class="form-input" id="mm-model" placeholder="例如 gpt-4o"></div>
     <div class="form-group"><label class="form-label">API Key</label><input class="form-input" id="mm-apikey" type="password" autocomplete="new-password" placeholder="sk-..."></div>
@@ -272,13 +307,13 @@ select.form-input { cursor:pointer; }
       <textarea class="form-input" id="mi-edit-content" style="min-height:120px;resize:vertical;font-family:inherit"></textarea>
     </div>
     <div class="form-group"><label class="form-label">分类</label>
-      <input class="form-input" id="mi-edit-category" type="text" placeholder="e.g. preference, fact, event" />
+      <input class="form-input" id="mi-edit-category" type="text" placeholder="如：偏好、事实、事件" />
     </div>
     <div class="form-group"><label class="form-label">重要性</label>
       <select class="form-input" id="mi-edit-importance">
-        <option value="1">★ routine</option>
-        <option value="2">★★ important</option>
-        <option value="3">★★★ critical</option>
+        <option value="1">★ 日常</option>
+        <option value="2">★★ 重要</option>
+        <option value="3">★★★ 关键</option>
       </select>
     </div>
     <div class="modal-footer">
@@ -318,10 +353,19 @@ async function api(method, path, body) {
 }
 function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function showToast(msg) { const t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(t._t); t._t=setTimeout(()=>t.classList.remove('show'),4000); }
+function statusIcon(type) {
+  const m = { ok:['var(--success)','✓'], err:['#d32f2f','✗'], warn:['var(--warning)','!'], off:['var(--border)',''] };
+  const [bg,ch] = m[type] || m.off;
+  return `<span style="display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;background:${bg};color:#fff;font-size:12px;flex-shrink:0">${ch}</span>`;
+}
 
 // ── Navigation ───────────────────────────
 const loaded = {};
-const loaders = { welcome:loadWelcome, models:loadModels, heartbeat:loadHeartbeat, basic:loadBasic, skills:loadSkills, prompts:loadPrompts, memory:loadMemory };
+const loaders = { welcome:loadWelcome, models:loadModels, heartbeat:loadHeartbeat, basic:loadBasic, skills:loadSkills, prompts:loadPrompts, memory:loadMemory, promptdump:loadPromptDump };
+
+// Debug mode: ?debug=1 shows hidden debug tools
+const _debugMode = new URLSearchParams(window.location.search).has('debug');
+if (_debugMode) { const el = document.getElementById('nav-promptdump'); if (el) el.style.display = ''; }
 
 document.getElementById('sidebar-nav').addEventListener('click', e => {
   const item = e.target.closest('.nav-item');
@@ -465,6 +509,29 @@ async function restartAdminServer() {
       if (r.ok) { clearInterval(poll); location.reload(); }
     } catch(e) { /* still down, keep polling */ }
   }, 2000);
+}
+
+async function exportDiagnostics() {
+  const btn = event?.target;
+  if (btn) { btn.disabled = true; btn.textContent = '导出中...'; }
+  try {
+    const opts = {method:'GET', headers:{}};
+    if (authToken) opts.headers['Authorization'] = 'Bearer ' + authToken;
+    const r = await fetch('/api/diagnostics/export', opts);
+    if (!r.ok) throw new Error(r.status + ': ' + await r.text());
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'mochibot-diagnostics-' + new Date().toISOString().replace(/[T:]/g, '-').slice(0, 19) + '.txt';
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast('✅ 诊断报告已下载');
+  } catch(e) {
+    showToast('❌ 导出失败: ' + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '📋 导出诊断报告'; }
+  }
 }
 
 function toggleWeixinConfig() {
@@ -1125,7 +1192,7 @@ async function loadWelcome() {
     // Helper: step number circle
     const stepCircle = (n, active) => `<span style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;border:2px solid ${active?'var(--primary)':'var(--border)'};font-size:12px;color:${active?'var(--primary)':'var(--text-soft)'};font-weight:700">${n}</span>`;
     // Helper: completed check circle
-    const stepDone = () => `<span style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:var(--success);color:#fff;font-size:14px">✓</span>`;
+    const stepDone = () => `<span style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:var(--success);color:#fff;font-size:14px;flex-shrink:0">✓</span>`;
 
     // ── Setup Guide (always show, highlights incomplete steps) ──
     html += '<div class="card">';
@@ -1315,13 +1382,68 @@ async function loadWelcome() {
     html += '<div class="card"><div class="card-title">集成</div>';
     for (const [name, info] of Object.entries(s.integrations)) {
       const ok = info.configured;
-      html += `<div class="check-row"><span class="check-icon">${ok?'✅':'⬜'}</span><strong>${esc(name)}</strong>`;
+      html += `<div class="check-row">${ok?statusIcon('ok'):statusIcon('off')}<strong>${esc(name)}</strong>`;
       if (!ok && info.missing.length) html += ` <span style="color:var(--text-soft);font-size:12px;margin-left:6px">缺少: ${info.missing.map(esc).join(', ')}</span>`;
       html += '</div>';
     }
     html += '</div>';
 
+    // ── Database Status ──
+    const dbSize = s.db_size_bytes || 0;
+    const dbWritable = s.db_writable;
+    const dbSizeStr = dbSize > 1024*1024
+      ? (dbSize/1024/1024).toFixed(1)+' MB'
+      : (dbSize/1024).toFixed(1)+' KB';
+    html += '<div class="card"><div class="card-title">数据库</div>';
+    html += `<div class="check-row">${dbSize>0?statusIcon('ok'):statusIcon('err')}`
+      + `<span>数据库文件</span>`
+      + `<span class="badge ${dbSize>0?'badge-ok':'badge-err'}" style="margin-left:8px">`
+      + `${dbSize>0 ? dbSizeStr : '不存在'}</span></div>`;
+    if (dbSize > 0) {
+      html += `<div class="check-row">${dbWritable?statusIcon('ok'):statusIcon('warn')}`
+        + `<span>可写入</span>`
+        + `<span class="badge ${dbWritable?'badge-ok':'badge-warn'}" style="margin-left:8px">`
+        + `${dbWritable ? '正常' : '只读'}</span></div>`;
+    }
+    html += `<div style="font-size:11px;color:var(--text-soft);margin-top:6px">路径: ${esc(s.db_path)}</div>`;
+    html += '</div>';
+
+    // ── Diagnostics ──
+    const errCount = s.recent_error_count || 0;
+    html += '<div class="card"><div class="card-title">诊断</div>';
+    if (errCount === 0) {
+      html += `<div style="font-size:13px;color:var(--success);display:flex;align-items:center;gap:8px">${statusIcon('ok')} 最近 24 小时无错误</div>`;
+    } else {
+      html += `<div style="font-size:13px;color:#e65100;margin-bottom:8px;display:flex;align-items:center;gap:8px">`
+        + `${statusIcon('warn')} 最近 24 小时有 ${errCount} 条错误</div>`;
+      html += `<div id="diag-error-list"></div>`;
+    }
+    html += '<div style="margin-top:12px;display:flex;gap:8px;align-items:center">';
+    html += '<button class="btn btn-ghost" onclick="exportDiagnostics()">📋 导出诊断报告</button>';
+    html += '<span style="font-size:11px;color:var(--text-soft)">包含系统信息、配置摘要、错误日志（API Key 已脱敏）</span>';
+    html += '</div></div>';
+
     el.innerHTML = html;
+
+    // Lazy-load error details (don't block initial render)
+    if (errCount > 0) {
+      api('GET', '/diagnostics/errors').then(d => {
+        const container = document.getElementById('diag-error-list');
+        if (!container || !d.errors?.length) return;
+        let h = '<div class="bot-log" style="max-height:180px;overflow:auto;margin-top:4px">';
+        for (const err of d.errors.slice(-20)) {
+          const lc = (err.level==='ERROR'||err.level==='CRITICAL') ? '#e53935' : '#e65100';
+          h += `<div style="margin-bottom:4px"><span style="color:${lc}">[${esc(err.level)}]</span> `
+            + `<span style="color:#888">${esc(err.time)}</span> `
+            + `${esc(err.name)} — ${esc(err.message)}`;
+          if (err.traceback) h += `\n<span style="color:#c9544d;font-size:11px">${esc(err.traceback)}</span>`;
+          h += '</div>';
+        }
+        h += '</div>';
+        container.innerHTML = h;
+      }).catch(() => {});
+    }
+
     // Restore active QR flow UI after DOM rebuild
     if (_wxQrPollTimer && _wxQrActiveContent) {
       const c = document.getElementById('wx-qr-canvas');
@@ -1342,7 +1464,45 @@ async function loadWelcome() {
 // ═══════════════════════════════════════════
 // Page 1: Models
 // ═══════════════════════════════════════════
+const VENDOR_PRESETS = [
+  { vendor: 'openai',    label: 'OpenAI',             provider: 'openai',       baseUrl: '',                                placeholder: 'gpt-4o' },
+  { vendor: 'deepseek',  label: 'DeepSeek',           provider: 'openai',       baseUrl: 'https://api.deepseek.com/v1',     placeholder: 'deepseek-chat' },
+  { vendor: 'ollama',    label: 'Ollama（本地）',      provider: 'openai',       baseUrl: 'http://localhost:11434/v1',        placeholder: 'llama3' },
+  { vendor: 'azure',     label: 'Azure OpenAI',       provider: 'azure_openai', baseUrl: '',                                placeholder: 'gpt-4o' },
+  { vendor: 'anthropic', label: 'Anthropic',          provider: 'anthropic',    baseUrl: '',                                placeholder: 'claude-sonnet-4-20250514' },
+  { vendor: 'custom',    label: '自定义 OpenAI 兼容',  provider: 'openai',       baseUrl: '',                                placeholder: '' },
+];
+
+function _normalizeUrl(u) { return (u || '').toLowerCase().replace(/\/+$/, '').replace(/\/v\d+$/, ''); }
+
+function resolveVendorLabel(provider, baseUrl) {
+  const url = _normalizeUrl(baseUrl);
+  for (const p of VENDOR_PRESETS) {
+    if (p.provider === provider && p.baseUrl) {
+      if (url && url.startsWith(_normalizeUrl(p.baseUrl))) return p.label;
+    }
+  }
+  if (provider === 'anthropic') return 'Anthropic';
+  if (provider === 'azure_openai') return 'Azure OpenAI';
+  if (provider === 'openai' && !url) return 'OpenAI';
+  return '自定义兼容';
+}
+
+function resolveVendorKey(provider, baseUrl) {
+  const url = _normalizeUrl(baseUrl);
+  for (const p of VENDOR_PRESETS) {
+    if (p.provider === provider && p.baseUrl) {
+      if (url && url.startsWith(_normalizeUrl(p.baseUrl))) return p.vendor;
+    }
+  }
+  if (provider === 'anthropic') return 'anthropic';
+  if (provider === 'azure_openai') return 'azure';
+  if (provider === 'openai' && !url) return 'openai';
+  return 'custom';
+}
+
 let _modelEditName = null;
+let _lastAutoBaseUrl = '';  // tracks auto-filled base_url to detect manual edits
 
 async function loadModels() {
   const el = document.getElementById('models-content');
@@ -1359,7 +1519,7 @@ async function loadModels() {
       for (const m of models) {
         html += `<tr>
           <td><strong>${esc(m.name)}</strong></td>
-          <td><span class="badge badge-info">${esc(m.provider)}</span></td>
+          <td><span class="badge badge-info">${esc(resolveVendorLabel(m.provider, m.base_url))}</span></td>
           <td>${esc(m.model)}</td>
           <td>${m.api_key_set?'<span class="badge badge-ok">已设置</span>':'<span class="badge badge-warn">未设置</span>'}</td>
           <td style="text-align:right">
@@ -1379,19 +1539,16 @@ async function loadModels() {
       deep: '在后台 Heartbeat 干活的模型，不和你直接对话',
     };
     html += '<div class="card"><div class="card-title">层级分配</div>';
-    html += '<table class="tbl"><tr><th>层级</th><th>模型</th><th>来源</th><th></th></tr>';
+    html += '<table class="tbl"><tr><th>层级</th><th>模型</th><th></th></tr>';
     for (const tier of ['lite','chat','deep']) {
       const cfg = tiers[tier] || {};
-      const src = cfg.source || 'none';
-      const isDb = src.startsWith('db:');
       html += `<tr>
         <td><strong>${esc(tier)}</strong><div style="font-size:11px;color:var(--text-soft);margin-top:2px;max-width:200px">${esc(tierDescs[tier])}</div></td>
         <td>${esc(cfg.model||'（未分配）')}</td>
-        <td><span class="badge ${isDb?'badge-info':'badge-gray'}">${isDb?esc(src):'未分配'}</span></td>
         <td style="text-align:right">
           <select class="form-input" style="width:auto;display:inline;font-size:12px" onchange="assignTier('${tier}',this.value)">
             <option value="">未分配</option>
-            ${models.map(m=>`<option value="${esc(m.name)}" ${isDb && src==='db:'+m.name?'selected':''}>${esc(m.name)}</option>`).join('')}
+            ${models.map(m=>`<option value="${esc(m.name)}" ${cfg.assigned_name===m.name?'selected':''}>${esc(m.name)}</option>`).join('')}
           </select>
         </td></tr>`;
     }
@@ -1459,23 +1616,45 @@ async function loadModels() {
   } catch(e) { el.innerHTML = `<div class="card" style="color:var(--danger)">❌ ${esc(e.message)}</div>`; }
 }
 
+function onVendorChange() {
+  const sel = document.getElementById('mm-vendor');
+  const preset = VENDOR_PRESETS.find(v => v.vendor === sel.value);
+  if (!preset) return;
+  const urlEl = document.getElementById('mm-baseurl');
+  const modelEl = document.getElementById('mm-model');
+  // Auto-fill base_url only if current value is empty or was auto-filled last time
+  if (!urlEl.value || urlEl.value === _lastAutoBaseUrl) {
+    urlEl.value = preset.baseUrl;
+    _lastAutoBaseUrl = preset.baseUrl;
+  }
+  if (preset.placeholder) modelEl.placeholder = '例如 ' + preset.placeholder;
+  else modelEl.placeholder = '';
+}
+
 function openModelModal(name) {
   _modelEditName = name || null;
+  _lastAutoBaseUrl = '';
   document.getElementById('model-modal-title').textContent = name ? '编辑模型' : '添加模型';
   document.getElementById('mm-name').value = name || '';
   document.getElementById('mm-name').disabled = !!name;
-  document.getElementById('mm-provider').value = 'openai';
+  document.getElementById('mm-vendor').value = 'openai';
   document.getElementById('mm-model').value = '';
   document.getElementById('mm-apikey').value = '';
   document.getElementById('mm-apikey').placeholder = name ? '（不修改）' : 'sk-...';
   document.getElementById('mm-baseurl').value = '';
   document.getElementById('mm-test-result').innerHTML = '';
+  onVendorChange();
   if (name) {
     api('GET','/models').then(models => {
       const m = models.find(x=>x.name===name);
       if (m) {
-        document.getElementById('mm-provider').value = m.provider;
+        const vendor = resolveVendorKey(m.provider, m.base_url);
+        document.getElementById('mm-vendor').value = vendor;
         document.getElementById('mm-model').value = m.model;
+        document.getElementById('mm-baseurl').value = m.base_url || '';
+        _lastAutoBaseUrl = m.base_url || '';
+        onVendorChange();
+        // Restore actual base_url after onVendorChange (in case it differs from preset)
         document.getElementById('mm-baseurl').value = m.base_url || '';
       }
     });
@@ -1488,9 +1667,10 @@ async function saveModelFromModal() {
   const name = document.getElementById('mm-name').value.trim();
   if (!name) return showToast('名称不能为空');
   const apiKey = document.getElementById('mm-apikey').value;
+  const preset = VENDOR_PRESETS.find(v => v.vendor === document.getElementById('mm-vendor').value) || VENDOR_PRESETS[0];
   const body = {
     name,
-    provider: document.getElementById('mm-provider').value,
+    provider: preset.provider,
     model: document.getElementById('mm-model').value.trim(),
     api_key: (_modelEditName && !apiKey) ? '__KEEP__' : apiKey,
     base_url: document.getElementById('mm-baseurl').value.trim(),
@@ -1567,7 +1747,7 @@ async function saveMemory() {
 }
 
 // ── L2 Memory ──────────────────────────────
-const IMPORTANCE_STARS = ['', '★ routine', '★★ important', '★★★ critical'];
+const IMPORTANCE_STARS = ['', '★ 日常', '★★ 重要', '★★★ 关键'];
 let _miCurrentPage = 1;
 let _miCatsLoaded = false;
 
@@ -1853,20 +2033,14 @@ async function loadHeartbeat() {
     const hbLabels = {
       HEARTBEAT_INTERVAL_MINUTES:    ['心跳间隔（分钟）',    '每隔多久执行一次心跳循环'],
       MAX_DAILY_PROACTIVE:           ['每日上限',            'Bot 每天最多主动发多少条消息'],
-      PROACTIVE_COOLDOWN_SECONDS:    ['冷却时间（秒）',      '两次主动消息之间的最小间隔'],
-      THINK_FALLBACK_MINUTES:        ['思考回退（分钟）',    '没有事件时多久强制思考一次'],
-      LLM_HEARTBEAT_TIMEOUT_SECONDS: ['LLM 超时（秒）',      '心跳 LLM 调用超时上限'],
       FALLBACK_WAKE_HOUR:            ['兜底唤醒时间',        '睡眠状态下到几点自动唤醒'],
       SILENCE_PAUSE_DAYS:            ['静默暂停（天）',      '用户消失多少天后暂停主动消息'],
-      BEDTIME_TIDY_ENABLED:          ['启用睡前整理',        '睡觉前自动整理笔记和待办'],
-      BEDTIME_TIDY_TIMEOUT_S:        ['睡前整理超时（秒）',  '睡前整理的 LLM 调用超时'],
     };
 
     // Config groups
     const groups = [
-      { title:'心跳配置', keys:['HEARTBEAT_INTERVAL_MINUTES','MAX_DAILY_PROACTIVE','PROACTIVE_COOLDOWN_SECONDS','THINK_FALLBACK_MINUTES','LLM_HEARTBEAT_TIMEOUT_SECONDS'] },
+      { title:'心跳配置', keys:['HEARTBEAT_INTERVAL_MINUTES','MAX_DAILY_PROACTIVE'] },
       { title:'睡眠/唤醒', keys:['FALLBACK_WAKE_HOUR','SILENCE_PAUSE_DAYS'] },
-      { title:'睡前整理', keys:['BEDTIME_TIDY_ENABLED','BEDTIME_TIDY_TIMEOUT_S'] },
     ];
 
     for (const g of groups) {
@@ -1878,23 +2052,24 @@ async function loadHeartbeat() {
         const isDefault = String(val) === String(c.default);
         const [label, tip] = hbLabels[key] || [key, ''];
         const resetBtn = !isDefault ? `<button class="btn btn-ghost btn-sm" onclick="resetHBParam('${key}')">恢复默认</button>` : '';
+        const srcBadge = c.source === 'both' ? '<span class="badge badge-gray" style="font-size:10px;margin-left:4px">.env</span>' : '';
         if (c.type === 'bool') {
-          html += `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
+          html += `<div class="config-form-row" style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
             <label class="toggle"><input type="checkbox" ${val==='true'||val===true?'checked':''} onchange="setHBParam('${key}',this.checked)"><span class="slider"></span></label>
-            <div style="flex:1"><div style="font-size:14px">${esc(label)}</div>${tip?`<div style="font-size:11px;color:var(--text-soft);margin-top:2px">${esc(tip)}</div>`:''}</div>
+            <div style="flex:1"><div style="font-size:14px">${esc(label)}${srcBadge}</div>${tip?`<div style="font-size:11px;color:var(--text-soft);margin-top:2px">${esc(tip)}</div>`:''}</div>
             ${resetBtn}
           </div>`;
         } else if (c.type === 'str') {
-          html += `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
-            <div style="min-width:220px"><div style="font-size:13px">${esc(label)}</div>${tip?`<div style="font-size:11px;color:var(--text-soft);margin-top:2px">${esc(tip)}</div>`:''}</div>
+          html += `<div class="config-form-row" style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
+            <div style="min-width:220px"><div style="font-size:13px">${esc(label)}${srcBadge}</div>${tip?`<div style="font-size:11px;color:var(--text-soft);margin-top:2px">${esc(tip)}</div>`:''}</div>
             <input class="form-input" style="width:260px" type="text" value="${esc(val)}" onchange="setHBParam('${key}',this.value)" data-key="${key}">
             <span style="font-size:11px;color:var(--text-soft)">默认: ${esc(c.default)}</span>
             ${resetBtn}
           </div>`;
         } else {
           const step = c.type === 'float' ? ' step="0.1"' : '';
-          html += `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
-            <div style="min-width:220px"><div style="font-size:13px">${esc(label)}</div>${tip?`<div style="font-size:11px;color:var(--text-soft);margin-top:2px">${esc(tip)}</div>`:''}</div>
+          html += `<div class="config-form-row" style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
+            <div style="min-width:220px"><div style="font-size:13px">${esc(label)}${srcBadge}</div>${tip?`<div style="font-size:11px;color:var(--text-soft);margin-top:2px">${esc(tip)}</div>`:''}</div>
             <input class="form-input" style="width:100px" type="number"${step} value="${esc(val)}" onchange="setHBParam('${key}',this.value)" data-key="${key}">
             <span style="font-size:11px;color:var(--text-soft)">默认: ${c.default}</span>
             ${resetBtn}
@@ -2019,18 +2194,19 @@ async function loadBasic() {
         const val = c.value;
         const isDefault = String(val) === String(c.default);
         const [label, tip] = basicLabels[key] || [key, ''];
+        const srcBadge = c.source === 'both' ? '<span class="badge badge-gray" style="font-size:10px;margin-left:4px">.env</span>' : '';
         if (c.type === 'bool') {
-          html += `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
+          html += `<div class="config-form-row" style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
             <label class="toggle"><input type="checkbox" data-basic-key="${key}" ${val==='true'||val===true?'checked':''} onchange="markBasicDirty()"><span class="slider"></span></label>
-            <div style="flex:1"><div style="font-size:14px">${esc(label)}</div>${tip?`<div style="font-size:11px;color:var(--text-soft);margin-top:2px">${esc(tip)}</div>`:''}</div>
+            <div style="flex:1"><div style="font-size:14px">${esc(label)}${srcBadge}</div>${tip?`<div style="font-size:11px;color:var(--text-soft);margin-top:2px">${esc(tip)}</div>`:''}</div>
             ${!isDefault?`<button class="btn btn-ghost btn-sm" onclick="resetBasicParam('${key}')">恢复默认</button>`:''}
           </div>`;
         } else {
           const step = c.type === 'float' ? ' step="0.1"' : '';
           const displayVal = c._autoDetected !== undefined ? c._autoDetected : val;
           const autoTag = c._autoDetected !== undefined ? `<span style="font-size:11px;color:var(--accent);margin-left:4px">🌐 已自动检测</span>` : '';
-          html += `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
-            <div style="min-width:220px"><div style="font-size:13px">${esc(label)}${autoTag}</div>${tip?`<div style="font-size:11px;color:var(--text-soft);margin-top:2px">${esc(tip)}</div>`:''}</div>
+          html += `<div class="config-form-row" style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
+            <div style="min-width:220px"><div style="font-size:13px">${esc(label)}${autoTag}${srcBadge}</div>${tip?`<div style="font-size:11px;color:var(--text-soft);margin-top:2px">${esc(tip)}</div>`:''}</div>
             <input class="form-input" style="width:100px" type="number"${step} data-basic-key="${key}" value="${esc(displayVal)}" oninput="markBasicDirty()">
             <span style="font-size:11px;color:var(--text-soft)">默认: ${c.default}</span>
             ${!isDefault?`<button class="btn btn-ghost btn-sm" onclick="resetBasicParam('${key}')">恢复默认</button>`:''}
@@ -2101,7 +2277,16 @@ async function resetBasicParam(key) {
 async function loadSkills() {
   const el = document.getElementById('skills-content');
   try {
-    const skills = await api('GET','/skills');
+    const [skills, statusData] = await Promise.all([
+      api('GET','/skills'),
+      api('GET','/status'),
+    ]);
+    // Detect active transports for exclude_transports filtering
+    const activeTransports = [];
+    const cs = statusData && statusData.config_status || {};
+    if (cs.telegram_bot_token && cs.telegram_bot_token.set) activeTransports.push('telegram');
+    if (cs.weixin_enabled && cs.weixin_enabled.set) activeTransports.push('wechat');
+
     if (skills.length === 0) {
       el.innerHTML = '<div class="card"><p style="color:var(--text-soft)">没有注册的技能。</p></div>';
       return;
@@ -2115,16 +2300,22 @@ async function loadSkills() {
       const typeLabel = typeLabels[s.type] || s.type;
       const senseBadge = s.has_observer ? ' <span class="badge badge-info">观察器</span>' : '';
       const configMissing = s.config_missing && s.config_missing.length > 0;
+      const excludedOn = (s.exclude_transports || []).filter(t => activeTransports.includes(t));
+      const transportExcluded = excludedOn.length > 0;
       let toggleHtml;
       if (s.core) {
         toggleHtml = '<span class="badge" style="background:var(--text-soft);color:#fff;font-size:11px">🔒 核心</span>';
       } else if (s.auto_disabled) {
         toggleHtml = '<label class="toggle" title="需要先配置必填项"><input type="checkbox" disabled><span class="slider"></span></label>'
           + ' <span style="font-size:11px;color:var(--danger)">需要配置</span>';
+      } else if (transportExcluded) {
+        const label = excludedOn.map(t => t === 'wechat' ? '微信' : 'Telegram').join('、');
+        toggleHtml = '<label class="toggle" title="此渠道不支持"><input type="checkbox" disabled><span class="slider"></span></label>'
+          + ` <span style="font-size:11px;color:var(--text-soft)">${label}不可用</span>`;
       } else {
         toggleHtml = `<label class="toggle"><input type="checkbox" ${s.enabled?'checked':''} onchange="toggleSkill('${esc(s.name)}',this.checked)"><span class="slider"></span></label>`;
       }
-      html += `<div class="skill-card ${s.enabled?'':'disabled'}">
+      html += `<div class="skill-card ${s.enabled && !transportExcluded?'':'disabled'}">
         <div class="skill-header">
           <div><span class="skill-name">${icon} ${esc(s.name)}</span> <span class="badge badge-gray">${esc(typeLabel)}</span>${senseBadge}</div>
           ${toggleHtml}
@@ -2148,7 +2339,7 @@ async function loadSkills() {
 
         html += '<div class="config-list"><div style="font-size:12px;font-weight:600;color:var(--text-soft);margin-bottom:4px">配置</div>';
         for (const c of configKeys) {
-          html += `<div class="config-item"><span>${c.isSet?'✅':'❌'}</span><code style="font-size:12px">${esc(c.key)}</code>`;
+          html += `<div class="config-item">${c.isSet?statusIcon('ok'):statusIcon('err')}<code style="font-size:12px">${esc(c.key)}</code>`;
           if (c.desc) html += ` <span style="font-size:11px;color:var(--text-soft);margin-left:4px">${esc(c.desc)}</span>`;
           html += '</div>';
         }
@@ -2335,6 +2526,44 @@ async function savePrompt() {
     loaded.prompts = false;
     loadPrompts();
   } catch(e) { showToast('错误: ' + e.message); }
+}
+
+// ── Prompt Dump (debug only) ─────────────────────────
+let _pdMode = 'chat';
+function _syncPdButtons() {
+  const c = document.getElementById('pd-mode-chat');
+  const t = document.getElementById('pd-mode-think');
+  if (!c || !t) return;
+  c.className = _pdMode === 'chat' ? 'btn btn-primary btn-sm' : 'btn btn-ghost btn-sm';
+  t.className = _pdMode === 'think' ? 'btn btn-primary btn-sm' : 'btn btn-ghost btn-sm';
+}
+async function loadPromptDump(mode) {
+  loaded.promptdump = true;
+  if (mode === 'chat' || mode === 'think') _pdMode = mode;
+  _syncPdButtons();
+  const el = document.getElementById('promptdump-content');
+  el.innerHTML = '<div class="loading"><div class="spinner"></div> 生成中…</div>';
+  try {
+    const endpoint = _pdMode === 'think' ? '/think-prompt-dump' : '/prompt-dump';
+    const data = await api('GET', endpoint);
+    const text = data.text || '(empty)';
+    const totalMatch = text.match(/Total:\s+~(\d[\d,]*) tokens/);
+    const totalTok = totalMatch ? totalMatch[1] : '?';
+    const modeLabel = _pdMode === 'think' ? 'Think prompt' : 'Chat prompt';
+    el.innerHTML = `
+      <div class="card" style="margin-bottom:12px">
+        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+          <span class="badge badge-info">~${esc(totalTok)} tokens</span>
+          <span style="font-size:12px;color:var(--text-dim)">${esc(modeLabel)} full snapshot</span>
+        </div>
+      </div>
+      <div class="card">
+        <pre style="white-space:pre-wrap;word-break:break-all;font-size:12px;line-height:1.6;max-height:80vh;overflow-y:auto;margin:0;font-family:'SF Mono',Menlo,'Courier New',monospace">${esc(text)}</pre>
+      </div>
+    `;
+  } catch (e) {
+    el.innerHTML = '<div class="loading" style="color:var(--error)">❌ ' + esc(e.message) + '</div>';
+  }
 }
 </script>
 </body>

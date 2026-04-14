@@ -5,8 +5,11 @@ Three-layer memory architecture:
   Layer 2: Extracted memory items     (memory_items table — facts, preferences, events)
   Layer 1: Core memory summary        (core_memory table — compact, always in system prompt)
 
-Core memory is owned by the chat model — it updates core memory during
-conversation via the memory skill. Maintenance only audits token budget.
+Core memory is primarily owned by the chat model — it updates core memory
+during conversations via the memory skill. One exception: memories with
+category "关系" (relational) are auto-appended to core memory during
+nightly extraction, as these capture relationship dynamics that should
+always be available in context.
 
 Nightly cycle: extract → deduplicate → outdated → salience → audit core → trash purge.
 """
@@ -41,6 +44,11 @@ from mochi.db import (
 log = logging.getLogger(__name__)
 
 TZ = timezone(timedelta(hours=TIMEZONE_OFFSET_HOURS))
+
+# Max relational items auto-appended to core_memory per extraction cycle
+_MAX_RELATIONAL_PER_CYCLE = 3
+# Stop auto-appending when core memory exceeds this token count (leave room for manual edits)
+_RELATIONAL_TOKEN_BUDGET = 700
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -98,6 +106,9 @@ def extract_memories(user_id: int = 0) -> int:
     """Extract memory items from unprocessed conversations.
 
     Uses LLM to identify facts, preferences, events worth remembering.
+    Items with category "关系" (relational) are also auto-appended to
+    core_memory — see module docstring for rationale.
+
     Returns number of memories extracted.
     """
     uid = user_id or OWNER_USER_ID
@@ -131,20 +142,42 @@ def extract_memories(user_id: int = 0) -> int:
         response.total_tokens, model=response.model, purpose="memory_extract",
     )
 
+    # Generate embeddings for vector search
+    try:
+        from mochi.model_pool import get_pool
+        pool = get_pool()
+    except Exception:
+        pool = None
+
     # Parse extracted memories (expects JSON array)
     count = 0
+    relational_items: list[str] = []
     parsed = _parse_gpt_json(response.content)
     memories = parsed if isinstance(parsed, list) else parsed.get("memories", [])
     for mem in memories:
         if isinstance(mem, dict) and "content" in mem:
+            category = mem.get("category", "其他")
+            embedding = None
+            if pool:
+                try:
+                    embedding = pool.embed(mem["content"])
+                except Exception as e:
+                    log.warning("Embedding failed for memory: %s", e)
             save_memory_item(
                 uid,
-                category=mem.get("category", "general"),
+                category=category,
                 content=mem["content"],
                 importance=mem.get("importance", 1),
                 source="extracted",
+                embedding=embedding,
             )
             count += 1
+            if category == "关系":
+                relational_items.append(mem["content"])
+
+    # Auto-append relational items to core_memory
+    if relational_items:
+        _append_relational_to_core(uid, relational_items)
 
     # Mark conversations as processed
     if conversations:
@@ -152,6 +185,53 @@ def extract_memories(user_id: int = 0) -> int:
 
     log.info("Extracted %d memories from %d messages", count, len(conversations))
     return count
+
+
+def _append_relational_to_core(user_id: int, items: list[str]) -> None:
+    """Append relational memory items to core_memory with safety guards.
+
+    Guards:
+    - Max _MAX_RELATIONAL_PER_CYCLE items per call
+    - Skips if core_memory already exceeds _RELATIONAL_TOKEN_BUDGET tokens
+    - Deduplicates against existing core_memory lines
+    """
+    import tiktoken
+
+    current_core = get_core_memory(user_id) or ""
+
+    # Token budget check
+    if current_core.strip():
+        enc = tiktoken.encoding_for_model("gpt-4o")
+        token_count = len(enc.encode(current_core))
+        if token_count >= _RELATIONAL_TOKEN_BUDGET:
+            log.warning(
+                "Core memory at %d tokens (budget %d), skipping relational auto-append",
+                token_count, _RELATIONAL_TOKEN_BUDGET,
+            )
+            return
+
+    # Build set of existing lines for dedup (strip "- " prefix, lowercase)
+    existing_lines = {
+        line.lstrip("- ").strip().lower()
+        for line in current_core.split("\n")
+        if line.strip()
+    }
+
+    # Filter new items: dedup + cap
+    new_lines = []
+    for content in items[:_MAX_RELATIONAL_PER_CYCLE]:
+        if content.strip().lower() not in existing_lines:
+            new_lines.append(f"- {content}")
+
+    if not new_lines:
+        return
+
+    updated = (
+        current_core.rstrip() + "\n" + "\n".join(new_lines)
+        if current_core.strip() else "\n".join(new_lines)
+    )
+    update_core_memory(user_id, updated)
+    log.info("Auto-appended %d relational item(s) to core_memory", len(new_lines))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -435,7 +515,7 @@ def rebalance_salience(user_id: int = 0) -> dict:
         response = client.chat(
             messages=[
                 {"role": "system", "content": SALIENCE_PROMPT.format(current_date=current_date)},
-                {"role": "user", "content": "## Candidates:\n" + "\n".join(candidate_lines)},
+                {"role": "user", "content": "## 候选记忆:\n" + "\n".join(candidate_lines)},
             ],
             temperature=0.2,
             max_tokens=512,

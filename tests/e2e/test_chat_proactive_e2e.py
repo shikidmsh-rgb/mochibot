@@ -33,7 +33,7 @@ async def main():
     tiers = get_tier_effective_config()
     print("\n--- Tier config ---")
     for tier, cfg in tiers.items():
-        print(f"  {tier}: provider={cfg.get('provider')}, model={cfg.get('model')}, source={cfg.get('source')}")
+        print(f"  {tier}: provider={cfg.get('provider')}, model={cfg.get('model')}, assigned={cfg.get('assigned_name')}")
 
     # Verify get_client_for_tier can resolve chat
     from mochi.llm import get_client_for_tier

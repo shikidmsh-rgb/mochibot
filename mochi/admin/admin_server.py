@@ -31,6 +31,13 @@ except ImportError:
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 _PROMPTS_DIR = _PROJECT_ROOT / "prompts"
+_DATA_PROMPTS_DIR = _PROJECT_ROOT / "data" / "prompts"
+
+# Prompts written to data/prompts/ so git pull never overwrites user edits
+_USER_OVERRIDABLE: frozenset[str] = frozenset({
+    "system_chat/soul.md",
+    "system_chat/user.md",
+})
 
 # ── Bot subprocess management ────────────────────────────────────────────
 _bot_process: subprocess.Popen | None = None
@@ -79,7 +86,7 @@ def _start_bot_process():
                 _bot_process.kill()
             _bot_process = None
         _restart_enabled = True
-        env = {**os.environ, "ADMIN_ENABLED": "false"}
+        env = {**os.environ, "ADMIN_ENABLED": "false", "PYTHONIOENCODING": "utf-8"}
         _bot_log_lines.clear()
         _bot_process = subprocess.Popen(
             [sys.executable, "-u", "-m", "mochi.main"],
@@ -281,7 +288,7 @@ _PROMPT_META: dict[str, dict[str, str]] = {
     },
     "system_chat/user.md": {
         "label": "用户画像 User",
-        "desc": "主人的信息：称呼、喜好，让 Agent 更了解你",
+        "desc": "user的信息，让ta更了解你",
     },
     "think_system.md": {
         "label": "思考框架 Think",
@@ -298,12 +305,24 @@ _ALLOWED_PROMPTS: frozenset[str] = frozenset(_PROMPT_META.keys())
 _MAX_PROMPT_SIZE = 50 * 1024  # 50 KB
 
 
-def _prompt_path(name: str) -> Path:
-    """Resolve prompt name to safe absolute path inside prompts directory."""
+def _prompt_path(name: str, *, for_write: bool = False) -> Path:
+    """Resolve prompt name to safe absolute path.
+
+    For user-overridable prompts (soul, user):
+      - write: always returns data/prompts/ path
+      - read: returns data/prompts/ path if file exists, else falls back to prompts/
+    """
     normalized = PurePosixPath(name)
     if normalized.is_absolute() or ".." in normalized.parts:
         raise ValueError("Invalid prompt path")
-    return _PROMPTS_DIR / Path(*normalized.parts)
+    file_parts = Path(*normalized.parts)
+
+    if name in _USER_OVERRIDABLE:
+        override = _DATA_PROMPTS_DIR / file_parts
+        if for_write or override.exists():
+            return override
+
+    return _PROMPTS_DIR / file_parts
 
 
 if HAS_FASTAPI:
@@ -606,8 +625,23 @@ if HAS_FASTAPI:
         except Exception:
             basic_configured = False
 
+        # ── Database & error stats ──
+        import os as _os
+        db_exists = DB_PATH.exists()
+        db_size = DB_PATH.stat().st_size if db_exists else 0
+        db_writable = _os.access(str(DB_PATH), _os.W_OK) if db_exists else False
+        try:
+            from mochi.error_buffer import get_recent_errors
+            recent_error_count = len(get_recent_errors(24))
+        except Exception:
+            recent_error_count = 0
+
+        has_transport = bool((read_env_value("TELEGRAM_BOT_TOKEN") or "").strip()) or \
+            (read_env_value("WEIXIN_ENABLED") or "").strip().lower() in ("1", "true", "yes")
+
         return {
             "first_run": not has_model,
+            "setup_mode": not has_model and has_transport,
             "config_status": config_status,
             "basic_configured": basic_configured,
             "integrations": integrations,
@@ -615,6 +649,9 @@ if HAS_FASTAPI:
             "skills_disabled": skills_disabled,
             "heartbeat_state": hb.get("state", "UNKNOWN"),
             "db_path": str(DB_PATH),
+            "db_size_bytes": db_size,
+            "db_writable": db_writable,
+            "recent_error_count": recent_error_count,
         }
 
     # ═══════════════════════════════════════════════════════════════════════
@@ -712,6 +749,12 @@ if HAS_FASTAPI:
             )
         except ValueError as e:
             raise HTTPException(400, str(e))
+        # Sync model config to .env
+        try:
+            from mochi.admin.admin_db import sync_models_to_env
+            sync_models_to_env()
+        except Exception as e:
+            log.warning("Failed to sync model config to .env: %s", e)
         return {"ok": True}
 
     @app.delete("/api/models/{name}", dependencies=[Depends(_verify_token)])
@@ -723,6 +766,12 @@ if HAS_FASTAPI:
             raise HTTPException(409, str(e))
         if not deleted:
             raise HTTPException(404, f"Model '{name}' not found")
+        # Sync model config to .env
+        try:
+            from mochi.admin.admin_db import sync_models_to_env
+            sync_models_to_env()
+        except Exception as e:
+            log.warning("Failed to sync model config to .env: %s", e)
         return {"ok": True}
 
     @app.post("/api/models/{name}/test", dependencies=[Depends(_verify_token)])
@@ -787,6 +836,12 @@ if HAS_FASTAPI:
                 )
         except Exception as e:
             log.warning("Tier hot-reload failed for '%s': %s", tier, e)
+        # Sync model config to .env
+        try:
+            from mochi.admin.admin_db import sync_models_to_env
+            sync_models_to_env()
+        except Exception as e:
+            log.warning("Failed to sync model config to .env: %s", e)
         return {"ok": True}
 
     @app.delete("/api/tiers/{tier}", dependencies=[Depends(_verify_token)])
@@ -796,6 +851,12 @@ if HAS_FASTAPI:
             clear_tier_assignment(tier)
         except ValueError as e:
             raise HTTPException(400, str(e))
+        # Sync model config to .env
+        try:
+            from mochi.admin.admin_db import sync_models_to_env
+            sync_models_to_env()
+        except Exception as e:
+            log.warning("Failed to sync model config to .env: %s", e)
         return {"ok": True}
 
     # ── Embedding Config (shown on Models page) ─────────────────────────
@@ -894,42 +955,57 @@ if HAS_FASTAPI:
         # ── Core ──
         "HEARTBEAT_INTERVAL_MINUTES":     "int",
         "MAX_DAILY_PROACTIVE":            "int",
-        "PROACTIVE_COOLDOWN_SECONDS":     "int",
-        "THINK_FALLBACK_MINUTES":         "int",
-        "LLM_HEARTBEAT_TIMEOUT_SECONDS":  "int",
         # ── Sleep/Wake ──
         "FALLBACK_WAKE_HOUR":             "int",
         "SILENCE_PAUSE_DAYS":             "float",
-        # ── Bedtime tidy ──
-        "BEDTIME_TIDY_ENABLED":           "bool",
-        "BEDTIME_TIDY_TIMEOUT_S":         "int",
     }
 
     def _get_config_values(params: dict[str, str]) -> dict:
-        """Read config values for a set of params. DB is the single authority."""
+        """Read config values for a set of params, with source tracking."""
         from mochi.admin.admin_db import get_system_overrides, SYSTEM_DEFAULTS
+        from mochi.admin.admin_env import read_env_file
         db_values = get_system_overrides()
+        env_values = read_env_file()
         result = {}
         for key, typ in params.items():
             _, default_val = SYSTEM_DEFAULTS.get(key, (typ, None))
             db_val = db_values.get(key)
+            env_raw = env_values.get(key)
             value = _cast(db_val, typ) if db_val is not None else default_val
-            result[key] = {"value": value, "default": default_val, "type": typ}
+            # Determine source for UI badge
+            if env_raw is not None and db_val is not None:
+                source = "both"
+            elif env_raw is not None:
+                source = "env"
+            elif db_val is not None:
+                source = "db"
+            else:
+                source = "default"
+            result[key] = {"value": value, "default": default_val, "type": typ, "source": source}
         return result
 
     def _set_config_values(params: dict[str, str], body: dict) -> list[str]:
-        """Write config values for a set of params. Returns list of updated keys."""
+        """Write config values to DB and .env. Returns list of updated keys."""
         from mochi.admin.admin_db import (
             set_system_override, clear_system_override, invalidate_system_config_cache,
         )
+        from mochi.admin.admin_env import write_env_value, remove_env_key
         updated = []
         for key, value in body.items():
             if key not in params:
                 continue
             if value is None:
                 clear_system_override(key)
+                try:
+                    remove_env_key(key)
+                except (PermissionError, ValueError, OSError) as e:
+                    log.warning("Failed to remove %s from .env: %s", key, e)
             else:
                 set_system_override(key, str(value))
+                try:
+                    write_env_value(key, str(value))
+                except (PermissionError, ValueError, OSError) as e:
+                    log.warning("Failed to write %s to .env: %s", key, e)
             updated.append(key)
         if updated:
             invalidate_system_config_cache()
@@ -1098,6 +1174,13 @@ if HAS_FASTAPI:
                 continue
             set_skill_config(name, key, str(value))
             os.environ[key] = str(value)  # immediate effect
+            # Write-back to .env for consistency (namespaced key)
+            try:
+                from mochi.admin.admin_env import write_env_value
+                env_key = f"SKILL_{name.upper()}_{key.upper()}"
+                write_env_value(env_key, str(value))
+            except (PermissionError, ValueError, OSError) as e:
+                log.warning("Failed to write skill config %s to .env: %s", key, e)
             written.append(key)
 
         # Hot-reload resolved config
@@ -1411,7 +1494,7 @@ if HAS_FASTAPI:
         content = body.get("content", "")
         if len(content.encode("utf-8")) > _MAX_PROMPT_SIZE:
             raise HTTPException(413, f"Prompt too large (max {_MAX_PROMPT_SIZE // 1024}KB)")
-        p = _prompt_path(name)
+        p = _prompt_path(name, for_write=True)
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8")
         # Hot-reload
@@ -1557,6 +1640,52 @@ if HAS_FASTAPI:
         conn.close()
         log.info("Admin: updated memory item #%d cat=%s imp=%d", item_id, category, importance)
         return {"ok": True, "id": item_id}
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # Diagnostics
+    # ═══════════════════════════════════════════════════════════════════════
+
+    # Register bot subprocess log buffer as a log source for diagnostic reports
+    try:
+        from mochi.error_buffer import register_log_source
+        register_log_source(lambda: list(_bot_log_lines))
+    except ImportError:
+        pass
+
+    @app.get("/api/diagnostics/errors", dependencies=[Depends(_verify_token)])
+    async def api_diagnostics_errors():
+        """Return recent WARNING+ log entries from the in-memory buffer."""
+        try:
+            from mochi.error_buffer import get_recent_errors
+            errors = get_recent_errors(hours=24)
+            return {"ok": True, "errors": errors, "count": len(errors)}
+        except ImportError:
+            return {"ok": True, "errors": [], "count": 0}
+
+    @app.get("/api/diagnostics/export", dependencies=[Depends(_verify_token)])
+    async def api_diagnostics_export():
+        """Generate full diagnostic report as downloadable text file."""
+        try:
+            from mochi.error_buffer import get_diagnostic_report
+            report = get_diagnostic_report()
+        except Exception as e:
+            report = f"Failed to generate diagnostic report: {e}"
+        from datetime import datetime as _dt
+        stamp = _dt.now().strftime("%Y%m%d-%H%M%S")
+        return StarletteResponse(
+            content=report,
+            media_type="text/plain; charset=utf-8",
+            headers={
+                "Content-Disposition": f'attachment; filename="mochibot-diagnostics-{stamp}.txt"',
+            },
+        )
+
+    # ── Optional debug routes (prompt dump, etc.) ─────────────────────
+    try:
+        from mochi.admin.prompt_dump_routes import register_prompt_dump_routes
+        register_prompt_dump_routes(app, _verify_token)
+    except ImportError:
+        pass
 
 
 # ═══════════════════════════════════════════════════════════════════════════

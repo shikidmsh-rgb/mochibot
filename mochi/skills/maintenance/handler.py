@@ -36,9 +36,13 @@ async def run_maintenance(user_id: int = 0) -> dict:
 
     # 1b. Notes archive — snapshot notes.md (persistent, not cleared)
     try:
-        from mochi.skills.note.handler import archive_notes
-        notes_result = archive_notes()
-        results["notes"] = f"Archived {notes_result.get('archived', 0)} snapshot(s)"
+        import mochi.skills as skill_registry
+        note_skill = skill_registry.get_skill("note")
+        if note_skill and hasattr(note_skill, 'archive'):
+            notes_result = note_skill.archive()
+            results["notes"] = f"Archived {notes_result.get('archived', 0)} snapshot(s)"
+        else:
+            results["notes"] = "Skipped (note skill unavailable)"
     except Exception as e:
         log.error("Maintenance notes archive failed: %s", e)
         results["notes"] = f"Error: {e}"
@@ -99,6 +103,16 @@ async def run_maintenance(user_id: int = 0) -> dict:
     except Exception as e:
         log.error("Maintenance trash purge failed: %s", e)
         results["trash_purge"] = f"Error: {e}"
+
+    # 6b. Proactive log cleanup (keep 30 days)
+    try:
+        from mochi.db import cleanup_proactive_log
+        proactive_purged = cleanup_proactive_log(30)
+        if proactive_purged:
+            results["proactive_log"] = f"Purged {proactive_purged} old entry(ies)"
+    except Exception as e:
+        log.error("Maintenance proactive log cleanup failed: %s", e)
+        results["proactive_log"] = f"Error: {e}"
 
     # 7. Store summary for morning report
     try:

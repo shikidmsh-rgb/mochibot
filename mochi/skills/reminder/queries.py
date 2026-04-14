@@ -59,3 +59,17 @@ def reschedule_reminder(reminder_id: int, new_remind_at: str) -> None:
     )
     conn.commit()
     conn.close()
+
+
+def get_upcoming_reminders(user_id: int, hours_ahead: int = 2) -> list[dict]:
+    """Get reminders due within the next N hours."""
+    from datetime import timedelta
+    now = datetime.now(TZ)
+    cutoff = (now + timedelta(hours=hours_ahead)).isoformat()
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT id, message, remind_at FROM reminders WHERE user_id = ? AND fired = 0 AND remind_at <= ?",
+        (user_id, cutoff),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]

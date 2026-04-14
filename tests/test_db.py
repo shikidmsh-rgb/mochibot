@@ -14,19 +14,8 @@ from mochi.db import (
     get_recent_messages,
     get_core_memory,
     update_core_memory,
-    create_reminder,
-    get_pending_reminders,
-    mark_reminder_fired,
-    create_todo,
-    get_todos,
-    complete_todo,
-    delete_todo,
-    update_todo,
-    purge_done_todos,
     get_last_user_message_time,
     get_message_count_today,
-    get_active_todo_count,
-    get_upcoming_reminders,
     save_memory_item,
     recall_memory,
     list_all_memories,
@@ -37,18 +26,36 @@ from mochi.db import (
     cleanup_old_trash,
     update_memory_importance,
     merge_memory_items,
+    log_proactive,
+    get_today_proactive_sent,
+    cleanup_proactive_log,
 )
+from mochi.skills.reminder.queries import (
+    create_reminder, get_pending_reminders, mark_reminder_fired,
+    get_upcoming_reminders,
+)
+from mochi.skills.todo.queries import (
+    create_todo, get_todos, complete_todo, delete_todo, update_todo,
+    purge_done_todos, get_active_todo_count,
+)
+
+
+_skills_discovered = False
 
 
 @pytest.fixture(autouse=True)
 def fresh_db(tmp_path, monkeypatch):
     """Ensure a fresh database for each test."""
+    global _skills_discovered
     db_path = tmp_path / "test.db"
     # Patch the DB_PATH used by db.py
     import mochi.db as db_module
     import mochi.skills as skill_registry
     monkeypatch.setattr(db_module, "DB_PATH", db_path)
     init_db()
+    if not _skills_discovered:
+        skill_registry.discover()
+        _skills_discovered = True
     skill_registry.init_all_skill_schemas()
     yield db_path
 
@@ -446,3 +453,40 @@ class TestMergeMemoryItems:
         items = list_all_memories(1, category="fact")
         assert len(items) == 1
         assert items[0]["importance"] == 2
+
+
+class TestProactiveLog:
+    def test_log_and_retrieve(self):
+        log_proactive("你已经有1小时没喝水了", "habit_nudge")
+        sent = get_today_proactive_sent()
+        assert len(sent) == 1
+        assert sent[0]["type"] == "habit_nudge"
+        assert "喝水" in sent[0]["content"]
+        assert sent[0]["time"]  # should have HH:MM
+
+    def test_limit_5(self):
+        for i in range(8):
+            log_proactive(f"message {i}", "general")
+        sent = get_today_proactive_sent()
+        assert len(sent) == 5
+
+    def test_content_truncation(self):
+        long_msg = "x" * 200
+        log_proactive(long_msg, "general")
+        sent = get_today_proactive_sent()
+        assert len(sent[0]["content"]) <= 80
+
+    def test_cleanup(self):
+        log_proactive("old message", "general")
+        deleted = cleanup_proactive_log(days=0)
+        assert deleted >= 1
+        sent = get_today_proactive_sent()
+        assert len(sent) == 0
+
+    def test_type_stored_correctly(self):
+        log_proactive("goodnight", "sleep_transition")
+        log_proactive("habit reminder", "habit_nudge")
+        sent = get_today_proactive_sent()
+        types = {s["type"] for s in sent}
+        assert "sleep_transition" in types
+        assert "habit_nudge" in types

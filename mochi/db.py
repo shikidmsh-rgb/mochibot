@@ -554,6 +554,10 @@ def vec_upsert(item_id: int, embedding: bytes,
     own_conn = conn is None
     if own_conn:
         conn = _connect()
+    if not _load_vec_conn(conn):
+        if own_conn:
+            conn.close()
+        return
     try:
         conn.execute("DELETE FROM vec_memories WHERE item_id = ?", (item_id,))
         conn.execute(
@@ -580,6 +584,10 @@ def vec_delete(item_ids: list[int],
     own_conn = conn is None
     if own_conn:
         conn = _connect()
+    if not _load_vec_conn(conn):
+        if own_conn:
+            conn.close()
+        return
     try:
         placeholders = ",".join("?" * len(item_ids))
         conn.execute(f"DELETE FROM vec_memories WHERE item_id IN ({placeholders})", item_ids)
@@ -903,7 +911,7 @@ def recall_memory(user_id: int, query: str = "", category: str = "",
         fetch_params.extend(exclude)
 
     rows = conn.execute(
-        "SELECT id, category, content, importance, access_count, "
+        "SELECT id, category, content, importance, access_count, source, "
         "last_accessed, embedding, created_at, updated_at "
         f"FROM memory_items WHERE {' AND '.join(fetch_conditions)}",
         fetch_params,
@@ -961,8 +969,11 @@ def recall_memory(user_id: int, query: str = "", category: str = "",
             "category": r["category"],
             "content": r["content"],
             "importance": r["importance"],
-            "score": round(score, 3),
+            "source": r["source"],
             "created_at": r["created_at"],
+            "updated_at": r["updated_at"],
+            "score": round(score, 3),
+            "vec_sim": round(vec_sim, 3),
         })
 
     # Sort by score descending, take top `limit`
@@ -1236,25 +1247,6 @@ def update_core_memory(user_id: int, content: str) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Reminders — DEPRECATED: import from mochi.skills.reminder.queries instead
-# ═══════════════════════════════════════════════════════════════════════════
-
-from mochi.skills.reminder.queries import (  # noqa: E402, F401  # re-export
-    create_reminder, get_pending_reminders, mark_reminder_fired,
-    get_next_pending_reminder, reschedule_reminder,
-)
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Todos — DEPRECATED: import from mochi.skills.todo.queries instead
-# ═══════════════════════════════════════════════════════════════════════════
-
-from mochi.skills.todo.queries import (  # noqa: E402, F401  # re-export
-    create_todo, get_todos, complete_todo, delete_todo, update_todo,
-    purge_done_todos,
-)
-
-
-# ═══════════════════════════════════════════════════════════════════════════
 # Usage Logging
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -1363,12 +1355,63 @@ def get_awake_tick_count_today() -> int:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Health Log — DEPRECATED: import from mochi.skills.meal.queries instead
+# Proactive Log — tracks sent proactive messages for Think dedup
 # ═══════════════════════════════════════════════════════════════════════════
 
-from mochi.skills.meal.queries import (  # noqa: E402, F401  # re-export
-    save_health_log, query_health_log, delete_health_log_items,
-)
+def log_proactive(content: str, msg_type: str = "proactive") -> None:
+    """Record a proactive message that was sent to the user."""
+    now = datetime.now(TZ).isoformat()
+    conn = _connect()
+    conn.execute(
+        "INSERT INTO proactive_log (type, content, created_at) VALUES (?, ?, ?)",
+        (msg_type, content, now),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_today_proactive_sent() -> list[dict]:
+    """Return today's proactive messages (up to 5, newest first).
+
+    Uses logical_today() for day boundary consistency with diary/heartbeat.
+    Each entry: {"type": topic, "content": first 80 chars, "time": HH:MM}.
+    """
+    from mochi.config import logical_today
+    today = logical_today()
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT type, content, created_at FROM proactive_log "
+        "WHERE created_at LIKE ? ORDER BY id DESC LIMIT 5",
+        (f"{today}%",),
+    ).fetchall()
+    conn.close()
+    result = []
+    for r in rows:
+        time_str = ""
+        try:
+            dt = datetime.fromisoformat(r["created_at"])
+            time_str = dt.strftime("%H:%M")
+        except (ValueError, TypeError):
+            pass
+        result.append({
+            "type": r["type"],
+            "content": r["content"][:80],
+            "time": time_str,
+        })
+    return result
+
+
+def cleanup_proactive_log(days: int = 30) -> int:
+    """Delete proactive_log entries older than N days. Returns count deleted."""
+    cutoff = (datetime.now(TZ) - timedelta(days=days)).isoformat()
+    conn = _connect()
+    cursor = conn.execute(
+        "DELETE FROM proactive_log WHERE created_at < ?", (cutoff,)
+    )
+    deleted = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return deleted
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1434,43 +1477,6 @@ def get_daily_message_counts(user_id: int, days: int = 7) -> list[dict]:
         d = (now - timedelta(days=days - 1 - i)).strftime("%Y-%m-%d")
         result.append({"date": d, "count": counts_map.get(d, 0)})
     return result
-
-
-def get_upcoming_reminders(user_id: int, hours_ahead: int = 2) -> list[dict]:
-    """Get reminders due within the next N hours."""
-    now = datetime.now(TZ)
-    cutoff = (now + timedelta(hours=hours_ahead)).isoformat()
-    conn = _connect()
-    rows = conn.execute(
-        "SELECT id, message, remind_at FROM reminders WHERE user_id = ? AND fired = 0 AND remind_at <= ?",
-        (user_id, cutoff),
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
-def get_active_todo_count(user_id: int) -> int:
-    """Count active (not done) todos for a user."""
-    conn = _connect()
-    row = conn.execute(
-        "SELECT COUNT(*) as cnt FROM todos WHERE user_id = ? AND done = 0",
-        (user_id,),
-    ).fetchone()
-    conn.close()
-    return row["cnt"] if row else 0
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Habits — DEPRECATED: import from mochi.skills.habit.queries instead
-# ═══════════════════════════════════════════════════════════════════════════
-
-from mochi.skills.habit.queries import (  # noqa: E402, F401  # re-export
-    add_habit, list_habits, deactivate_habit, update_habit,
-    checkin_habit, get_habit_checkins, delete_habit_checkin,
-    get_habit_stats, get_all_habit_checkins_for_period,
-    get_latest_habit_checkins_for_period, get_habit_streak,
-    pause_habit, resume_habit,
-)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1542,12 +1548,3 @@ def delete_skill_config(skill_name: str, key: str) -> None:
     )
     conn.commit()
     conn.close()
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Sticker Registry — DEPRECATED: import from mochi.skills.sticker.queries instead
-# ═══════════════════════════════════════════════════════════════════════════
-
-from mochi.skills.sticker.queries import (  # noqa: E402, F401  # re-export
-    save_sticker, get_stickers_by_tag, get_sticker_count, delete_sticker,
-)

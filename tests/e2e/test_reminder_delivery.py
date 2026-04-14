@@ -7,7 +7,7 @@ get_pending_reminders / get_next_pending_reminder → fire → mark_reminder_fir
 
 import pytest
 
-from mochi.db import (
+from mochi.skills.reminder.queries import (
     create_reminder,
     get_pending_reminders,
     get_next_pending_reminder,

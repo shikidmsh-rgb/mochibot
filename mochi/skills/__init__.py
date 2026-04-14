@@ -38,6 +38,7 @@ _SKILLS_DIR = Path(__file__).parent
 # Registries
 _skills: dict[str, Skill] = {}           # name → skill instance
 _tool_map: dict[str, str] = {}           # tool_name → skill_name
+_prompt_hooks: dict[str, Skill] = {}     # skill_name → skill (has prompt_section)
 
 
 def init_all_skill_schemas() -> None:
@@ -136,6 +137,10 @@ def discover() -> list[str]:
                 tool_name = tool.get("function", {}).get("name", "")
                 if tool_name:
                     _tool_map[tool_name] = skill.name
+
+            # Register prompt section hook if skill provides one
+            if hasattr(skill, 'prompt_section') and callable(skill.prompt_section):
+                _prompt_hooks[skill.name] = skill
 
             registered.append(skill.name)
             log.info("Registered skill: %s (type=%s, tools=%s, triggers=%s)",
@@ -280,6 +285,32 @@ async def dispatch(tool_name: str, args: dict, user_id: int = 0,
     return await skill.run(context)
 
 
+def all_skills() -> dict[str, Skill]:
+    """Return the full skill registry (read-only snapshot)."""
+    return dict(_skills)
+
+
+def get_prompt_sections(compact: bool = False) -> list[str]:
+    """Collect system prompt sections from skills that declare prompt_section().
+
+    Returns list of formatted section strings. Respects skill enabled state.
+    """
+    disabled = _get_disabled_skills()
+    sections: list[str] = []
+    for name, skill in _prompt_hooks.items():
+        if name in disabled:
+            continue
+        if getattr(skill, "_config_missing", None):
+            continue
+        try:
+            section = skill.prompt_section(compact=compact)
+            if section:
+                sections.append(section)
+        except Exception:
+            log.warning("prompt_section failed for skill %s", name)
+    return sections
+
+
 # ---------------------------------------------------------------------------
 # v2 API additions
 # ---------------------------------------------------------------------------
@@ -420,7 +451,8 @@ def _build_capability_summary(transport: str = "") -> str:
             excluded_names.append(s.description or s.name)
             continue
         if s.description:
-            lines.append(f"- {s.description}")
+            short = s.description.split("—")[0].strip(" \"") if "—" in s.description else s.description
+            lines.append(f"- {short}")
 
     if excluded_names:
         lines.append(f"- (此平台不可用: {', '.join(excluded_names)})")

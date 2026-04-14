@@ -17,8 +17,9 @@ from datetime import datetime, timezone, timedelta
 from mochi.llm import get_client_for_tier, LLMResponse
 from mochi.prompt_loader import get_prompt
 from mochi.db import (
-    save_message, get_recent_messages, get_core_memory, list_habits, log_usage,
+    save_message, get_recent_messages, get_core_memory, log_usage,
 )
+from mochi.skills.habit.queries import list_habits
 import mochi.skills as skill_registry
 from mochi.transport import IncomingMessage
 
@@ -49,7 +50,7 @@ def _build_system_prompt(user_id: int, usage_rules: str = "",
         habits: Pre-fetched habit list (avoids redundant DB call).
         transport: Transport name for transport-aware capability summary.
     """
-    from mochi.config import HEARTBEAT_INTERVAL_MINUTES, TIMEZONE_OFFSET_HOURS
+    from mochi.config import TIMEZONE_OFFSET_HOURS
     personality = get_prompt("system_chat/soul")
     agent_desc = get_prompt("system_chat/agent")
 
@@ -70,36 +71,18 @@ def _build_system_prompt(user_id: int, usage_rules: str = "",
     if cap:
         parts.append(cap)
 
-    # Always inject current time so relative reminders ("in 5 minutes") can be resolved
-    parts.append(f"## Current time\nRight now it is **{now_str}** (UTC{TIMEZONE_OFFSET_HOURS:+d}).")
-
-    # Framework-injected: let the bot know about its own heartbeat
-    parts.append(
-        f"## Your background process\n"
-        f"You have a heartbeat loop that runs every {HEARTBEAT_INTERVAL_MINUTES} minutes "
-        f"while you're awake. You have your own daily rhythm — you sleep at night and "
-        f"wake up in the morning. When the user says goodnight or goes quiet late at "
-        f"night, you go to sleep too. You wake up when they message you the next day. "
-        f"The heartbeat observes context (time, conversation patterns, etc.) and sometimes decides to "
-        f"proactively reach out — a check-in, a nudge, or a thoughtful message. "
-        f"You don't always send something; you stay quiet when nothing worth noting has changed. "
-        f"If the user asks whether you'll reach out on your own, the answer is yes."
-    )
+    # Always inject current time so relative reminders ("5分钟后") can be resolved
+    parts.append(f"## 当前时间\n现在是 **{now_str}**（UTC{TIMEZONE_OFFSET_HOURS:+d}）。")
 
     if core_memory:
-        parts.append(f"## What you know about the user\n{core_memory}")
+        parts.append(f"## 你对用户的了解\n{core_memory}")
 
-    # Notes (persistent working memory from notes.md)
-    try:
-        from mochi.skills.note.handler import read_notes_for_observation
-        notes_section = read_notes_for_observation(compact=True)
-        if notes_section:
-            parts.append(notes_section)
-    except Exception:
-        pass
+    # Notes (persistent working memory — via prompt section hook)
+    for section in skill_registry.get_prompt_sections(compact=True):
+        parts.append(section)
 
     if usage_rules:
-        parts.append(f"## Tool usage rules\n{usage_rules}")
+        parts.append(f"## 工具使用规则\n{usage_rules}")
 
     # Active habits (only when habit tools are available this turn)
     if user_id and tool_names and habits:
@@ -112,7 +95,9 @@ def _build_system_prompt(user_id: int, usage_rules: str = "",
             if habit_lines:
                 parts.append(f"## 习惯列表 (打卡用)\n{habit_lines}")
 
-    return "\n\n".join(parts) if parts else "You are a friendly AI companion."
+    if not parts:
+        raise RuntimeError("System prompt is empty — check prompts/ directory and prompt_loader")
+    return "\n\n".join(parts)
 
 
 async def chat(message: IncomingMessage) -> ChatResult:
@@ -148,10 +133,8 @@ async def chat(message: IncomingMessage) -> ChatResult:
             sticker_skill is not None
             and message.transport in sticker_skill.exclude_transports
         )
-        if not sticker_excluded:
-            from mochi.skills.sticker.handler import StickerSkill
-
-            result = await StickerSkill().learn_sticker(
+        if sticker_skill and not sticker_excluded:
+            result = await sticker_skill.learn_sticker(
                 user_id=user_id,
                 file_id=sticker_data["file_id"],
                 set_name=sticker_data.get("set_name", ""),
@@ -238,13 +221,22 @@ async def chat(message: IncomingMessage) -> ChatResult:
     escalation_count = 0
 
     for round_num in range(max_tool_rounds):
-        response = await asyncio.to_thread(
-            client.chat,
-            messages=messages,
-            tools=tools if tools else None,
-            temperature=0.7,
-            max_tokens=AI_CHAT_MAX_COMPLETION_TOKENS,
-        )
+        for _attempt in range(2):
+            try:
+                response = await asyncio.to_thread(
+                    client.chat,
+                    messages=messages,
+                    tools=tools if tools else None,
+                    temperature=0.7,
+                    max_tokens=AI_CHAT_MAX_COMPLETION_TOKENS,
+                )
+                break
+            except Exception as e:
+                if _attempt == 0:
+                    log.warning("LLM call failed (attempt 1), retrying: %s", e)
+                    continue
+                log.error("LLM call failed (attempt 2): %s", e, exc_info=True)
+                return ChatResult(text=f"API 报错：{e}")
 
         log_usage(
             response.prompt_tokens, response.completion_tokens,
@@ -339,7 +331,7 @@ async def chat(message: IncomingMessage) -> ChatResult:
 
     # If we exhausted tool rounds, return whatever we have
     reply = STICKER_RE.sub("", response.content or "").strip()
-    reply = reply or "I got a bit tangled up. Could you try again?"
+    reply = reply or "处理过程出了点问题，你再说一次试试？"
     save_message(user_id, "assistant", reply)
     return ChatResult(text=reply, stickers=pending_stickers)
 
@@ -472,14 +464,9 @@ async def chat_bedtime_tidy(
         core_memory = get_core_memory(user_id)
         system_prompt = _build_system_prompt(user_id, core_memory=core_memory)
 
-        # Inject notes.md so LLM sees current notes without a tool call
-        try:
-            from mochi.skills.note.handler import read_notes_for_observation
-            notes_section = read_notes_for_observation(compact=False)
-            if notes_section:
-                system_prompt += f"\n\n{notes_section}\n"
-        except Exception as e:
-            log.warning("bedtime_tidy: failed to load notes: %s", e)
+        # Inject notes via prompt section hook (full, not compact)
+        for section in skill_registry.get_prompt_sections(compact=False):
+            system_prompt += f"\n\n{section}\n"
 
         # Load history for context awareness
         history = get_recent_messages(user_id, limit=PROACTIVE_CHAT_HISTORY_TURNS)

@@ -6,12 +6,14 @@
 
 轻量自托管 · SQLite · 支持 OpenAI / Azure / Anthropic
 
+**零门槛配置**——运行脚本后自动打开管理后台（Web UI），在浏览器里填 API key 和 bot token，点一下就能启动。云服务器？只填 bot token，发 `/admin` 给 bot 就能在手机上完成全部配置。
+
 </div>
 <img width="1110" height="544" alt="image" src="https://github.com/user-attachments/assets/3e81dc4d-b517-43a9-ac37-9899b73e5fea" />
 
 ---
 
-## 它能做什么
+## TA 能做什么
 
 ### 🧠 长期记忆
 
@@ -23,17 +25,17 @@
 
 ### 💬 活人感
 
-- **自定义性格**——性格、语气、关注点都写在一个 prompt 文件里，你定义它是谁
-- **表情包**——转发 Telegram 表情包给ta，自动学习。之后聊天会自己发
-- **后台心跳**——不等你发消息。ta在后台定期看你的习惯、待办、提醒，该催的时候主动找你
-- **跟你一起作息**——你睡ta也睡，你醒ta也醒
+- **自定义性格**——性格、语气、关注点都写在一个 prompt 文件里，你定义 TA 是谁
+- **表情包**——转发 Telegram 表情包给 TA，自动学习。之后聊天会自己发
+- **后台心跳**——不等你发消息。TA 在后台定期看你的习惯、待办、提醒，该催的时候主动找你
+- **跟你一起作息**——你睡 TA 也睡，你醒 TA 也醒
 - **打字节奏**——消息拆成多条气泡 + 打字指示器
-- **早安晚安**——早上告诉你今天有什么，晚上复盘今天怎么样（可选）
+
 
 ### ✅ ADHD 友好
 
 - **习惯追踪**——频率（每天两次、周一三五……）、时间上下文（早晚、饭后）、重要度（⚡ = 健康/用药类）。打卡、暂停都行
-- **到点就催**——⚡重要习惯过时了必催，不是看心情。晚上药没吃？它不会放过你
+- **到点就催**——⚡重要习惯过时了必催，不是看心情。晚上药没吃？TA 不会放过你
 - **精确提醒**——到点即响，支持循环（每天/工作日/每周/每月）
 - **待办清单**——随口说"我要买菜"就记下来，快到期的会推给你
 - **打卡历史**——`✅ ✅ ❌ ✅ ✅ ✅ ✅`
@@ -61,7 +63,7 @@
 - **轻量**——单进程、SQLite，不需要 Docker/Redis/Postgres，`pip install` 就能跑
 - **自托管**——数据留在你自己的机器上
 - **易扩展**——Skill 和 Observer 即插即用，放个文件夹重启就行
-- **管理后台**——Web UI 配置模型、调心跳参数、开关 skill、编辑人设 prompt
+- **管理后台**——Web UI 配置模型、调心跳参数、开关 skill、编辑人设 prompt。手机适配，支持 `/admin` 命令远程获取管理链接。云服务器上只填一个 bot token 就能启动（Setup Mode），在手机上完成全部配置
 - **支持 Telegram 和 WeChat**——二选一，在管理后台配置。推荐 Telegram（支持表情包、语音等丰富交互）
 
 ---
@@ -74,6 +76,7 @@
 |-------|------|
 | **habit** | 习惯追踪——打卡、暂停、催促，支持频率和重要度 |
 | **todo** | 一次性待办——追踪到完成为止 |
+| **note** | 备忘/笔记——不定时、不打卡，持续关注或条件触发的事项，心跳每轮可见 |
 | **reminder** | 定时提醒——到点触发，支持重复（每天/工作日/每周/每月） |
 | **meal** | 饮食记录——自然语言 → 热量估算 + 营养素拆解 + 历史查询 |
 | **oura** | Oura Ring 集成——睡眠、活动、准备度、压力、心率、血氧（需配置） |
@@ -86,6 +89,8 @@
 ---
 
 ## 快速开始
+
+> **完全新手？** 看 [新手上路手册](docs/getting-started.md)，手把手从打开终端开始教你。
 
 **准备好**：Python 3.11+、一个 LLM API key、一个消息平台（[Telegram bot token](https://core.telegram.org/bots#how-do-i-create-a-bot) 或 WeChat）
 
@@ -140,6 +145,18 @@ docker compose up -d         # 后台运行
 
 数据保存在 `data/` 目录，容器删除不丢失。
 
+### 手动运行（无 Docker / 无 systemd）
+
+```bash
+git clone https://github.com/shikidmsh-rgb/mochibot.git && cd mochibot
+python3 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env        # 填写必要配置
+python start.py
+```
+
+`start.py` 会在 bot 请求重启时（如通过管理后台的重启按钮）自动重新启动进程。如果直接运行 `python -m mochi.main`，重启按钮将不会生效。
+
 ### 无 Docker 部署（systemd）
 
 <details>
@@ -182,21 +199,27 @@ sudo journalctl -u mochibot -f          # 查看日志
 
 ### 云服务器上使用管理后台
 
-管理后台默认绑定 `127.0.0.1:8080`，只能从服务器本机访问。部署在云 VM 上时，推荐用以下方式远程打开后台：
+配置了消息平台（Telegram / WeChat）后，管理后台会自动绑定到 `0.0.0.0` 并生成 `ADMIN_TOKEN`，无需手动配置。
 
-#### 方式一：SSH 隧道（推荐，零配置）
+#### 方式一：`/admin` 命令（最简单）
+
+给 bot 发 `/admin`，TA 会回复管理后台的 URL（带 token）。在手机浏览器里打开就能配置。
+
+> 同一局域网下直接可用。云服务器需要确保端口（默认 8080）在安全组/防火墙中放开。
+
+#### 方式二：SSH 隧道（安全远程访问）
 
 在你**本地电脑**的终端运行：
 
 ```bash
-ssh -L 8080:127.0.0.1:8080 user@your-server-ip
+ssh -L 8080:localhost:8080 user@your-server-ip
 ```
 
-然后在本地浏览器打开 `http://localhost:8080`。流量通过 SSH 加密传输，服务端不需要改任何配置。
+然后在本地浏览器打开 `http://localhost:8080`。流量通过 SSH 加密传输。
 
-#### 方式二：反向代理 + HTTPS（长期使用）
+#### 方式三：反向代理 + HTTPS（长期使用）
 
-适合需要频繁访问、或多人管理的场景。用 Caddy / Nginx 做反向代理，让它处理 HTTPS：
+适合需要频繁访问、或多人管理的场景。用 Caddy / Nginx 做反向代理，处理 HTTPS：
 
 **Caddy**（自动申请证书，最简单）：
 
@@ -224,11 +247,7 @@ server {
 }
 ```
 
-> **重要**：使用反向代理时，务必在 `.env` 中设置 `ADMIN_TOKEN`，否则任何人都能访问你的后台。
-
-#### 不推荐：直接暴露
-
-设置 `ADMIN_BIND=0.0.0.0` 可以让后台对外开放，但因为是明文 HTTP，token 会在网络上裸传。**仅限内网或测试环境使用。**
+> **重要**：使用反向代理时，确保 `.env` 中有 `ADMIN_TOKEN`（自动生成或手动设置），否则任何人都能访问你的后台。
 
 ---
 
@@ -288,7 +307,7 @@ THINK_MODEL=gpt-4o-mini      # 心跳 + 维护
 | 早间汇报 | `prompts/think_system.md`（Think 模型在每天第一次心跳时自动生成早报，无需额外配置） |
 | 添加 skill 或 observer | 详见 [CONTRIBUTING.md](CONTRIBUTING.md) |
 
-> 性格文件影响最大——改了它，bot 说话方式就变。
+> 性格文件影响最大——改了之后，bot 说话方式就变。
 
 ---
 
@@ -305,6 +324,7 @@ THINK_MODEL=gpt-4o-mini      # 心跳 + 维护
 - [x] Oura Ring 集成
 - [x] 日记系统（今日状态面板 + 夜间归档）
 - [x] 管理后台（Web UI）
+- [x] Setup Mode + `/admin` 命令（手机配置）
 - [x] 打字节奏（多气泡 + 打字指示器）
 - [x] 早间汇报（Think 驱动）
 - [ ] 语音消息

@@ -365,18 +365,103 @@ ADMIN_ENABLED = _env_bool("ADMIN_ENABLED", True)
 ADMIN_PORT = _env_int("ADMIN_PORT", 8080)
 ADMIN_BIND = _env("ADMIN_BIND", "127.0.0.1")   # default localhost-only; set 0.0.0.0 for remote access
 ADMIN_TOKEN = _env("ADMIN_TOKEN")               # optional; if set, all requests must include this token
+LOG_LEVEL = _env("LOG_LEVEL", "INFO")            # DEBUG, INFO, WARNING, ERROR, CRITICAL
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Startup Validation
 # ═══════════════════════════════════════════════════════════════════════════
 
-def validate_config() -> None:
-    """Preflight check at startup — exit on missing critical config."""
+def _is_private_lan_ip(ip: str) -> bool:
+    """Check if an IP is a standard private LAN address (RFC 1918)."""
+    return (ip.startswith("192.168.")
+            or ip.startswith("10.")
+            or any(ip.startswith(f"172.{i}.") for i in range(16, 32)))
+
+
+def _detect_host_ip() -> str:
+    """Best-effort detection of a LAN IP for this machine.
+
+    Prefers RFC 1918 private addresses (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
+    over other non-loopback IPs, since VPN/proxy software can inject addresses
+    like 198.18.x.x that look non-loopback but aren't reachable from the LAN.
+    """
+    import socket
+
+    candidates: list[str] = []
+
+    # Method 1: UDP connect to public DNS (discovers outbound route IP)
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        if ip and ip != "127.0.0.1":
+            candidates.append(ip)
+    except Exception:
+        pass
+
+    # Method 2: all IPs from getaddrinfo (may list multiple interfaces)
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ip = info[4][0]
+            if ip and ip != "127.0.0.1" and ip not in candidates:
+                candidates.append(ip)
+    except Exception:
+        pass
+
+    # Prefer RFC 1918 private LAN IPs
+    for ip in candidates:
+        if _is_private_lan_ip(ip):
+            return ip
+
+    # Fall back to any non-loopback IP
+    return candidates[0] if candidates else ""
+
+
+# Populated by validate_config() when in setup mode — used by /admin command
+_DETECTED_HOST: str = ""
+
+
+def _persist_env_key(key: str, value: str) -> None:
+    """Write a key=value into .env (insert or update). Does not raise."""
+    env_path = _PROJECT_ROOT / ".env"
+    try:
+        if env_path.exists():
+            lines = env_path.read_text().splitlines()
+            found = False
+            for i, line in enumerate(lines):
+                if line.startswith(f"{key}="):
+                    lines[i] = f"{key}={value}"
+                    found = True
+                    break
+            if not found:
+                lines.append(f"{key}={value}")
+            env_path.write_text("\n".join(lines) + "\n")
+        else:
+            env_path.write_text(f"{key}={value}\n")
+    except Exception:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Could not persist %s to .env — set it manually", key
+        )
+
+
+def validate_config() -> str:
+    """Preflight check at startup.
+
+    Returns:
+        "ok"         — all good, start normally
+        "setup_mode" — transport configured but no LLM; start in setup mode
+    Exits:
+        sys.exit(1)  — nothing useful can run (no model AND no transport)
+    """
     import sys
+    import secrets
     import logging as _logging
     _log = _logging.getLogger(__name__)
-    issues: list[tuple[str, str, str]] = []
+
+    global ADMIN_BIND, ADMIN_TOKEN, _DETECTED_HOST
 
     # Check if any model is available in DB (seeded from .env or configured via admin portal)
     has_model_db = False
@@ -389,24 +474,54 @@ def validate_config() -> None:
     except Exception:
         pass  # DB not initialized yet or admin_db unavailable
 
+    has_transport = bool(TELEGRAM_BOT_TOKEN) or WEIXIN_ENABLED
+
+    if not has_model_db and has_transport:
+        # ── Setup mode: transport ready but no LLM ──
+        _log.info("=" * 55)
+        _log.info("  SETUP MODE — transport configured, no LLM model yet")
+        _log.info("  Send /admin to the bot to get the admin portal URL")
+        _log.info("=" * 55)
+
+        # Bind admin to all interfaces so phone can reach it (memory only)
+        ADMIN_BIND = "0.0.0.0"
+
+        # Ensure ADMIN_TOKEN exists for secure remote access
+        if not ADMIN_TOKEN:
+            token = secrets.token_urlsafe(32)
+            ADMIN_TOKEN = token
+            os.environ["ADMIN_TOKEN"] = token
+            _persist_env_key("ADMIN_TOKEN", token)
+            _log.info("Generated ADMIN_TOKEN (saved to .env)")
+
+        # Detect server IP for /admin command
+        _DETECTED_HOST = _detect_host_ip()
+        if _DETECTED_HOST:
+            _log.info("Detected server IP: %s", _DETECTED_HOST)
+
+        return "setup_mode"
+
     if not has_model_db:
-        issues.append(("CRITICAL", "MODEL_CONFIG",
-                        "No LLM model configured — set CHAT_MODEL in .env or configure via admin portal"))
-    if not TELEGRAM_BOT_TOKEN and not WEIXIN_ENABLED:
-        issues.append(("WARN", "TELEGRAM_BOT_TOKEN / WEIXIN_ENABLED",
-                        "No transport configured — bot will not receive messages"))
-
-    has_critical = False
-    for level, name, impact in issues:
-        if level == "CRITICAL":
-            _log.critical("[%s] %s — %s", level, name, impact)
-            has_critical = True
-        else:
-            _log.warning("[%s] %s — %s", level, name, impact)
-
-    if has_critical:
-        _log.critical("Critical config missing. Set CHAT_MODEL in .env and restart, or configure via admin portal.")
+        _log.critical(
+            "[CRITICAL] MODEL_CONFIG — "
+            "No LLM model configured — set CHAT_MODEL in .env or configure via admin portal"
+        )
+        if not has_transport:
+            _log.warning(
+                "[WARN] TELEGRAM_BOT_TOKEN / WEIXIN_ENABLED — "
+                "No transport configured — bot will not receive messages"
+            )
+        _log.critical(
+            "Critical config missing. Set CHAT_MODEL in .env and restart, "
+            "or configure via admin portal."
+        )
         sys.exit(1)
+
+    if not has_transport:
+        _log.warning(
+            "[WARN] TELEGRAM_BOT_TOKEN / WEIXIN_ENABLED — "
+            "No transport configured — bot will not receive messages"
+        )
 
     # Deprecation warnings for removed config keys
     for old_key, new_key in [
@@ -428,3 +543,5 @@ def validate_config() -> None:
                 "You can safely remove this from .env.",
                 removed_key,
             )
+
+    return "ok"

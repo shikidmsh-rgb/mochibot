@@ -127,6 +127,14 @@ def archive_notes() -> dict:
 
 class NoteSkill(Skill):
 
+    def prompt_section(self, compact: bool = False) -> str:
+        """Provide notes content for system prompt injection."""
+        return read_notes_for_observation(compact=compact)
+
+    def archive(self) -> dict:
+        """Snapshot notes.md to monthly archive (used by maintenance)."""
+        return archive_notes()
+
     async def execute(self, context: SkillContext) -> SkillResult:
         args = context.args
         action = (args.get("action") or "").lower()

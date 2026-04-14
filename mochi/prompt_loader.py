@@ -9,14 +9,27 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 _PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
+_DATA_PROMPTS_DIR = Path(__file__).resolve().parent.parent / "data" / "prompts"
 _cache: dict[str, str] = {}
+
+# Prompts that users may override via data/prompts/ (survives git pull)
+_USER_OVERRIDABLE = {"system_chat/soul", "system_chat/user"}
 
 
 def get_prompt(name: str) -> str:
     """Load a prompt template by name (without .md extension).
 
+    For user-overridable prompts (soul, user), checks data/prompts/ first.
     Always reads from disk (hot-reload). Falls back to cache if file missing.
     """
+    # Check user override first
+    if name in _USER_OVERRIDABLE:
+        override = _DATA_PROMPTS_DIR / f"{name}.md"
+        if override.exists():
+            content = override.read_text(encoding="utf-8").strip()
+            _cache[name] = content
+            return content
+
     path = _PROMPTS_DIR / f"{name}.md"
     if path.exists():
         content = path.read_text(encoding="utf-8").strip()

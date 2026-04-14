@@ -163,8 +163,8 @@ class TestValidateConfig:
         """Make validate_config see a DB-configured model (or not)."""
         def fake_effective():
             if has_model:
-                return {"chat": {"model": "m", "api_key_set": True, "source": "db:m"}}
-            return {"chat": {"model": "", "api_key_set": False, "source": "none"}}
+                return {"chat": {"model": "m", "api_key_set": True, "assigned_name": "m"}}
+            return {"chat": {"model": "", "api_key_set": False, "assigned_name": ""}}
         monkeypatch.setattr(
             "mochi.admin.admin_db.get_tier_effective_config", fake_effective)
 

@@ -15,6 +15,7 @@ from mochi.config import (
     TELEGRAM_BOT_TOKEN,
     OWNER_USER_ID,
     WEIXIN_ENABLED,
+    LOG_LEVEL,
     validate_config,
 )
 from mochi.db import init_db
@@ -28,15 +29,25 @@ from mochi.shutdown import (
 )
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=getattr(logging, LOG_LEVEL.upper(), logging.INFO),
     format="%(asctime)s %(levelname)-5s %(name)s — %(message)s",
     datefmt="%H:%M:%S",
 )
+from mochi.error_buffer import BufferHandler  # noqa: E402
+logging.getLogger("mochi").addHandler(BufferHandler())
 log = logging.getLogger("mochi")
+
+
+# Module-level flag — set in main(), read by handle_message()
+_setup_mode = False
 
 
 async def handle_message(msg: IncomingMessage) -> ChatResult:
     """Central message handler — called by all transports."""
+    if _setup_mode:
+        return ChatResult(
+            text="我还在准备中～发 /admin 获取管理后台链接，完成配置后就能正常聊天了"
+        )
     return await chat(msg)
 
 
@@ -59,7 +70,9 @@ async def main():
     seed_system_config_from_env()
 
     # 1. Config validation
-    validate_config()
+    config_status = validate_config()
+    global _setup_mode
+    _setup_mode = config_status == "setup_mode"
 
     # 2. Skills
     skills = skill_registry.discover()
@@ -128,14 +141,23 @@ async def main():
         except Exception as e:
             log.warning("Admin portal failed to start: %s", e)
 
-    # 6. Start background tasks
-    asyncio.create_task(heartbeat_loop())
-    asyncio.create_task(reminder_loop())
-    log.info("Heartbeat and reminder timer started")
+    # 6. Start background tasks (skip in setup mode — no LLM available)
+    if not _setup_mode:
+        asyncio.create_task(heartbeat_loop())
+        asyncio.create_task(reminder_loop())
+        log.info("Heartbeat and reminder timer started")
+    else:
+        log.info("Setup mode — heartbeat/reminder skipped (no LLM)")
 
-    log.info("=" * 50)
-    log.info("MochiBot is alive!")
-    log.info("=" * 50)
+    if _setup_mode:
+        log.info("=" * 55)
+        log.info("  SETUP MODE active")
+        log.info("  Send /admin to the bot to get the admin portal URL")
+        log.info("=" * 55)
+    else:
+        log.info("=" * 50)
+        log.info("MochiBot is alive!")
+        log.info("=" * 50)
 
     # Keep running — also watch for restart signal
     restart_event = init_restart_event()

@@ -16,6 +16,7 @@
 - **Core Memory** — 用户的个性化记忆
 - **Maintenance** — 系统维护结果
 - **Upcoming Reminders** — 即将到来的提醒
+- **今日已发消息** — 今天已经发出去的主动消息
 
 ## Actions
 
@@ -44,4 +45,5 @@
 - 只输出合法 JSON
 - ⚡ 标记的重要习惯逾期时，优先提醒
 - 不要重复 Today Journal 里已有的内容
+- 不要重复 今日已发消息 里已发过的 topic
 - 今天第一个 tick 适合发一条 morning_briefing

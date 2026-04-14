@@ -1,10 +1,11 @@
 """Tests for the AI client — system prompt building, sticker regex, chat_proactive."""
 
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 
-from mochi.ai_client import _build_system_prompt, STICKER_RE, chat_proactive
+from mochi.ai_client import _build_system_prompt, STICKER_RE, chat_proactive, chat, ChatResult
 from mochi.llm import LLMResponse
+from mochi.transport import IncomingMessage
 
 
 class TestBuildSystemPrompt:
@@ -23,14 +24,14 @@ class TestBuildSystemPrompt:
         """System prompt includes current time section."""
         with patch("mochi.ai_client.get_prompt", return_value=""):
             prompt = _build_system_prompt(user_id=1)
-        assert "Current time" in prompt
+        assert "当前时间" in prompt
 
     def test_includes_core_memory(self):
         """System prompt includes core memory when provided."""
         with patch("mochi.ai_client.get_prompt", return_value=""):
             prompt = _build_system_prompt(user_id=1, core_memory="User likes cats")
         assert "User likes cats" in prompt
-        assert "What you know about the user" in prompt
+        assert "你对用户的了解" in prompt
 
     def test_no_core_memory_section_when_empty(self):
         """Core memory section is omitted when empty."""
@@ -43,7 +44,7 @@ class TestBuildSystemPrompt:
         with patch("mochi.ai_client.get_prompt", return_value=""):
             prompt = _build_system_prompt(user_id=1, usage_rules="Always be polite")
         assert "Always be polite" in prompt
-        assert "Tool usage rules" in prompt
+        assert "工具使用规则" in prompt
 
     def test_includes_habits_when_habit_tools_present(self):
         """System prompt includes habit list when habit tools are in tool_names."""
@@ -76,7 +77,7 @@ class TestBuildSystemPrompt:
         with patch("mochi.ai_client.get_prompt", return_value=""):
             prompt = _build_system_prompt(user_id=1)
         # Should still have at least the time section
-        assert "Current time" in prompt
+        assert "当前时间" in prompt
 
 
 class TestStickerRegex:
@@ -199,3 +200,95 @@ class TestChatProactive:
                 user_id=1,
             )
         assert result is None
+
+
+def _make_msg(text="hello"):
+    return IncomingMessage(user_id=1, channel_id=100, text=text, transport="telegram")
+
+
+def _ok_response(content="Hi there!"):
+    return LLMResponse(
+        content=content,
+        prompt_tokens=10, completion_tokens=5, total_tokens=15,
+        model="test-model",
+    )
+
+
+# Shared patch targets to isolate chat() from DB / skills / prompts
+_CHAT_PATCHES = {
+    "mochi.ai_client.save_message": MagicMock(),
+    "mochi.ai_client.get_core_memory": MagicMock(return_value=""),
+    "mochi.ai_client.get_recent_messages": MagicMock(return_value=[]),
+    "mochi.ai_client.get_prompt": MagicMock(return_value="be nice"),
+    "mochi.ai_client.list_habits": MagicMock(return_value=[]),
+    "mochi.ai_client.log_usage": MagicMock(),
+    "mochi.ai_client.skill_registry.get_tools": MagicMock(return_value=[]),
+    "mochi.ai_client.skill_registry.get_skill": MagicMock(return_value=None),
+}
+
+
+def _apply_chat_patches(extra=None):
+    """Stack context-manager patches for chat() isolation."""
+    import contextlib
+    targets = dict(_CHAT_PATCHES)
+    if extra:
+        targets.update(extra)
+    return contextlib.ExitStack(), targets
+
+
+class TestChatRetry:
+
+    @pytest.mark.asyncio
+    async def test_retry_success_on_second_attempt(self):
+        """First LLM call fails, retry succeeds — user gets normal reply."""
+        mock_client = MagicMock()
+        mock_client.chat.side_effect = [
+            Exception("Connection timeout"),
+            _ok_response("Retry worked!"),
+        ]
+        targets = dict(_CHAT_PATCHES)
+        targets["mochi.ai_client.get_client_for_tier"] = MagicMock(return_value=mock_client)
+
+        import contextlib
+        with contextlib.ExitStack() as stack:
+            for target, mock_obj in targets.items():
+                stack.enter_context(patch(target, mock_obj))
+            result = await chat(_make_msg())
+
+        assert result.text == "Retry worked!"
+        assert mock_client.chat.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_both_attempts_fail_returns_error(self):
+        """Both LLM calls fail — user gets API error message."""
+        mock_client = MagicMock()
+        mock_client.chat.side_effect = Exception("Insufficient quota")
+        targets = dict(_CHAT_PATCHES)
+        targets["mochi.ai_client.get_client_for_tier"] = MagicMock(return_value=mock_client)
+
+        import contextlib
+        with contextlib.ExitStack() as stack:
+            for target, mock_obj in targets.items():
+                stack.enter_context(patch(target, mock_obj))
+            result = await chat(_make_msg())
+
+        assert "API 报错" in result.text
+        assert "Insufficient quota" in result.text
+        assert mock_client.chat.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_first_attempt_success_no_retry(self):
+        """LLM call succeeds on first try — no retry needed."""
+        mock_client = MagicMock()
+        mock_client.chat.return_value = _ok_response("All good!")
+        targets = dict(_CHAT_PATCHES)
+        targets["mochi.ai_client.get_client_for_tier"] = MagicMock(return_value=mock_client)
+
+        import contextlib
+        with contextlib.ExitStack() as stack:
+            for target, mock_obj in targets.items():
+                stack.enter_context(patch(target, mock_obj))
+            result = await chat(_make_msg())
+
+        assert result.text == "All good!"
+        assert mock_client.chat.call_count == 1
