@@ -291,6 +291,18 @@ VEC_EMBEDDING_DIM = _env_int("VEC_EMBEDDING_DIM", 1536)
 VEC_SEARCH_CANDIDATE_LIMIT = _env_int("VEC_SEARCH_CANDIDATE_LIMIT", 50)
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Memory Auto-Recall (pre-turn embedding retrieval)
+# ═══════════════════════════════════════════════════════════════════════════
+
+MEMORY_AUTO_RECALL = _env_bool("MEMORY_AUTO_RECALL", True)
+MEMORY_AUTO_RECALL_TOP_K = _env_int("MEMORY_AUTO_RECALL_TOP_K", 5)
+MEMORY_AUTO_RECALL_MAX_ITEMS = _env_int("MEMORY_AUTO_RECALL_MAX_ITEMS", 3)
+MEMORY_AUTO_RECALL_MIN_VEC_SIM = _env_float("MEMORY_AUTO_RECALL_MIN_VEC_SIM", 0.35)
+MEMORY_AUTO_RECALL_MIN_SCORE = _env_float("MEMORY_AUTO_RECALL_MIN_SCORE", 0.72)
+MEMORY_AUTO_RECALL_MAX_CHARS = _env_int("MEMORY_AUTO_RECALL_MAX_CHARS", 320)
+MEMORY_AUTO_RECALL_COOLDOWN = _env_int("MEMORY_AUTO_RECALL_COOLDOWN", 120)
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Memory Lifecycle
 # ═══════════════════════════════════════════════════════════════════════════
 
