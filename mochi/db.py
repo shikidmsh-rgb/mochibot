@@ -291,6 +291,7 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
     # messages
     _add_col("messages", "processed", "INTEGER NOT NULL DEFAULT 0")
     _add_col("messages", "image_data", "TEXT DEFAULT NULL")
+    _add_col("messages", "tool_history", "TEXT DEFAULT NULL")
 
     # memory_items
     _add_col("memory_items", "access_count", "INTEGER NOT NULL DEFAULT 0")
@@ -599,12 +600,12 @@ def vec_delete(item_ids: list[int],
         if own_conn:
             conn.close()
 
-def save_message(user_id: int, role: str, content: str) -> None:
+def save_message(user_id: int, role: str, content: str, tool_history: str | None = None) -> None:
     now = datetime.now(TZ).isoformat()
     conn = _connect()
     conn.execute(
-        "INSERT INTO messages (user_id, role, content, created_at) VALUES (?, ?, ?, ?)",
-        (user_id, role, content, now),
+        "INSERT INTO messages (user_id, role, content, created_at, tool_history) VALUES (?, ?, ?, ?, ?)",
+        (user_id, role, content, now, tool_history),
     )
     conn.commit()
     conn.close()
@@ -613,7 +614,7 @@ def save_message(user_id: int, role: str, content: str) -> None:
 def get_recent_messages(user_id: int, limit: int = 20) -> list[dict]:
     conn = _connect()
     rows = conn.execute(
-        "SELECT role, content, created_at FROM messages WHERE user_id = ? ORDER BY id DESC LIMIT ?",
+        "SELECT role, content, created_at, tool_history FROM messages WHERE user_id = ? ORDER BY id DESC LIMIT ?",
         (user_id, limit),
     ).fetchall()
     conn.close()
@@ -812,7 +813,8 @@ def save_memory_item(user_id: int, category: str, content: str,
 def recall_memory(user_id: int, query: str = "", category: str = "",
                   limit: int = 20,
                   exclude_categories: list[str] | None = None,
-                  query_embedding: bytes | None = None) -> list[dict]:
+                  query_embedding: bytes | None = None,
+                  bump_access: bool = True) -> list[dict]:
     """Recall memories — hybrid FTS5 BM25 + vector search with decay scoring.
 
     Pipeline:
@@ -980,19 +982,20 @@ def recall_memory(user_id: int, query: str = "", category: str = "",
     scored.sort(key=lambda x: x["score"], reverse=True)
     result = scored[:limit]
 
-    # Bump access_count for returned items
-    item_ids = [m["id"] for m in result]
-    if item_ids:
-        ac_ph = ",".join("?" * len(item_ids))
-        try:
-            conn.execute(
-                f"UPDATE memory_items SET access_count = access_count + 1, "
-                f"last_accessed = ? WHERE id IN ({ac_ph})",
-                [now.isoformat()] + item_ids,
-            )
-            conn.commit()
-        except Exception as e:
-            logger.debug("access_count bump failed: %s", e)
+    # Bump access_count for returned items (skip for auto-recall)
+    if bump_access:
+        item_ids = [m["id"] for m in result]
+        if item_ids:
+            ac_ph = ",".join("?" * len(item_ids))
+            try:
+                conn.execute(
+                    f"UPDATE memory_items SET access_count = access_count + 1, "
+                    f"last_accessed = ? WHERE id IN ({ac_ph})",
+                    [now.isoformat()] + item_ids,
+                )
+                conn.commit()
+            except Exception as e:
+                logger.debug("access_count bump failed: %s", e)
 
     conn.close()
     return result

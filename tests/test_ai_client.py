@@ -3,7 +3,7 @@
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 
-from mochi.ai_client import _build_system_prompt, STICKER_RE, chat_proactive, chat, ChatResult
+from mochi.ai_client import _build_system_prompt, STICKER_RE, chat_proactive, chat, ChatResult, _expand_history
 from mochi.llm import LLMResponse
 from mochi.transport import IncomingMessage
 
@@ -292,3 +292,101 @@ class TestChatRetry:
 
         assert result.text == "All good!"
         assert mock_client.chat.call_count == 1
+
+
+class TestExpandHistory:
+
+    def test_no_tools(self):
+        """Messages without tool_history pass through unchanged."""
+        history = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there", "tool_history": None},
+        ]
+        result = _expand_history(history)
+        assert len(result) == 2
+        assert result[0] == {"role": "user", "content": "hello"}
+        assert result[1] == {"role": "assistant", "content": "hi there"}
+
+    def test_with_tools(self):
+        """tool_history expands into 3-message API-native sequence."""
+        history = [
+            {"role": "user", "content": "what's the weather?"},
+            {
+                "role": "assistant",
+                "content": "It's sunny in Tokyo!",
+                "tool_history": '[{"name": "check_weather"}]',
+            },
+        ]
+        result = _expand_history(history)
+        assert len(result) == 4  # user + assistant(tool_calls) + tool(result) + assistant(text)
+
+        # 1. User message unchanged
+        assert result[0] == {"role": "user", "content": "what's the weather?"}
+
+        # 2. Assistant with tool_calls (content=None)
+        assert result[1]["role"] == "assistant"
+        assert result[1]["content"] is None
+        assert len(result[1]["tool_calls"]) == 1
+        tc = result[1]["tool_calls"][0]
+        assert tc["function"]["name"] == "check_weather"
+        assert tc["id"] == "hist_1_0"
+
+        # 3. Tool result
+        assert result[2]["role"] == "tool"
+        assert result[2]["tool_call_id"] == "hist_1_0"
+        assert result[2]["content"] == "OK"
+
+        # 4. Assistant with original reply
+        assert result[3] == {"role": "assistant", "content": "It's sunny in Tokyo!"}
+
+    def test_multiple_tools(self):
+        """Multiple tools in one turn expand correctly."""
+        history = [
+            {
+                "role": "assistant",
+                "content": "Here's what I found.",
+                "tool_history": '[{"name": "web_search"}, {"name": "check_weather"}]',
+            },
+        ]
+        result = _expand_history(history)
+        # assistant(tool_calls) + tool(web_search) + tool(check_weather) + assistant(text)
+        assert len(result) == 4
+        assert len(result[0]["tool_calls"]) == 2
+        assert result[1]["tool_call_id"] == "hist_0_0"
+        assert result[2]["tool_call_id"] == "hist_0_1"
+
+    def test_invalid_json_fallback(self):
+        """Invalid JSON in tool_history falls back to plain message."""
+        history = [
+            {"role": "assistant", "content": "broken", "tool_history": "not valid json"},
+        ]
+        result = _expand_history(history)
+        assert len(result) == 1
+        assert result[0] == {"role": "assistant", "content": "broken"}
+
+    def test_empty_array(self):
+        """Empty array tool_history does not expand."""
+        history = [
+            {"role": "assistant", "content": "no tools", "tool_history": "[]"},
+        ]
+        result = _expand_history(history)
+        assert len(result) == 1
+        assert result[0] == {"role": "assistant", "content": "no tools"}
+
+    def test_empty_string(self):
+        """Empty string tool_history does not expand."""
+        history = [
+            {"role": "assistant", "content": "no tools", "tool_history": ""},
+        ]
+        result = _expand_history(history)
+        assert len(result) == 1
+        assert result[0] == {"role": "assistant", "content": "no tools"}
+
+    def test_missing_tool_history_key(self):
+        """Messages without tool_history key at all work fine."""
+        history = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
+        result = _expand_history(history)
+        assert len(result) == 2

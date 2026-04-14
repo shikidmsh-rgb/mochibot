@@ -95,6 +95,21 @@ class TestMessages:
         save_message(1, "assistant", "reply")  # should not count
         assert get_message_count_today(1) == 2
 
+    def test_save_with_tool_history(self):
+        """save_message with tool_history stores it and get_recent_messages retrieves it."""
+        save_message(1, "user", "what's the weather?")
+        save_message(1, "assistant", "It's sunny!", tool_history='[{"name": "check_weather"}]')
+        msgs = get_recent_messages(1, limit=10)
+        assert len(msgs) == 2
+        assert msgs[0]["tool_history"] is None  # user message
+        assert msgs[1]["tool_history"] == '[{"name": "check_weather"}]'
+
+    def test_tool_history_default_none(self):
+        """tool_history defaults to None when not provided."""
+        save_message(1, "assistant", "hello")
+        msgs = get_recent_messages(1, limit=10)
+        assert msgs[0]["tool_history"] is None
+
 
 class TestCoreMemory:
     def test_empty(self):
@@ -283,6 +298,7 @@ class TestMigrations:
         cols = [r[1] for r in conn.execute("PRAGMA table_info(messages)").fetchall()]
         assert "processed" in cols, "messages.processed migration failed"
         assert "image_data" in cols, "messages.image_data migration failed"
+        assert "tool_history" in cols, "messages.tool_history migration failed"
         # Existing data preserved
         row = conn.execute("SELECT content FROM messages WHERE user_id=1").fetchone()
         assert row[0] == "hi"

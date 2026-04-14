@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 
@@ -18,6 +19,7 @@ from mochi.llm import get_client_for_tier, LLMResponse
 from mochi.prompt_loader import get_prompt
 from mochi.db import (
     save_message, get_recent_messages, get_core_memory, log_usage,
+    recall_memory,
 )
 from mochi.skills.habit.queries import list_habits
 import mochi.skills as skill_registry
@@ -26,6 +28,149 @@ from mochi.transport import IncomingMessage
 log = logging.getLogger(__name__)
 
 STICKER_RE = re.compile(r"\[STICKER:([^\]]+)\]")
+
+# Tools excluded from tool_history annotation — not meaningful skill executions
+_TOOL_HISTORY_EXCLUDE = frozenset({"request_tools", "send_sticker"})
+
+# ── Auto-recall state (per-user cooldown) ──
+_user_last_recall: dict[int, float] = {}   # user_id → timestamp
+_USER_LAST_RECALL_MAX = 100                # evict oldest when exceeded
+
+
+def _retrieve_memories_for_turn(text: str, user_id: int) -> list[dict]:
+    """Pre-turn automatic memory retrieval via embedding + hybrid search.
+
+    Runs in parallel with router classification and DB fetches.
+    Returns a list of relevant memory dicts, or [] on any failure.
+    """
+    from mochi.config import (
+        MEMORY_AUTO_RECALL, MEMORY_AUTO_RECALL_TOP_K,
+        MEMORY_AUTO_RECALL_MAX_ITEMS, MEMORY_AUTO_RECALL_MIN_VEC_SIM,
+        MEMORY_AUTO_RECALL_MIN_SCORE, MEMORY_AUTO_RECALL_MAX_CHARS,
+        MEMORY_AUTO_RECALL_COOLDOWN,
+    )
+
+    if not MEMORY_AUTO_RECALL or not user_id or not text or not text.strip():
+        return []
+
+    # Cooldown check
+    if MEMORY_AUTO_RECALL_COOLDOWN > 0 and user_id in _user_last_recall:
+        elapsed = time.time() - _user_last_recall[user_id]
+        if elapsed < MEMORY_AUTO_RECALL_COOLDOWN:
+            log.debug("auto-recall: cooldown skip (%.0fs < %ds)",
+                      elapsed, MEMORY_AUTO_RECALL_COOLDOWN)
+            return []
+
+    try:
+        from mochi.model_pool import get_pool
+        query_emb = get_pool().embed(text)
+        if query_emb is None:
+            return []
+
+        recalled = recall_memory(
+            user_id, query=text,
+            limit=max(1, MEMORY_AUTO_RECALL_TOP_K),
+            query_embedding=query_emb,
+            bump_access=False,
+        )
+
+        # Filter by quality gates
+        max_chars = max(80, MEMORY_AUTO_RECALL_MAX_CHARS)
+        selected: list[dict] = []
+        for item in recalled:
+            vec_sim = float(item.get("vec_sim") or 0.0)
+            if vec_sim < MEMORY_AUTO_RECALL_MIN_VEC_SIM:
+                continue
+            raw_score = float(item.get("score") or 0.0)
+            normalized = max(0.0, min(1.0, raw_score / 10.0))
+            if normalized < MEMORY_AUTO_RECALL_MIN_SCORE:
+                continue
+
+            content = " ".join((item.get("content") or "").split())
+            if len(content) > max_chars:
+                content = content[:max_chars - 3].rstrip() + "..."
+
+            selected.append({
+                "text": content,
+                "score": round(normalized, 2),
+                "ts": str(item.get("updated_at") or item.get("created_at") or "")[:10],
+                "category": str(item.get("category") or ""),
+            })
+            if len(selected) >= max(1, MEMORY_AUTO_RECALL_MAX_ITEMS):
+                break
+
+        # Update cooldown timestamp (evict oldest if bounded dict full)
+        if len(_user_last_recall) >= _USER_LAST_RECALL_MAX:
+            oldest = min(_user_last_recall, key=_user_last_recall.get)
+            del _user_last_recall[oldest]
+        _user_last_recall[user_id] = time.time()
+
+        if selected:
+            log.info("auto-recall: %d memories (top score=%.2f)",
+                     len(selected), selected[0]["score"])
+        return selected
+
+    except Exception as e:
+        log.warning("auto-recall failed (non-fatal): %s", e)
+        return []
+
+
+def _expand_history(history: list[dict]) -> list[dict]:
+    """Expand conversation history into API-native messages.
+
+    For assistant messages with tool_history, reconstructs the tool call
+    sequence so the LLM structurally recognizes prior tool usage:
+      1. assistant message with tool_calls (content=None)
+      2. tool result messages (one per tool, content="OK")
+      3. assistant message with original reply text
+    """
+    messages: list[dict] = []
+    for msg_idx, msg in enumerate(history):
+        role = msg.get("role")
+        content = msg.get("content")
+        tool_history_raw = msg.get("tool_history")
+
+        if role == "assistant" and tool_history_raw:
+            try:
+                tool_history = json.loads(tool_history_raw)
+            except (json.JSONDecodeError, TypeError):
+                tool_history = []
+
+            if tool_history:
+                # 1. Assistant message with tool_calls
+                tool_calls = []
+                for t_idx, th in enumerate(tool_history):
+                    call_id = f"hist_{msg_idx}_{t_idx}"
+                    tool_calls.append({
+                        "id": call_id,
+                        "type": "function",
+                        "function": {
+                            "name": th.get("name", "unknown"),
+                            "arguments": "{}",
+                        },
+                    })
+                messages.append({
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": tool_calls,
+                })
+
+                # 2. Tool result messages
+                for t_idx, th in enumerate(tool_history):
+                    call_id = f"hist_{msg_idx}_{t_idx}"
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "content": "OK",
+                    })
+
+                # 3. Assistant message with original reply text
+                messages.append({"role": "assistant", "content": content})
+            else:
+                messages.append({"role": role, "content": content})
+        else:
+            messages.append({"role": role, "content": content})
+    return messages
 
 
 @dataclass
@@ -39,7 +184,8 @@ def _build_system_prompt(user_id: int, usage_rules: str = "",
                          tool_names: list[str] | None = None,
                          core_memory: str = "",
                          habits: list[dict] | None = None,
-                         transport: str = "") -> str:
+                         transport: str = "",
+                         recalled_memories: list[dict] | None = None) -> str:
     """Build the system prompt: personality(Chat) + heartbeat context + core memory.
 
     Args:
@@ -49,6 +195,7 @@ def _build_system_prompt(user_id: int, usage_rules: str = "",
         core_memory: Pre-fetched core memory string (avoids redundant DB call).
         habits: Pre-fetched habit list (avoids redundant DB call).
         transport: Transport name for transport-aware capability summary.
+        recalled_memories: Auto-recalled memories to inject (from _retrieve_memories_for_turn).
     """
     from mochi.config import TIMEZONE_OFFSET_HOURS
     personality = get_prompt("system_chat/soul")
@@ -76,6 +223,16 @@ def _build_system_prompt(user_id: int, usage_rules: str = "",
 
     if core_memory:
         parts.append(f"## 你对用户的了解\n{core_memory}")
+
+    # Auto-recalled memories (embedding-based, pre-turn retrieval)
+    if recalled_memories:
+        lines = []
+        for m in recalled_memories:
+            lines.append(
+                f"- score={m.get('score', 0)} ts={m.get('ts', '')} "
+                f"category={m.get('category', '')} | {m.get('text', '')}"
+            )
+        parts.append("## 相关记忆\n" + "\n".join(lines))
 
     # Notes (persistent working memory — via prompt section hook)
     for section in skill_registry.get_prompt_sections(compact=True):
@@ -106,7 +263,8 @@ async def chat(message: IncomingMessage) -> ChatResult:
     Flow:
     0. Sticker learning: if message carries sticker metadata, learn or rewrite
     1. Route: classify skills needed (if TOOL_ROUTER_ENABLED)
-    2. Build system prompt (personality + core memory + usage rules)
+    1b. Auto-recall: embed user message → hybrid search → inject relevant memories
+    2. Build system prompt (personality + core memory + recalled memories + usage rules)
     3. Load recent conversation history
     4. Call LLM with filtered tools
     5. Tool loop: execute tools, handle escalation, feed results back
@@ -169,11 +327,12 @@ async def chat(message: IncomingMessage) -> ChatResult:
             classify_skills, resolve_tier, REQUEST_TOOLS_DEF, validate_escalation,
         )
         # Launch router (with habits hint) + remaining DB fetches concurrently
-        skill_names, core_memory, history = await asyncio.gather(
+        skill_names, core_memory, history, recalled_memories = await asyncio.gather(
             classify_skills(text, user_id=user_id, habits=habits,
                             transport=message.transport),
             asyncio.to_thread(get_core_memory, user_id),
             asyncio.to_thread(get_recent_messages, user_id, 20),
+            asyncio.to_thread(_retrieve_memories_for_turn, text, user_id),
         )
         if skill_names:
             tools = skill_registry.get_tools_by_names(
@@ -194,9 +353,10 @@ async def chat(message: IncomingMessage) -> ChatResult:
     else:
         tools = skill_registry.get_tools(transport=message.transport)
         # Parallel DB fetches even when router is off
-        core_memory, history = await asyncio.gather(
+        core_memory, history, recalled_memories = await asyncio.gather(
             asyncio.to_thread(get_core_memory, user_id),
             asyncio.to_thread(get_recent_messages, user_id, 20),
+            asyncio.to_thread(_retrieve_memories_for_turn, text, user_id),
         )
 
     # ── Policy: filter denied tools before LLM sees them ──
@@ -208,17 +368,18 @@ async def chat(message: IncomingMessage) -> ChatResult:
     system_prompt = _build_system_prompt(
         user_id, usage_rules=usage_rules, tool_names=active_tool_names,
         core_memory=core_memory, habits=habits, transport=message.transport,
+        recalled_memories=recalled_memories,
     )
 
     # Build messages array
     messages = [{"role": "system", "content": system_prompt}]
-    for msg in history:
-        messages.append({"role": msg["role"], "content": msg["content"]})
+    messages.extend(_expand_history(history))
 
     # ── LLM call with tool loop ──
     max_tool_rounds = TOOL_LOOP_MAX_ROUNDS
     client = get_client_for_tier(tier)
     escalation_count = 0
+    tool_names_used: list[str] = []  # track for tool_history persistence
 
     for round_num in range(max_tool_rounds):
         for _attempt in range(2):
@@ -249,7 +410,11 @@ async def chat(message: IncomingMessage) -> ChatResult:
         # No tool calls — we have the final response
         if not response.tool_calls:
             reply = STICKER_RE.sub("", response.content or "").strip()
-            save_message(user_id, "assistant", reply)
+            tool_history_json = (
+                json.dumps([{"name": n} for n in tool_names_used], ensure_ascii=False)
+                if tool_names_used else None
+            )
+            save_message(user_id, "assistant", reply, tool_history=tool_history_json)
             return ChatResult(text=reply, stickers=pending_stickers)
 
         # Add assistant message with tool_calls to context
@@ -319,6 +484,10 @@ async def chat(message: IncomingMessage) -> ChatResult:
                 transport=message.transport,
             )
 
+            # Record tool name for history (exclude internal-only tools)
+            if tc["name"] not in _TOOL_HISTORY_EXCLUDE:
+                tool_names_used.append(tc["name"])
+
             # Extract [STICKER:file_id] markers from tool result
             for m in STICKER_RE.finditer(result.output):
                 pending_stickers.append(m.group(1).strip())
@@ -332,7 +501,11 @@ async def chat(message: IncomingMessage) -> ChatResult:
     # If we exhausted tool rounds, return whatever we have
     reply = STICKER_RE.sub("", response.content or "").strip()
     reply = reply or "处理过程出了点问题，你再说一次试试？"
-    save_message(user_id, "assistant", reply)
+    tool_history_json = (
+        json.dumps([{"name": n} for n in tool_names_used], ensure_ascii=False)
+        if tool_names_used else None
+    )
+    save_message(user_id, "assistant", reply, tool_history=tool_history_json)
     return ChatResult(text=reply, stickers=pending_stickers)
 
 
@@ -383,8 +556,7 @@ async def chat_proactive(findings: list[dict], user_id: int) -> str | None:
 
         # Assemble messages: system + history + instruction
         messages = [{"role": "system", "content": system_prompt}]
-        for msg in history:
-            messages.append({"role": msg["role"], "content": msg["content"]})
+        messages.extend(_expand_history(history))
         messages.append({"role": "user", "content": instruction})
 
         # Call Chat model (no tools)
@@ -480,8 +652,7 @@ async def chat_bedtime_tidy(
 
         # Assemble messages: system + history + instruction
         messages = [{"role": "system", "content": system_prompt}]
-        for msg in history:
-            messages.append({"role": msg["role"], "content": msg["content"]})
+        messages.extend(_expand_history(history))
         messages.append({"role": "user", "content": instruction})
 
         # Resolve tools from skill registry
