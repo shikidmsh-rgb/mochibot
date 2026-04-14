@@ -67,7 +67,6 @@ class TelegramTransport(Transport):
         # Register handlers
         self._app.add_handler(CommandHandler("help", self._cmd_help))
         self._app.add_handler(CommandHandler("heartbeat", self._cmd_heartbeat))
-        self._app.add_handler(CommandHandler("status", self._cmd_heartbeat))
         self._app.add_handler(CommandHandler("cost", self._cmd_cost))
         self._app.add_handler(CommandHandler("notes", self._cmd_notes))
         self._app.add_handler(CommandHandler("diary", self._cmd_diary))
