@@ -15,7 +15,7 @@ Save a piece of information about the user for future reference.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | content | string | yes | The information to remember |
-| category | string | no | Category: preference, fact, event, habit, goal, emotion, general |
+| category | string | no | 分类：偏好、事实、事件、习惯、目标、情绪、其他 |
 
 ### recall_memory (L0)
 Search through saved memories about the user.

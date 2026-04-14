@@ -25,7 +25,7 @@ class MemorySkill(Skill):
 
         if tool == "save_memory":
             content = args.get("content", "")
-            category = args.get("category", "general")
+            category = args.get("category", "其他")
             if not content:
                 return SkillResult(output="Nothing to save.", success=False)
             try:
@@ -133,7 +133,7 @@ class MemorySkill(Skill):
             lines = [
                 "Memory Stats:",
                 f"- Total memories: {stats['total']}",
-                f"- Critical (★3): {stats['high_importance']}",
+                f"- 关键 (★3): {stats['high_importance']}",
                 f"- Categories: {json.dumps(stats['categories'], ensure_ascii=False)}",
                 f"- Trash bin: {len(trash)} items",
             ]

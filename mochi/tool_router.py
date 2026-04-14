@@ -178,14 +178,13 @@ def _build_router_prompt(descriptions: dict[str, str],
     )
     habit_hint = _build_habit_hint(active_habits)
     return (
-        "You are a skill classifier. Given a user message, return a JSON object "
-        "with the skills needed to handle it.\n\n"
-        "Available skills:\n"
+        "你是技能分类器。根据用户消息，返回一个 JSON 对象，列出处理该消息所需的技能。\n\n"
+        "可用技能：\n"
         f"{skill_lines}\n\n"
         f"{habit_hint}"
-        "Return JSON: {\"skills\": [\"skill1\", \"skill2\"]}\n"
-        "If no tools are needed (pure chat), return: {\"skills\": []}\n"
-        "Be conservative — only include skills the message clearly needs."
+        "返回 JSON：{\"skills\": [\"skill1\", \"skill2\"]}\n"
+        "如果不需要任何工具（纯聊天），返回：{\"skills\": []}\n"
+        "只包含消息明确需要的技能，不要过度分类。"
     )
 
 
@@ -219,9 +218,9 @@ def _build_habit_hint(active_habits: list[str] | None) -> str:
         return ""
     names = ", ".join(active_habits)
     return (
-        f"Active habits: {names}\n"
-        "If the message mentions any of these (or closely related items "
-        "like beverages for a water-drinking habit), route to \"habit\".\n\n"
+        f"当前活跃习惯：{names}\n"
+        "如果消息提到了这些习惯（或密切相关的内容，比如喝水习惯对应的饮水、喝了一杯等），"
+        "请路由到 \"habit\"。\n\n"
     )
 
 

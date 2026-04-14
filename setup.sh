@@ -89,12 +89,14 @@ else
     echo "  Admin portal will start at http://127.0.0.1:8080"
     echo "  A token will be auto-generated for security."
     echo ""
-    echo "  To access from your local computer, run this on your machine:"
-    echo ""
+    echo "  Option 1: SSH tunnel (zero config)"
     echo "    ssh -L 8080:localhost:8080 user@your-server-ip"
+    echo "    Then open http://localhost:8080?token=YOUR_TOKEN"
     echo ""
-    echo "  Then open http://localhost:8080?token=YOUR_TOKEN in your browser."
-    echo "  (The token will be printed below when admin portal starts.)"
+    echo "  Option 2: Phone setup via /admin"
+    echo "    Only fill in the transport token (Telegram or WeChat) below."
+    echo "    The bot starts in setup mode — send /admin from your phone"
+    echo "    to get the admin portal link, then finish config on mobile."
     echo ""
 fi
 

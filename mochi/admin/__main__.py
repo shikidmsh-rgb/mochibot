@@ -64,24 +64,66 @@ def main():
                         help="Don't auto-open browser on startup")
     args = parser.parse_args()
 
+    # ── Setup mode detection & remote access ──
+    # If transport is configured, bind to 0.0.0.0 so the user can reach
+    # the admin portal from their phone via /admin command.
+    # Token auth keeps it secure; the bind is in-memory only (not saved to .env).
+    _is_setup_mode = False
+    _has_transport = False
+    try:
+        from mochi.db import init_db
+        init_db()
+        from mochi.admin.admin_db import seed_models_from_env, get_tier_effective_config
+        seed_models_from_env()
+        has_model_db = False
+        for cfg in get_tier_effective_config().values():
+            if cfg.get("model") and cfg.get("api_key_set"):
+                has_model_db = True
+                break
+        from mochi.config import TELEGRAM_BOT_TOKEN, WEIXIN_ENABLED
+        _has_transport = bool(TELEGRAM_BOT_TOKEN) or WEIXIN_ENABLED
+        if not has_model_db and _has_transport:
+            _is_setup_mode = True
+            log.info("SETUP MODE — no LLM model configured yet")
+    except Exception as e:
+        log.debug("Setup mode detection skipped: %s", e)
+
     _LOCALHOST = {"127.0.0.1", "localhost", "::1"}
+
+    # Bind to 0.0.0.0 when transport is configured so /admin works from phone
+    if _has_transport and args.bind in _LOCALHOST:
+        args.bind = "0.0.0.0"
+        log.info("Transport configured — binding admin to 0.0.0.0 for /admin access")
 
     # Only require token for non-localhost binds
     token = None
     if args.bind not in _LOCALHOST:
         token = _ensure_admin_token(log)
-        log.warning(
-            "=" * 60 + "\n"
-            "  Binding to %s (network-accessible)\n"
-            "  Remote access requires ADMIN_TOKEN.\n"
-            "  Consider using SSH tunnel instead:\n"
-            "    ssh -L %d:localhost:%d user@this-server\n" +
-            "=" * 60, args.bind, args.port, args.port
-        )
+        if _is_setup_mode:
+            from mochi.config import _detect_host_ip
+            detected_ip = _detect_host_ip()
+            log.info(
+                "=" * 60 + "\n"
+                "  SETUP MODE — send /admin to your bot to get the admin URL\n"
+                "  Or open: http://%s:%d?token=%s\n" +
+                "=" * 60,
+                detected_ip or "<your-server-ip>", args.port, token
+            )
+        else:
+            log.warning(
+                "=" * 60 + "\n"
+                "  Binding to %s (network-accessible)\n"
+                "  Remote access requires ADMIN_TOKEN.\n"
+                "  Consider using SSH tunnel instead:\n"
+                "    ssh -L %d:localhost:%d user@this-server\n" +
+                "=" * 60, args.bind, args.port, args.port
+            )
 
     from mochi.admin.admin_server import app
 
-    url = f"http://{args.bind}:{args.port}"
+    # For local browser, use localhost even when binding to 0.0.0.0
+    browser_host = "127.0.0.1" if args.bind == "0.0.0.0" else args.bind
+    url = f"http://{browser_host}:{args.port}"
     if token:
         url += f"?token={token}"
     log.info("Admin portal: %s", url)

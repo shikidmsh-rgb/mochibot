@@ -72,6 +72,10 @@ def get_last_sent_sticker(chat_id: int) -> str | None:
 
 class StickerSkill(Skill):
 
+    def record_last_sent(self, chat_id: int, file_id: str) -> None:
+        """Record the last sticker sent (wrapper for transport layer)."""
+        record_last_sent_sticker(chat_id, file_id)
+
     def init_schema(self, conn) -> None:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS sticker_registry (

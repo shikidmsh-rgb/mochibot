@@ -121,3 +121,14 @@ def get_visible_todos(today_str: str) -> list[dict]:
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def get_active_todo_count(user_id: int) -> int:
+    """Count active (not done) todos for a user."""
+    conn = _connect()
+    row = conn.execute(
+        "SELECT COUNT(*) as cnt FROM todos WHERE user_id = ? AND done = 0",
+        (user_id,),
+    ).fetchone()
+    conn.close()
+    return row["cnt"] if row else 0

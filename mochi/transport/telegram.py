@@ -72,6 +72,7 @@ class TelegramTransport(Transport):
         self._app.add_handler(CommandHandler("notes", self._cmd_notes))
         self._app.add_handler(CommandHandler("diary", self._cmd_diary))
         self._app.add_handler(CommandHandler("restart", self._cmd_restart))
+        self._app.add_handler(CommandHandler("admin", self._cmd_admin))
         self._app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message)
         )
@@ -131,6 +132,7 @@ class TelegramTransport(Transport):
             "/cost — Token 用量统计\n"
             "/notes — 查看笔记\n"
             "/diary — 查看今日日記\n"
+            "/admin — 管理后台\n"
             "/restart — 重启 Bot"
         )
 
@@ -140,6 +142,21 @@ class TelegramTransport(Transport):
         await update.message.reply_text("正在重启...")
         from mochi.shutdown import request_restart
         request_restart(update.effective_chat.id)
+
+    async def _cmd_admin(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        # Use _check_owner so the first user auto-becomes owner in setup mode
+        user_id = await self._check_owner(update)
+        if user_id is None:
+            return
+        from mochi.config import ADMIN_PORT, ADMIN_BIND, ADMIN_TOKEN, _detect_host_ip
+        # /admin is always sent from a remote device (phone), so use LAN IP
+        host = _detect_host_ip() or ADMIN_BIND
+        if host in ("0.0.0.0", "127.0.0.1", "localhost", "::1"):
+            host = "<your-server-ip>"
+        url = f"http://{host}:{ADMIN_PORT}"
+        if ADMIN_TOKEN:
+            url += f"?token={ADMIN_TOKEN}"
+        await update.message.reply_text(f"🔧 管理后台：\n{url}")
 
     async def _cmd_heartbeat(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not _is_owner(update.effective_user.id):
@@ -255,8 +272,10 @@ class TelegramTransport(Transport):
             await self.send_message(chat_id, result.text)
         for file_id in result.stickers:
             await self.send_sticker(chat_id, file_id)
-            from mochi.skills.sticker.handler import record_last_sent_sticker
-            record_last_sent_sticker(chat_id, file_id)
+            import mochi.skills as skill_registry
+            sticker_skill = skill_registry.get_skill("sticker")
+            if sticker_skill:
+                sticker_skill.record_last_sent(chat_id, file_id)
 
     async def _handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.message or not update.message.text:
@@ -276,13 +295,15 @@ class TelegramTransport(Transport):
         )
 
         if _on_message_callback:
-            result = await _on_message_callback(msg)
-            if result:
-                await self._send_chat_result(update.effective_chat.id, result)
-            # Check for goodnight keywords AFTER Chat has replied
             from mochi.heartbeat import check_sleep_entry, handle_sleep_keyword
             if check_sleep_entry(update.message.text):
-                await handle_sleep_keyword(user_id)
+                # Goodnight keyword → bedtime tidy handles the goodbye.
+                # Skip normal Chat to avoid double goodnight message.
+                await handle_sleep_keyword(user_id, update.message.text)
+            else:
+                result = await _on_message_callback(msg)
+                if result:
+                    await self._send_chat_result(update.effective_chat.id, result)
         else:
             await update.message.reply_text("I'm still waking up... try again in a moment.")
 

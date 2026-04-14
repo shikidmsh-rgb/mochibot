@@ -33,11 +33,12 @@ from mochi.db import (
     get_core_memory,
     get_last_user_message_time,
     get_message_count_today,
-    get_upcoming_reminders,
-    get_active_todo_count,
     save_message,
     log_usage,
+    log_proactive,
 )
+from mochi.skills.reminder.queries import get_upcoming_reminders
+from mochi.skills.todo.queries import get_active_todo_count
 from mochi.runtime_state import (
     get_maintenance_summary,
     clear_maintenance_summary,
@@ -221,11 +222,12 @@ def should_wake_on_message() -> bool:
 def check_sleep_entry(last_user_msg_text: str | None = None) -> bool:
     """Check if user is going to sleep via goodnight keywords.
 
-    Called by transport AFTER the Chat model has already replied.
-    Only triggers after SLEEP_AFTER_HOUR (default 21:00) to avoid
-    false positives (e.g. "昨天好困" during daytime).
+    Called by transport to decide whether to route to bedtime tidy
+    instead of normal Chat.  Only triggers during the night window
+    (SLEEP_AFTER_HOUR..WAKE_EARLIEST_HOUR) to avoid false positives.
 
-    Returns True if sleep was triggered (caller should run bedtime tidy).
+    Returns True if sleep keyword detected (caller should call
+    handle_sleep_keyword instead of the normal chat path).
     """
     if _state != AWAKE or not last_user_msg_text:
         return False
@@ -241,11 +243,15 @@ def check_sleep_entry(last_user_msg_text: str | None = None) -> bool:
     return False
 
 
-async def handle_sleep_keyword(user_id: int) -> None:
+async def handle_sleep_keyword(user_id: int, text: str = "") -> None:
     """Run bedtime tidy then transition to SLEEPING.
 
-    Called by transport layer when check_sleep_entry() returns True.
+    Called by transport layer when check_sleep_entry() returns True,
+    *instead of* the normal Chat path.  Saves the user message here
+    because chat() is bypassed.
     """
+    if text:
+        save_message(user_id, "user", text)
     await _run_bedtime_tidy(user_id, reason="keyword")
     go_to_sleep(reason="keyword")
 
@@ -507,18 +513,21 @@ async def _observe(user_id: int) -> dict:
     except Exception as e:
         log.warning("Diary refresh failed: %s", e)
 
-    # Notes (persistent working memory)
-    try:
-        from mochi.skills.note.handler import read_notes_for_observation
-        notes_section = read_notes_for_observation(compact=True)
-        if notes_section:
-            observation["notes"] = notes_section
-    except Exception as e:
-        log.warning("Notes read failed: %s", e)
+    # Notes (persistent working memory — via prompt section hook)
+    import mochi.skills as skill_registry
+    for section in skill_registry.get_prompt_sections(compact=True):
+        observation["notes"] = section
 
     # First tick of the day (for Think morning awareness)
     from mochi.db import get_awake_tick_count_today
     observation["is_first_tick_today"] = get_awake_tick_count_today() == 0
+
+    # Today's proactive messages (so Think knows what it already said)
+    try:
+        from mochi.db import get_today_proactive_sent
+        observation["today_proactive_sent"] = get_today_proactive_sent()
+    except Exception as e:
+        log.warning("Proactive log read failed: %s", e)
 
     return observation
 
@@ -584,9 +593,15 @@ async def _run_maintenance_if_due(user_id: int) -> bool:
     log.info("Running nightly maintenance...")
 
     try:
-        from mochi.skills.maintenance.handler import run_maintenance
-        results = await run_maintenance(user_id)
-        log_heartbeat(_state, "maintenance", str(results)[:200])
+        import mochi.skills as skill_registry
+        from mochi.skills.base import SkillContext
+        maint = skill_registry.get_skill("maintenance")
+        if maint:
+            ctx = SkillContext(trigger="cron", user_id=user_id)
+            result = await maint.run(ctx)
+            log_heartbeat(_state, "maintenance", result.output[:200])
+        else:
+            log.warning("Maintenance skill not found, skipping")
     except Exception as e:
         log.error("Nightly maintenance failed: %s", e, exc_info=True)
         log_heartbeat(_state, "maintenance_error", str(e)[:200])
@@ -755,6 +770,17 @@ def _build_observation_text(obs: dict) -> str:
             lines.append(f"- {r.get('remind_at', '?')}: {r.get('message', '?')}")
         sections.append("\n".join(lines))
 
+    # Today's sent proactive messages (for repeat avoidance)
+    sent = obs.get("today_proactive_sent", [])
+    if sent:
+        lines = ["## 今日已发消息"]
+        for s in sent:
+            content_preview = s.get("content", "")[:40]
+            topic = s.get("type", "?")
+            time_str = s.get("time", "?")
+            lines.append(f"- [{topic}] {content_preview} ({time_str})")
+        sections.append("\n".join(lines))
+
     return "\n\n".join(sections)
 
 
@@ -861,6 +887,7 @@ async def _dispatch_proactive(notify_actions: list[dict], user_id: int) -> None:
             _last_proactive_at = now
             _proactive_count_today += 1
             save_message(user_id, "assistant", msg)
+            log_proactive(msg, topics_str)
             log_heartbeat(_state, f"proactive:{topics_str}", msg[:100])
             log.info("Proactive message sent [%s] (%d/%d today)",
                      topics_str, _proactive_count_today,
@@ -938,6 +965,7 @@ async def heartbeat_loop() -> None:
                     if goodnight_msg and goodnight_msg != "[SKIP]":
                         await _send_callback(user_id, goodnight_msg)
                         save_message(user_id, "assistant", goodnight_msg)
+                        log_proactive(goodnight_msg, "sleep_transition")
                         log_heartbeat(_state, "silence_sleep", goodnight_msg[:100])
                 go_to_sleep("silence_detected")
                 await asyncio.sleep(interval)

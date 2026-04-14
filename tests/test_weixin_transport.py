@@ -399,7 +399,7 @@ class TestHandleMessage:
 
     @pytest.mark.asyncio
     async def test_check_sleep_entry_called(self, transport, monkeypatch):
-        """check_sleep_entry is called with the user's text after reply."""
+        """check_sleep_entry is called with the user's text before reply."""
         called_with = []
 
         monkeypatch.setattr(
@@ -415,6 +415,64 @@ class TestHandleMessage:
         await transport._handle_message(msg)
 
         assert "晚安" in called_with
+
+    @pytest.mark.asyncio
+    async def test_sleep_keyword_skips_chat(self, transport, monkeypatch):
+        """When sleep keyword matches, Chat is skipped and handle_sleep_keyword called."""
+        chat_called = False
+        sleep_called_with = {}
+
+        monkeypatch.setattr(
+            "mochi.heartbeat.check_sleep_entry", lambda text: True,
+        )
+
+        async def mock_sleep_handler(user_id, text=""):
+            nonlocal sleep_called_with
+            sleep_called_with = {"user_id": user_id, "text": text}
+
+        monkeypatch.setattr(
+            "mochi.heartbeat.handle_sleep_keyword", mock_sleep_handler,
+        )
+
+        async def fake_callback(incoming):
+            nonlocal chat_called
+            chat_called = True
+            return FakeChatResult(text="should not happen")
+
+        monkeypatch.setattr(weixin_mod, "_on_message_callback", fake_callback)
+        msg = _text_msg("晚安")
+        await transport._handle_message(msg)
+
+        assert not chat_called, "Chat should be skipped when sleep keyword matches"
+        assert sleep_called_with["text"] == "晚安"
+
+    @pytest.mark.asyncio
+    async def test_sleep_keyword_cancels_typing(self, transport, monkeypatch):
+        """Typing indicator is cancelled even on the sleep keyword path."""
+        transport._typing_tickets["wx_owner_123"] = "ticket-abc"
+        typing_calls = []
+
+        async def track_typing(user_id, ticket, status=1):
+            typing_calls.append(status)
+
+        transport._weixin_send_typing = track_typing
+
+        monkeypatch.setattr(
+            "mochi.heartbeat.check_sleep_entry", lambda text: True,
+        )
+        monkeypatch.setattr(
+            "mochi.heartbeat.handle_sleep_keyword",
+            AsyncMock(),
+        )
+
+        async def fake_callback(incoming):
+            return FakeChatResult(text="nope")
+
+        monkeypatch.setattr(weixin_mod, "_on_message_callback", fake_callback)
+        msg = _text_msg("晚安", from_user="wx_owner_123")
+        await transport._handle_message(msg)
+
+        assert 2 in typing_calls, "Typing cancel (status=2) should fire on keyword path"
 
 
 # ── System commands ────────────────────────────────────────────────────────

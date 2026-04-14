@@ -219,7 +219,7 @@ class ModelPool:
             from mochi.admin.admin_db import get_tier_effective_config
             effective = get_tier_effective_config()
             for tier, cfg in effective.items():
-                if not cfg.get("model") or cfg.get("source") == "none":
+                if not cfg.get("model") or not cfg.get("assigned_name"):
                     if tier not in self._tiers:
                         log.warning("Tier '%s' has no model assigned", tier)
                     continue

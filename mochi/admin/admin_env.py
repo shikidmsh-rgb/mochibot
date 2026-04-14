@@ -7,9 +7,14 @@ import logging
 import os
 import re
 import shutil
+import threading
 from pathlib import Path
 
 log = logging.getLogger(__name__)
+
+# Serialize all .env read-modify-write operations to prevent concurrent
+# API requests from clobbering each other's changes.
+_ENV_LOCK = threading.Lock()
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -35,6 +40,9 @@ _WRITABLE_KEYS: frozenset[str] = frozenset({
     "THINK_FALLBACK_MINUTES", "LLM_HEARTBEAT_TIMEOUT_SECONDS",
     "MAINTENANCE_HOUR", "MAINTENANCE_ENABLED",
     "TIMEZONE_OFFSET_HOURS",
+    "AI_CHAT_MAX_COMPLETION_TOKENS",
+    "HEARTBEAT_LOG_TRIM_DAYS", "HEARTBEAT_LOG_DELETE_DAYS",
+    "BEDTIME_TIDY_ENABLED", "BEDTIME_TIDY_TIMEOUT_S",
     # Integrations
     "OURA_CLIENT_ID", "OURA_CLIENT_SECRET", "OURA_REFRESH_TOKEN",
     "WEATHER_CITY",
@@ -57,11 +65,16 @@ def _env_path() -> Path:
     return _PROJECT_ROOT / ".env"
 
 
+def _env_bak_path() -> Path:
+    return _PROJECT_ROOT / ".env.bak"
+
+
 def _validate_key(key: str) -> None:
     """Reject invalid or disallowed keys."""
     if not re.match(r"^[A-Z][A-Z0-9_]+$", key):
         raise ValueError(f"Invalid env key: {key!r}")
-    if key not in _WRITABLE_KEYS:
+    # Allow whitelisted keys and SKILL_{NAME}_{KEY} prefixed keys (skill config write-back)
+    if key not in _WRITABLE_KEYS and not re.match(r"^SKILL_[A-Z0-9]+_[A-Z0-9_]+$", key):
         raise PermissionError(f"Key {key!r} is not writable via admin portal")
 
 
@@ -81,41 +94,43 @@ def _bootstrap_write_env(key: str, value: str) -> None:
     if not re.match(r"^[A-Z][A-Z0-9_]+$", key):
         raise ValueError(f"Invalid env key: {key!r}")
 
-    path = _env_path()
-    if path.exists():
-        shutil.copy2(path, path.with_suffix(".env.bak"))
-        lines = path.read_text(encoding="utf-8").splitlines()
-        found = False
-        for i, line in enumerate(lines):
-            stripped = line.strip()
-            if stripped.startswith("#"):
-                continue
-            if "=" in stripped and stripped.split("=", 1)[0].strip() == key:
-                lines[i] = f"{key}={value}"
-                found = True
-                break
-        if not found:
-            lines.append(f"{key}={value}")
-        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    else:
-        path.write_text(f"{key}={value}\n", encoding="utf-8")
+    with _ENV_LOCK:
+        path = _env_path()
+        if path.exists():
+            shutil.copy2(path, _env_bak_path())
+            lines = path.read_text(encoding="utf-8").splitlines()
+            found = False
+            for i, line in enumerate(lines):
+                stripped = line.strip()
+                if stripped.startswith("#"):
+                    continue
+                if "=" in stripped and stripped.split("=", 1)[0].strip() == key:
+                    lines[i] = f"{key}={value}"
+                    found = True
+                    break
+            if not found:
+                lines.append(f"{key}={value}")
+            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        else:
+            path.write_text(f"{key}={value}\n", encoding="utf-8")
 
     log.info("Bootstrap: wrote %s to .env", key)
 
 
 def read_env_value(key: str) -> str | None:
     """Read a key from the .env file directly (not os.environ)."""
-    path = _env_path()
-    if not path.exists():
+    with _ENV_LOCK:
+        path = _env_path()
+        if not path.exists():
+            return None
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line.startswith("#") or "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            if k.strip() == key:
+                return v.strip().strip("'\"")
         return None
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line.startswith("#") or "=" not in line:
-            continue
-        k, _, v = line.partition("=")
-        if k.strip() == key:
-            return v.strip().strip("'\"")
-    return None
 
 
 def write_env_value(key: str, value: str) -> None:
@@ -128,28 +143,50 @@ def write_env_value(key: str, value: str) -> None:
     _validate_key(key)
     _validate_value(value)
 
-    path = _env_path()
+    with _ENV_LOCK:
+        path = _env_path()
 
-    if path.exists():
-        # Backup before modifying
-        shutil.copy2(path, path.with_suffix(".env.bak"))
-        lines = path.read_text(encoding="utf-8").splitlines()
-        found = False
-        for i, line in enumerate(lines):
-            stripped = line.strip()
-            if stripped.startswith("#"):
-                continue
-            if "=" in stripped and stripped.split("=", 1)[0].strip() == key:
-                lines[i] = f"{key}={value}"
-                found = True
-                break
-        if not found:
-            lines.append(f"{key}={value}")
-        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    else:
-        path.write_text(f"{key}={value}\n", encoding="utf-8")
+        if path.exists():
+            # Backup before modifying
+            shutil.copy2(path, _env_bak_path())
+            lines = path.read_text(encoding="utf-8").splitlines()
+            found = False
+            for i, line in enumerate(lines):
+                stripped = line.strip()
+                if stripped.startswith("#"):
+                    continue
+                if "=" in stripped and stripped.split("=", 1)[0].strip() == key:
+                    lines[i] = f"{key}={value}"
+                    found = True
+                    break
+            if not found:
+                lines.append(f"{key}={value}")
+            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        else:
+            path.write_text(f"{key}={value}\n", encoding="utf-8")
 
     log.info("Wrote %s to .env", key)
+
+
+def remove_env_key(key: str) -> None:
+    """Remove all occurrences of a key from .env. No-op if key not found."""
+    _validate_key(key)
+
+    with _ENV_LOCK:
+        path = _env_path()
+        if not path.exists():
+            return
+        shutil.copy2(path, _env_bak_path())
+        lines = path.read_text(encoding="utf-8").splitlines()
+        filtered = [
+            line for line in lines
+            if line.strip().startswith("#")
+            or "=" not in line.strip()
+            or line.strip().split("=", 1)[0].strip() != key
+        ]
+        if len(filtered) != len(lines):
+            path.write_text("\n".join(filtered) + "\n", encoding="utf-8")
+            log.info("Removed %s from .env", key)
 
 
 def env_key_is_set(key: str) -> bool:
@@ -159,14 +196,15 @@ def env_key_is_set(key: str) -> bool:
 
 def read_env_file() -> dict[str, str]:
     """Parse the entire .env file into a dict (keys only, no comments)."""
-    path = _env_path()
-    if not path.exists():
-        return {}
-    result: dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line.startswith("#") or "=" not in line:
-            continue
-        k, _, v = line.partition("=")
-        result[k.strip()] = v.strip().strip("'\"")
-    return result
+    with _ENV_LOCK:
+        path = _env_path()
+        if not path.exists():
+            return {}
+        result: dict[str, str] = {}
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line.startswith("#") or "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            result[k.strip()] = v.strip().strip("'\"")
+        return result

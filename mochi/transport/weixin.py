@@ -357,6 +357,7 @@ class WeixinTransport(Transport):
                 "/cost — Token 用量统计\n"
                 "/notes — 查看笔记\n"
                 "/diary — 查看今日日記\n"
+                "/admin — 管理后台\n"
                 "/restart — 重启 Bot"
             )
             try:
@@ -364,6 +365,24 @@ class WeixinTransport(Transport):
                     from_user, help_text, context_token)
             except Exception as e:
                 log.warning("WeChat: failed to send help: %s", e)
+            return
+
+        # System command: /admin (owner only)
+        if text.strip() == "/admin":
+            if from_user != self._owner_weixin_id:
+                return
+            from mochi.config import ADMIN_PORT, ADMIN_BIND, ADMIN_TOKEN, _detect_host_ip
+            # /admin is always sent from a remote device (phone), so use LAN IP
+            host = _detect_host_ip() or ADMIN_BIND
+            if host in ("0.0.0.0", "127.0.0.1", "localhost", "::1"):
+                host = "<your-server-ip>"
+            url = f"http://{host}:{ADMIN_PORT}"
+            if ADMIN_TOKEN:
+                url += f"?token={ADMIN_TOKEN}"
+            try:
+                await self._weixin_send_message(from_user, f"🔧 管理后台：\n{url}", context_token)
+            except Exception as e:
+                log.warning("WeChat: failed to send admin URL: %s", e)
             return
 
         # System command: /heartbeat (owner only)
@@ -495,35 +514,39 @@ class WeixinTransport(Transport):
 
         # Call chat via callback
         if _on_message_callback:
-            try:
-                result = await _on_message_callback(incoming)
-            except Exception as e:
-                log.error("WeChat: chat error for %s: %s", from_user, e)
-                result = None
-
-            # Cancel typing
-            if typing_ticket:
-                await self._weixin_send_typing(
-                    from_user, typing_ticket, status=2)
-
-            if result and result.text:
-                reply = clean_reply_markers(result.text)
-                if reply:
-                    bubbles = split_bubbles(reply)
-                    for i, bubble in enumerate(bubbles):
-                        if i > 0:
-                            await asyncio.sleep(WEIXIN_BUBBLE_DELAY_S)
-                        for chunk in split_text(bubble, WEIXIN_MSG_LIMIT):
-                            try:
-                                await self._weixin_send_message(
-                                    from_user, chunk, context_token)
-                            except Exception as e:
-                                log.error("WeChat: send error: %s", e)
-
-            # Check sleep keywords after reply
             from mochi.heartbeat import check_sleep_entry, handle_sleep_keyword
             if check_sleep_entry(text):
-                await handle_sleep_keyword(user_id)
+                # Goodnight keyword → bedtime tidy handles the goodbye.
+                # Skip normal Chat to avoid double goodnight message.
+                if typing_ticket:
+                    await self._weixin_send_typing(
+                        from_user, typing_ticket, status=2)
+                await handle_sleep_keyword(user_id, text)
+            else:
+                try:
+                    result = await _on_message_callback(incoming)
+                except Exception as e:
+                    log.error("WeChat: chat error for %s: %s", from_user, e)
+                    result = None
+
+                # Cancel typing
+                if typing_ticket:
+                    await self._weixin_send_typing(
+                        from_user, typing_ticket, status=2)
+
+                if result and result.text:
+                    reply = clean_reply_markers(result.text)
+                    if reply:
+                        bubbles = split_bubbles(reply)
+                        for i, bubble in enumerate(bubbles):
+                            if i > 0:
+                                await asyncio.sleep(WEIXIN_BUBBLE_DELAY_S)
+                            for chunk in split_text(bubble, WEIXIN_MSG_LIMIT):
+                                try:
+                                    await self._weixin_send_message(
+                                        from_user, chunk, context_token)
+                                except Exception as e:
+                                    log.error("WeChat: send error: %s", e)
         else:
             # Cancel typing even if no callback
             if typing_ticket:
