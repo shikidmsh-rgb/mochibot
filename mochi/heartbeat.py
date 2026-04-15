@@ -116,7 +116,7 @@ def _init_state() -> str:
         log.debug("Failed to read persisted heartbeat state: %s", exc)
     # Fallback: hour heuristic
     hour = now.hour
-    if WAKE_EARLIEST_HOUR <= hour < 23:
+    if WAKE_EARLIEST_HOUR <= hour < SLEEP_AFTER_HOUR:
         return AWAKE
     return SLEEPING
 
@@ -131,7 +131,6 @@ _last_maintenance_date: str = ""
 
 # Sleep/wake tracking
 _wake_reason: str | None = None
-_morning_hold: bool = False
 _last_sleep_at: datetime | None = None
 
 # Silent pause: user hasn't replied in SILENCE_PAUSE_DAYS days.
@@ -165,7 +164,7 @@ def wake_up(reason: str = "unknown") -> None:
         reason: What triggered the wake — "user_message", "fallback", or
                 any custom reason (e.g. "oura_sleep_end" from Oura skill).
     """
-    global _state, _state_changed_at, _wake_reason, _morning_hold
+    global _state, _state_changed_at, _wake_reason
     global _prev_observer_raw, _last_think_at
     if _state == SLEEPING:
         _state = AWAKE
@@ -173,23 +172,19 @@ def wake_up(reason: str = "unknown") -> None:
         _wake_reason = reason
         _prev_observer_raw = {}
         _last_think_at = None
-        # Morning hold: suppress proactive until user sends first message.
-        # Only for non-user wakes (fallback, Oura, etc.)
-        _morning_hold = reason != "user_message"
         _persist_state(AWAKE, _state_changed_at)
-        log.info("WAKE UP — reason: %s, morning_hold: %s", reason, _morning_hold)
+        log.info("WAKE UP — reason: %s", reason)
 
 
 def go_to_sleep(reason: str = "unknown") -> None:
     """Transition AWAKE → SLEEPING."""
-    global _state, _state_changed_at, _wake_reason, _morning_hold
+    global _state, _state_changed_at, _wake_reason
     global _prev_observer_raw, _last_sleep_at
     if _state == AWAKE:
         _state = SLEEPING
         _state_changed_at = datetime.now(TZ)
         _last_sleep_at = _state_changed_at
         _wake_reason = None
-        _morning_hold = False
         _prev_observer_raw = {}
         _persist_state(SLEEPING, _state_changed_at)
         log.info("SLEEPING — reason: %s", reason)
@@ -198,14 +193,6 @@ def go_to_sleep(reason: str = "unknown") -> None:
 def force_wake() -> None:
     """Backward-compatible wake — delegates to wake_up("user_message")."""
     wake_up("user_message")
-
-
-def clear_morning_hold() -> None:
-    """Release morning hold — called when user sends their first message."""
-    global _morning_hold
-    if _morning_hold:
-        _morning_hold = False
-        log.info("Morning hold cleared — proactive messages resumed")
 
 
 def should_wake_on_message() -> bool:
@@ -419,7 +406,6 @@ def get_stats() -> dict:
         "proactive_today": _proactive_count_today,
         "proactive_limit": _effective('MAX_DAILY_PROACTIVE'),
         "wake_reason": _wake_reason,
-        "morning_hold": _morning_hold,
     }
 
 
@@ -935,7 +921,7 @@ async def heartbeat_loop() -> None:
             # ── 1. Fallback wake check (MUST be before SLEEPING continue) ──
             if _state == SLEEPING:
                 fallback_hour = _effective('FALLBACK_WAKE_HOUR')
-                if fallback_hour <= hour < 23:
+                if fallback_hour <= hour < SLEEP_AFTER_HOUR:
                     wake_up(f"fallback_{fallback_hour}:00")
                 else:
                     log_heartbeat(_state, "sleeping")
@@ -988,12 +974,6 @@ async def heartbeat_loop() -> None:
 
             # Observe (cheap: no LLM)
             observation = await _observe(user_id)
-
-            # Morning hold: skip Think/proactive (but observation ran)
-            if _morning_hold:
-                log_heartbeat(_state, "morning_hold")
-                await asyncio.sleep(interval)
-                continue
 
             # Think (only if delta or fallback)
             if _should_think(observation):

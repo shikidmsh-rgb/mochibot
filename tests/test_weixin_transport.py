@@ -827,23 +827,19 @@ class TestDispatchStateSignals:
         monkeypatch.setattr("mochi.heartbeat.should_wake_on_message", lambda: True)
         monkeypatch.setattr("mochi.heartbeat.wake_up",
                             lambda reason: wake_calls.append(reason))
-        monkeypatch.setattr("mochi.heartbeat.clear_morning_hold", lambda: None)
         monkeypatch.setattr("mochi.heartbeat.clear_silent_pause", lambda: None)
 
         WeixinTransport._dispatch_state_signals()
         assert wake_calls == ["user_message"]
 
-    def test_clears_holds(self, monkeypatch):
+    def test_clears_silent_pause(self, monkeypatch):
         cleared = []
         monkeypatch.setattr("mochi.heartbeat.should_wake_on_message", lambda: False)
         monkeypatch.setattr("mochi.heartbeat.wake_up", lambda r: None)
-        monkeypatch.setattr("mochi.heartbeat.clear_morning_hold",
-                            lambda: cleared.append("morning"))
         monkeypatch.setattr("mochi.heartbeat.clear_silent_pause",
                             lambda: cleared.append("silent"))
 
         WeixinTransport._dispatch_state_signals()
-        assert "morning" in cleared
         assert "silent" in cleared
 
     def test_no_wake_when_awake(self, monkeypatch):
@@ -851,7 +847,6 @@ class TestDispatchStateSignals:
         monkeypatch.setattr("mochi.heartbeat.should_wake_on_message", lambda: False)
         monkeypatch.setattr("mochi.heartbeat.wake_up",
                             lambda reason: wake_calls.append(reason))
-        monkeypatch.setattr("mochi.heartbeat.clear_morning_hold", lambda: None)
         monkeypatch.setattr("mochi.heartbeat.clear_silent_pause", lambda: None)
 
         WeixinTransport._dispatch_state_signals()

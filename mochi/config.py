@@ -211,7 +211,7 @@ BEDTIME_TIDY_MAX_ROUNDS = _env_int("BEDTIME_TIDY_MAX_ROUNDS", 5)
 BEDTIME_TIDY_MAX_TOKENS = _env_int("BEDTIME_TIDY_MAX_TOKENS", 1024)
 BEDTIME_TIDY_TOOLS = _env(
     "BEDTIME_TIDY_TOOLS",
-    "manage_note,manage_todo",
+    "note,todo",
 ).split(",")
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -309,6 +309,15 @@ MEMORY_AUTO_RECALL_COOLDOWN = _env_int("MEMORY_AUTO_RECALL_COOLDOWN", 120)
 MEMORY_DEMOTE_AFTER_DAYS = _env_int("MEMORY_DEMOTE_AFTER_DAYS", 60)
 MEMORY_DEMOTE_MIN_ACCESS = _env_int("MEMORY_DEMOTE_MIN_ACCESS", 3)
 RECALL_DECAY_HALF_LIFE_DAYS = _env_float("RECALL_DECAY_HALF_LIFE_DAYS", 30.0)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Knowledge Graph
+# ═══════════════════════════════════════════════════════════════════════════
+
+KG_ENABLED = _env_bool("KG_ENABLED", True)
+KG_MAX_ENTITY_CONTEXT_TOKENS = _env_int("KG_MAX_ENTITY_CONTEXT_TOKENS", 300)
+KG_ENTITY_MATCH_MIN_LENGTH = _env_int("KG_ENTITY_MATCH_MIN_LENGTH", 2)
+KG_MAX_TRIPLES_PER_ENTITY = _env_int("KG_MAX_TRIPLES_PER_ENTITY", 20)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Token Limits

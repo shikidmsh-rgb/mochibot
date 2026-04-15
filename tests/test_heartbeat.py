@@ -27,7 +27,6 @@ def reset_heartbeat_globals(monkeypatch):
     monkeypatch.setattr(hb, "_prev_observer_raw", {})
     monkeypatch.setattr(hb, "_send_callback", None)
     monkeypatch.setattr(hb, "_wake_reason", None)
-    monkeypatch.setattr(hb, "_morning_hold", False)
     monkeypatch.setattr(hb, "_last_sleep_at", None)
     monkeypatch.setattr(hb, "_silent_pause", False)
 
@@ -70,33 +69,6 @@ class TestStateMachine:
         hb.force_wake()
         assert hb._state == "AWAKE"
         assert hb._wake_reason == "user_message"
-        # user_message wake should NOT set morning_hold
-        assert hb._morning_hold is False
-
-    def test_morning_hold_on_fallback_wake(self):
-        """Non-user wakes (e.g. fallback) set morning_hold=True."""
-        hb._state = "SLEEPING"
-        hb.wake_up("fallback_10:00")
-        assert hb._state == "AWAKE"
-        assert hb._morning_hold is True
-
-    def test_morning_hold_off_on_user_message_wake(self):
-        """User-message wake sets morning_hold=False."""
-        hb._state = "SLEEPING"
-        hb.wake_up("user_message")
-        assert hb._morning_hold is False
-
-    def test_clear_morning_hold(self):
-        """clear_morning_hold releases the hold."""
-        hb._morning_hold = True
-        hb.clear_morning_hold()
-        assert hb._morning_hold is False
-
-    def test_clear_morning_hold_already_cleared_noop(self):
-        """Clearing when already False is a no-op."""
-        hb._morning_hold = False
-        hb.clear_morning_hold()
-        assert hb._morning_hold is False
 
 
 class TestCheckSleepEntry:
@@ -197,7 +169,6 @@ class TestGetState:
         assert stats["state"] == "AWAKE"
         assert stats["proactive_today"] == 3
         assert "state_changed_at" in stats
-        assert "morning_hold" in stats
         assert "wake_reason" in stats
 
 

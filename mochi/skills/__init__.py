@@ -231,7 +231,7 @@ def get_tools_by_names(skill_names: list[str],
     for name in skill_names:
         skill = _skills.get(name)
         if not skill:
-            log.debug("get_tools_by_names: unknown skill %s, skipped", name)
+            log.warning("get_tools_by_names: unknown skill %s, skipped", name)
             continue
         if getattr(skill, "_config_missing", None):
             continue

@@ -19,6 +19,7 @@
 
 - **核心记忆**——你的偏好、你们的关系，每次对话都在
 - **记忆项**——自动从对话中提取，按重要度分级，全文搜索 + 向量搜索
+- **知识图谱**——自动学习你世界里的人、宠物、地点和它们之间的关系，聊到时精准注入上下文
 - **每天一本 diary**——习惯进度、待办、提醒汇总成当日状态面板
 - **夜间自动整理**——去重、清过时的、调重要度，不会越存越乱
 
@@ -296,7 +297,7 @@ TIER_{LITE,CHAT,DEEP}_{PROVIDER,API_KEY,MODEL,BASE_URL}
 
 **Pre-Router** — `TOOL_ROUTER_ENABLED=true` 启用基于 LLM 的 skill 自动选择。`TOOL_ESCALATION_ENABLED=true`（默认）允许对话中途请求缺少的 skill。
 
-**向量嵌入** — `EMBEDDING_PROVIDER`（openai / azure_openai / ollama / none）、`EMBEDDING_API_KEY`、`EMBEDDING_MODEL`。配置后记忆检索从纯关键词升级为语义搜索。安装 `pip install sqlite-vec` 可启用原生向量 KNN，速度更快；不装也能跑（退化为 Python 计算余弦相似度）。
+**向量嵌入** — `EMBEDDING_PROVIDER`（openai / azure_openai / ollama / none）、`EMBEDDING_API_KEY`、`EMBEDDING_MODEL`。配置后记忆检索从纯关键词升级为语义搜索，并通过 `sqlite-vec`（已包含在依赖中）实现原生向量 KNN 加速。
 
 **Oura Ring** — `OURA_CLIENT_ID`、`OURA_CLIENT_SECRET`（运行 `python oura_auth.py` 设置）
 
@@ -333,6 +334,7 @@ THINK_MODEL=gpt-4o-mini      # 心跳 + 维护
 - [x] 双模型架构（Chat + Think）
 - [x] 3 级模型路由 + Pre-Router
 - [x] 持久记忆（三层 + 8 工具 + 夜间维护）
+- [x] 知识图谱（实体关系自动提取 + 对话注入）
 - [x] 习惯追踪（频率/重要度/上下文/暂停/延后 + 心跳催促）
 - [x] 精确提醒（到点触发 + 循环提醒）
 - [x] 饮食记录（自然语言 → 热量估算 + 历史查询）

@@ -1,9 +1,12 @@
-"""Tests for the AI client — system prompt building, sticker regex, chat_proactive."""
+"""Tests for the AI client — system prompt building, sticker regex, chat_proactive, bedtime tidy."""
 
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 
-from mochi.ai_client import _build_system_prompt, STICKER_RE, chat_proactive, chat, ChatResult, _expand_history
+from mochi.ai_client import (
+    _build_system_prompt, STICKER_RE, chat_proactive, chat,
+    ChatResult, _expand_history, chat_bedtime_tidy,
+)
 from mochi.llm import LLMResponse
 from mochi.transport import IncomingMessage
 
@@ -390,3 +393,102 @@ class TestExpandHistory:
         ]
         result = _expand_history(history)
         assert len(result) == 2
+
+
+class TestBedtimeTidyToolResolution:
+    """Bedtime tidy must resolve tools correctly and invoke them."""
+
+    def test_bedtime_tidy_tools_config_resolves(self):
+        """BEDTIME_TIDY_TOOLS config matches registered skill names."""
+        from mochi.config import BEDTIME_TIDY_TOOLS
+        import mochi.skills as skill_registry
+
+        tools = skill_registry.get_tools_by_names(BEDTIME_TIDY_TOOLS)
+        tool_names = [t["function"]["name"] for t in tools]
+        assert "manage_note" in tool_names, (
+            f"manage_note not found in resolved tools. "
+            f"Config={BEDTIME_TIDY_TOOLS}, got={tool_names}"
+        )
+        assert "manage_todo" in tool_names, (
+            f"manage_todo not found in resolved tools. "
+            f"Config={BEDTIME_TIDY_TOOLS}, got={tool_names}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_bedtime_tidy_invokes_tool(self, tmp_path, monkeypatch):
+        """Bedtime tidy LLM tool call reaches the skill dispatch layer."""
+        import mochi.skills.note.handler as note_mod
+        monkeypatch.setattr(note_mod, "_NOTES_PATH", tmp_path / "notes.md")
+
+        # Seed a short-term note
+        note_skill = note_mod.NoteSkill()
+        from mochi.skills.base import SkillContext
+        await note_skill.execute(SkillContext(
+            trigger="tool_call", user_id=1,
+            tool_name="manage_note",
+            args={"action": "add", "content": "today only note"},
+        ))
+
+        # LLM response: first call returns a tool_call to remove note #1,
+        # second call returns final text
+        response_with_tool = LLMResponse(
+            content="",
+            prompt_tokens=100, completion_tokens=20, total_tokens=120,
+            model="test-model",
+            tool_calls=[{
+                "id": "tc_1",
+                "name": "manage_note",
+                "arguments": {"action": "remove", "note_id": 1},
+            }],
+        )
+        response_final = LLMResponse(
+            content="Good night!",
+            prompt_tokens=100, completion_tokens=10, total_tokens=110,
+            model="test-model",
+        )
+        mock_client = MagicMock()
+        mock_client.chat.side_effect = [response_with_tool, response_final]
+
+        import mochi.ai_client as ai_mod
+        monkeypatch.setattr(ai_mod, "_last_bedtime_tidy_date", "")
+
+        with patch("mochi.ai_client.get_client_for_tier", return_value=mock_client), \
+             patch("mochi.ai_client.get_prompt", return_value="Tidy: {findings_text}"), \
+             patch("mochi.ai_client.get_core_memory", return_value=""), \
+             patch("mochi.ai_client.get_recent_messages", return_value=[]), \
+             patch("mochi.ai_client.log_usage"):
+            result = await chat_bedtime_tidy(
+                [{"topic": "sleep_transition", "summary": "goodnight"}],
+                user_id=1,
+            )
+
+        assert result == "Good night!"
+
+        # Verify the note was actually removed via dispatch
+        remaining = note_mod._read_notes()
+        assert len(remaining) == 0, f"Expected note removed, but got: {remaining}"
+
+    @pytest.mark.asyncio
+    async def test_bedtime_tidy_no_variable_shadowing(self):
+        """Regression: skill_registry must not be shadowed inside chat_bedtime_tidy."""
+        mock_client = MagicMock()
+        mock_client.chat.return_value = LLMResponse(
+            content="Goodnight!",
+            prompt_tokens=50, completion_tokens=10, total_tokens=60,
+            model="test-model",
+        )
+
+        import mochi.ai_client as ai_mod
+        ai_mod._last_bedtime_tidy_date = ""
+
+        with patch("mochi.ai_client.get_client_for_tier", return_value=mock_client), \
+             patch("mochi.ai_client.get_prompt", return_value="Tidy: {findings_text}"), \
+             patch("mochi.ai_client.get_core_memory", return_value=""), \
+             patch("mochi.ai_client.get_recent_messages", return_value=[]), \
+             patch("mochi.ai_client.log_usage"):
+            # Should NOT raise UnboundLocalError
+            result = await chat_bedtime_tidy(
+                [{"topic": "test", "summary": "test"}],
+                user_id=1,
+            )
+        assert result is not None

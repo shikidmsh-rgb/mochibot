@@ -254,6 +254,35 @@ def init_db() -> None:
             model_name TEXT NOT NULL REFERENCES model_registry(name) ON DELETE CASCADE,
             updated_at TEXT NOT NULL
         );
+
+        -- Knowledge Graph (entity-relationship triples — framework-level, not skill-owned)
+        CREATE TABLE IF NOT EXISTS kg_entities (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id      INTEGER NOT NULL,
+            name         TEXT    NOT NULL,
+            display_name TEXT    NOT NULL,
+            entity_type  TEXT    NOT NULL DEFAULT 'concept',
+            created_at   TEXT    NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_kg_entity_user_name
+            ON kg_entities(user_id, name);
+
+        CREATE TABLE IF NOT EXISTS kg_triples (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id     INTEGER NOT NULL,
+            subject_id  INTEGER NOT NULL REFERENCES kg_entities(id),
+            predicate   TEXT    NOT NULL,
+            object_id   INTEGER NOT NULL REFERENCES kg_entities(id),
+            valid_from  TEXT    DEFAULT NULL,
+            valid_to    TEXT    DEFAULT NULL,
+            source      TEXT    NOT NULL DEFAULT 'chat',
+            confidence  REAL    NOT NULL DEFAULT 1.0,
+            created_at  TEXT    NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_kg_triple_subject
+            ON kg_triples(subject_id, valid_to);
+        CREATE INDEX IF NOT EXISTS idx_kg_triple_user
+            ON kg_triples(user_id, valid_to);
     """)
 
     # ── Migrations (safe column additions for existing databases) ──────
@@ -1348,7 +1377,7 @@ def get_awake_tick_count_today() -> int:
     row = conn.execute(
         "SELECT COUNT(*) as cnt FROM heartbeat_log "
         "WHERE action NOT IN "
-        "('sleeping','observe_only','silent_pause','morning_hold',"
+        "('sleeping','observe_only','silent_pause',"
         "'maintenance','maintenance_error') "
         "AND created_at LIKE ?",
         (f"{today}%",),

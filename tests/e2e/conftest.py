@@ -107,6 +107,5 @@ def reset_heartbeat_state(monkeypatch):
     monkeypatch.setattr(hb, "_prev_observer_raw", {})
     monkeypatch.setattr(hb, "_send_callback", None)
     monkeypatch.setattr(hb, "_wake_reason", None)
-    monkeypatch.setattr(hb, "_morning_hold", False)
     monkeypatch.setattr(hb, "_last_sleep_at", None)
     monkeypatch.setattr(hb, "_silent_pause", False)

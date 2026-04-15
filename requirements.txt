@@ -15,11 +15,11 @@ uvicorn>=0.20.0
 # API key encryption at rest
 cryptography>=42.0.0
 
+# Native vector search (used by memory auto-recall)
+sqlite-vec>=0.1.6
+
 # Optional: Anthropic provider
 # anthropic>=0.25.0
-
-# Optional: Native vector search (faster memory recall when embedding is enabled)
-# sqlite-vec>=0.1.6
 
 # Optional: WeChat transport (iLink API)
 # aiohttp>=3.9

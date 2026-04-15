@@ -105,6 +105,28 @@ def _retrieve_memories_for_turn(text: str, user_id: int) -> list[dict]:
             del _user_last_recall[oldest]
         _user_last_recall[user_id] = time.time()
 
+        # KG entity context injection (high-precision, priority slots)
+        from mochi.config import KG_ENABLED
+        if KG_ENABLED:
+            try:
+                from mochi.knowledge_graph import find_matching_entities, entity_context_for_prompt
+                matched = find_matching_entities(user_id, text)
+                for ent_name in matched[:2]:
+                    kg_text = entity_context_for_prompt(user_id, ent_name)
+                    if kg_text:
+                        selected.insert(0, {
+                            "text": kg_text,
+                            "score": 0.95,
+                            "ts": "",
+                            "category": "knowledge_graph",
+                        })
+            except Exception:
+                pass  # non-critical, degrade gracefully
+
+        # Final cap: memory items + up to 2 KG entities
+        max_total = max(1, MEMORY_AUTO_RECALL_MAX_ITEMS) + 2
+        selected = selected[:max_total]
+
         if selected:
             log.info("auto-recall: %d memories (top score=%.2f)",
                      len(selected), selected[0]["score"])
@@ -656,7 +678,6 @@ async def chat_bedtime_tidy(
         messages.append({"role": "user", "content": instruction})
 
         # Resolve tools from skill registry
-        import mochi.skills as skill_registry
         tools = skill_registry.get_tools_by_names(BEDTIME_TIDY_TOOLS)
         tool_name_list = [t["function"]["name"] for t in tools] if tools else []
         log.info("chat_bedtime_tidy: findings=%d, history=%d, tools=%s",

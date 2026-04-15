@@ -652,3 +652,112 @@ def smart_maintenance(user_id: int = 0) -> dict:
 
     log.info("Maintenance complete: %s", results)
     return results
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Knowledge Graph Extraction (conversation → KG triples)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def extract_kg(user_id: int = 0) -> dict:
+    """Extract named entities and relationships from unprocessed conversations.
+
+    Uses lite-tier LLM to identify entities (people, pets, places) and factual
+    relationships as subject-predicate-object triples. Designed for nightly
+    maintenance — not called during chat turns.
+
+    Returns {"entities": int, "triples": int} or {} on skip/error.
+    """
+    from mochi.config import KG_ENABLED
+    if not KG_ENABLED:
+        return {}
+
+    uid = user_id or OWNER_USER_ID
+    conversations = get_unprocessed_conversations(uid)
+    if not conversations:
+        return {"entities": 0, "triples": 0}
+
+    conv_text = "\n".join(
+        f"{m['role'].capitalize()}: {m['content']}"
+        for m in conversations
+        if m.get("content")
+    )
+    if len(conv_text) < 50:
+        return {"entities": 0, "triples": 0}
+
+    # Build known-entities context for the prompt
+    from mochi.knowledge_graph import (
+        list_entities, get_or_create_entity, add_triple,
+    )
+    known = list_entities(uid)[:50]
+    known_text = ", ".join(
+        f"{e['display_name']}({e['entity_type']})" for e in known
+    ) if known else "(none yet)"
+
+    prompt_template = get_prompt("kg_extract")
+    if not prompt_template:
+        log.warning("kg_extract prompt not found, skipping KG extraction")
+        return {}
+    prompt = prompt_template.replace("{{known_entities}}", known_text)
+
+    try:
+        client = get_client_for_tier("lite")
+        response = client.chat(
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": conv_text},
+            ],
+            temperature=0.2,
+            max_tokens=200,
+        )
+        log_usage(
+            response.prompt_tokens, response.completion_tokens,
+            response.total_tokens, model=response.model, purpose="kg_extract",
+        )
+    except Exception as e:
+        log.error("KG extraction LLM call failed: %s", e)
+        return {}
+
+    parsed = _parse_gpt_json(response.content)
+    if not isinstance(parsed, dict):
+        return {}
+
+    entity_count = 0
+    triple_count = 0
+
+    # Create entities
+    raw_entities = parsed.get("entities", [])
+    for ent in raw_entities:
+        if not isinstance(ent, dict) or not ent.get("name"):
+            continue
+        try:
+            get_or_create_entity(
+                uid,
+                name=ent["name"],
+                entity_type=ent.get("type", "concept"),
+            )
+            entity_count += 1
+        except Exception as e:
+            log.warning("KG entity creation failed for %s: %s", ent.get("name"), e)
+
+    # Create triples
+    raw_triples = parsed.get("triples", [])
+    for tri in raw_triples:
+        if not isinstance(tri, dict):
+            continue
+        subj = tri.get("subject", "")
+        pred = tri.get("predicate", "")
+        obj = tri.get("object", "")
+        if not (subj and pred and obj):
+            continue
+        try:
+            subj_id = get_or_create_entity(uid, name=subj)
+            obj_id = get_or_create_entity(uid, name=obj)
+            add_triple(uid, subj_id, pred, obj_id, source="chat")
+            triple_count += 1
+        except Exception as e:
+            log.warning("KG triple creation failed (%s→%s→%s): %s", subj, pred, obj, e)
+
+    log.info("KG extraction: %d entities, %d triples from %d messages",
+             entity_count, triple_count, len(conversations))
+    return {"entities": entity_count, "triples": triple_count}
+

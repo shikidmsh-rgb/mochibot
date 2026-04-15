@@ -47,6 +47,19 @@ async def run_maintenance(user_id: int = 0) -> dict:
         log.error("Maintenance notes archive failed: %s", e)
         results["notes"] = f"Error: {e}"
 
+    # 1c. Knowledge Graph extraction (non-blocking)
+    try:
+        from mochi.memory_engine import extract_kg
+        kg = extract_kg(uid)
+        if kg:
+            results["kg_extract"] = (
+                f"Entities: {kg.get('entities', 0)}, "
+                f"Triples: {kg.get('triples', 0)}"
+            )
+    except Exception as e:
+        log.error("Maintenance KG extraction failed: %s", e)
+        results["kg_extract"] = f"Error: {e}"
+
     # 2. Dedup (uses LLM via memory_engine)
     try:
         from mochi.memory_engine import deduplicate_memories
@@ -113,6 +126,15 @@ async def run_maintenance(user_id: int = 0) -> dict:
     except Exception as e:
         log.error("Maintenance proactive log cleanup failed: %s", e)
         results["proactive_log"] = f"Error: {e}"
+
+    # 6c. KG expired triple cleanup
+    try:
+        from mochi.knowledge_graph import cleanup_expired_triples
+        kg_purged = cleanup_expired_triples(days=90)
+        if kg_purged:
+            results["kg_cleanup"] = f"Purged {kg_purged} expired triple(s)"
+    except Exception as e:
+        log.error("KG triple cleanup failed: %s", e)
 
     # 7. Store summary for morning report
     try:

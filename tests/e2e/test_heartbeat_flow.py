@@ -7,7 +7,7 @@ from unittest.mock import patch
 from mochi.heartbeat import (
     wake_up, go_to_sleep, force_wake, get_state, get_stats,
     set_send_callback, check_sleep_entry, check_silence_sleep,
-    clear_morning_hold, enter_silent_pause, clear_silent_pause,
+    enter_silent_pause, clear_silent_pause,
     is_silent_pause, should_wake_on_message,
     SLEEPING, AWAKE, RESLEEP_WINDOW_HOURS,
 )
@@ -20,7 +20,6 @@ def reset_heartbeat_state(monkeypatch):
     monkeypatch.setattr(hb, "_state", AWAKE)
     monkeypatch.setattr(hb, "_state_changed_at", datetime.now(hb.TZ))
     monkeypatch.setattr(hb, "_wake_reason", None)
-    monkeypatch.setattr(hb, "_morning_hold", False)
     monkeypatch.setattr(hb, "_last_sleep_at", None)
     monkeypatch.setattr(hb, "_silent_pause", False)
     monkeypatch.setattr(hb, "_prev_observer_raw", {})
@@ -39,18 +38,6 @@ class TestWakeUp:
         assert get_state() == AWAKE
         stats = get_stats()
         assert stats["wake_reason"] == "user_message"
-        assert stats["morning_hold"] is False  # user-initiated = no hold
-
-    def test_wake_up_fallback_sets_morning_hold(self, monkeypatch):
-        """Non-user wake sets morning_hold=True."""
-        import mochi.heartbeat as hb
-        monkeypatch.setattr(hb, "_state", SLEEPING)
-
-        wake_up("fallback_10:00")
-
-        assert get_state() == AWAKE
-        stats = get_stats()
-        assert stats["morning_hold"] is True
 
     def test_wake_up_noop_when_already_awake(self):
         """wake_up() does nothing if already AWAKE."""
@@ -78,16 +65,14 @@ class TestGoToSleep:
         assert get_state() == SLEEPING
 
     def test_go_to_sleep_clears_state(self):
-        """go_to_sleep() clears wake_reason and morning_hold."""
+        """go_to_sleep() clears wake_reason."""
         import mochi.heartbeat as hb
         hb._wake_reason = "user_message"
-        hb._morning_hold = True
 
         go_to_sleep("silence")
 
         stats = get_stats()
         assert stats["wake_reason"] is None
-        assert stats["morning_hold"] is False
 
     def test_go_to_sleep_tracks_last_sleep_at(self):
         """go_to_sleep() records _last_sleep_at for re-sleep detection."""
@@ -192,23 +177,6 @@ class TestCheckSilenceSleep:
         assert result["context_hint"] == "re_sleep"
 
 
-class TestMorningHold:
-
-    def test_clear_morning_hold(self, monkeypatch):
-        """clear_morning_hold() releases the hold."""
-        import mochi.heartbeat as hb
-        monkeypatch.setattr(hb, "_morning_hold", True)
-
-        clear_morning_hold()
-
-        assert get_stats()["morning_hold"] is False
-
-    def test_clear_morning_hold_noop_when_not_held(self):
-        """clear_morning_hold() is a noop when not in hold."""
-        clear_morning_hold()  # should not error
-        assert get_stats()["morning_hold"] is False
-
-
 class TestSilentPause:
 
     def test_enter_and_clear(self):
@@ -232,7 +200,6 @@ class TestGetStats:
         assert "proactive_today" in stats
         assert "proactive_limit" in stats
         assert "wake_reason" in stats
-        assert "morning_hold" in stats
         assert isinstance(stats["proactive_today"], int)
         assert isinstance(stats["proactive_limit"], int)
 
@@ -245,20 +212,6 @@ class TestGetStats:
 
         set_send_callback(dummy_callback)
         assert hb._send_callback is dummy_callback
-
-
-class TestFallbackWakeWithMorningHold:
-
-    def test_fallback_wake_then_user_clears_hold(self, monkeypatch):
-        """Fallback wake sets morning_hold; user message clears it."""
-        import mochi.heartbeat as hb
-        monkeypatch.setattr(hb, "_state", SLEEPING)
-
-        wake_up("fallback_10:00")
-        assert get_stats()["morning_hold"] is True
-
-        clear_morning_hold()
-        assert get_stats()["morning_hold"] is False
 
 
 # ── Helper: fake datetime for monkeypatching ─────────────────────────────
@@ -342,11 +295,12 @@ class TestSilenceSleepE2E:
 
 
 class TestFallbackWakeE2E:
-    """E2E: fallback wake hour triggers wake_up + morning hold."""
+    """E2E: fallback wake hour triggers wake_up during daytime only."""
 
     def test_fallback_wake_at_configured_hour(self, monkeypatch):
         """Bot wakes up at FALLBACK_WAKE_HOUR when still sleeping."""
         import mochi.heartbeat as hb
+        from mochi.config import SLEEP_AFTER_HOUR
 
         monkeypatch.setattr(hb, "_state", SLEEPING)
         # Simulate 10:00 — matches FALLBACK_WAKE_HOUR default
@@ -357,12 +311,100 @@ class TestFallbackWakeE2E:
         hour = fake_now.hour
         fallback_hour = hb._effective('FALLBACK_WAKE_HOUR')
 
-        if hb._state == SLEEPING and fallback_hour <= hour < 23:
+        if hb._state == SLEEPING and fallback_hour <= hour < SLEEP_AFTER_HOUR:
             hb.wake_up(f"fallback_{fallback_hour}:00")
 
         assert hb.get_state() == AWAKE
-        assert hb.get_stats()["morning_hold"] is True
         assert hb.get_stats()["wake_reason"] == "fallback_10:00"
+
+    def test_fallback_wake_blocked_during_night(self, monkeypatch):
+        """Bot does NOT wake via fallback when hour >= SLEEP_AFTER_HOUR."""
+        import mochi.heartbeat as hb
+        from mochi.config import SLEEP_AFTER_HOUR
+
+        monkeypatch.setattr(hb, "_state", SLEEPING)
+        # Simulate 21:30 — inside night window
+        fake_now = datetime(2026, 3, 29, 21, 30, tzinfo=hb.TZ)
+        monkeypatch.setattr(hb, "datetime", _FakeDatetime(fake_now))
+
+        hour = fake_now.hour
+        fallback_hour = hb._effective('FALLBACK_WAKE_HOUR')
+
+        if hb._state == SLEEPING and fallback_hour <= hour < SLEEP_AFTER_HOUR:
+            hb.wake_up(f"fallback_{fallback_hour}:00")
+
+        assert hb.get_state() == SLEEPING
+
+    def test_fallback_wake_blocked_at_22(self, monkeypatch):
+        """Bot does NOT wake via fallback at 22:00."""
+        import mochi.heartbeat as hb
+        from mochi.config import SLEEP_AFTER_HOUR
+
+        monkeypatch.setattr(hb, "_state", SLEEPING)
+        fake_now = datetime(2026, 3, 29, 22, 0, tzinfo=hb.TZ)
+        monkeypatch.setattr(hb, "datetime", _FakeDatetime(fake_now))
+
+        hour = fake_now.hour
+        fallback_hour = hb._effective('FALLBACK_WAKE_HOUR')
+
+        if hb._state == SLEEPING and fallback_hour <= hour < SLEEP_AFTER_HOUR:
+            hb.wake_up(f"fallback_{fallback_hour}:00")
+
+        assert hb.get_state() == SLEEPING
+
+    def test_silence_sleep_then_stays_sleeping(self, monkeypatch):
+        """After silence_sleep at 21:30, next tick does NOT fallback wake."""
+        import mochi.heartbeat as hb
+        from mochi.config import SLEEP_AFTER_HOUR
+
+        # Step 1: go to sleep at 21:30
+        monkeypatch.setattr(hb, "_state", AWAKE)
+        hb.go_to_sleep("silence_detected")
+        assert hb.get_state() == SLEEPING
+
+        # Step 2: simulate next tick at 21:50
+        fake_now = datetime(2026, 3, 29, 21, 50, tzinfo=hb.TZ)
+        monkeypatch.setattr(hb, "datetime", _FakeDatetime(fake_now))
+
+        hour = fake_now.hour
+        fallback_hour = hb._effective('FALLBACK_WAKE_HOUR')
+
+        if hb._state == SLEEPING and fallback_hour <= hour < SLEEP_AFTER_HOUR:
+            hb.wake_up(f"fallback_{fallback_hour}:00")
+
+        # Bot must stay asleep — this is the core regression test
+        assert hb.get_state() == SLEEPING
+
+
+class TestInitStateBoundary:
+    """Test _init_state hour heuristic respects SLEEP_AFTER_HOUR boundary."""
+
+    def test_init_state_sleeping_at_21(self, monkeypatch):
+        """_init_state returns SLEEPING at hour 21 (SLEEP_AFTER_HOUR)."""
+        import mochi.heartbeat as hb
+        fake_now = datetime(2026, 3, 29, 21, 0, tzinfo=hb.TZ)
+        monkeypatch.setattr(hb, "datetime", _FakeDatetime(fake_now))
+        monkeypatch.setattr(hb, "_STATE_FILE",
+                            type('P', (), {'exists': lambda self: False})())
+        assert hb._init_state() == SLEEPING
+
+    def test_init_state_sleeping_at_22(self, monkeypatch):
+        """_init_state returns SLEEPING at hour 22."""
+        import mochi.heartbeat as hb
+        fake_now = datetime(2026, 3, 29, 22, 0, tzinfo=hb.TZ)
+        monkeypatch.setattr(hb, "datetime", _FakeDatetime(fake_now))
+        monkeypatch.setattr(hb, "_STATE_FILE",
+                            type('P', (), {'exists': lambda self: False})())
+        assert hb._init_state() == SLEEPING
+
+    def test_init_state_awake_at_20(self, monkeypatch):
+        """_init_state returns AWAKE at hour 20 (before SLEEP_AFTER_HOUR)."""
+        import mochi.heartbeat as hb
+        fake_now = datetime(2026, 3, 29, 20, 0, tzinfo=hb.TZ)
+        monkeypatch.setattr(hb, "datetime", _FakeDatetime(fake_now))
+        monkeypatch.setattr(hb, "_STATE_FILE",
+                            type('P', (), {'exists': lambda self: False})())
+        assert hb._init_state() == AWAKE
 
 
 class TestSleepKeywordE2E:

@@ -137,6 +137,15 @@ class MemorySkill(Skill):
                 f"- Categories: {json.dumps(stats['categories'], ensure_ascii=False)}",
                 f"- Trash bin: {len(trash)} items",
             ]
+            try:
+                from mochi.knowledge_graph import get_kg_stats
+                kg = get_kg_stats(uid)
+                lines.append(
+                    f"- KG: {kg['entities']} entities, "
+                    f"{kg['active_triples']} active triples"
+                )
+            except Exception:
+                pass
             return SkillResult(output="\n".join(lines))
 
         elif tool == "view_core_memory":
