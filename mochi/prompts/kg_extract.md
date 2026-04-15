@@ -19,5 +19,5 @@ Extract named entities and factual relationships from a User↔Bot conversation.
 - Do NOT extract habits, meals, sleep data, or mood — those have dedicated systems
 
 ## Output (JSON only)
-{"entities":[{"name":"小白","type":"pet"}],"triples":[{"subject":"小白","predicate":"has_condition","object":"感冒"}]}
+{"entities":[{"name":"小白","type":"pet"}],"triples":[{"subject":"小白","predicate":"has_breed","object":"英短"}]}
 Empty: {"entities":[],"triples":[]}

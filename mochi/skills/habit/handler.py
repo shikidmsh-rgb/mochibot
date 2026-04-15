@@ -1,6 +1,5 @@
 """Habit skill handler — recurring habit tracking with check-in, pause, and stats.
 
-Port of internal project's habit skill, adapted to MochiBot conventions:
 - SkillContext / SkillResult pattern
 - TZ from mochi.config
 - diary_status() for pluggable diary integration

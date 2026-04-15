@@ -8,7 +8,7 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-_PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
+_PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 _DATA_PROMPTS_DIR = Path(__file__).resolve().parent.parent / "data" / "prompts"
 _cache: dict[str, str] = {}
 

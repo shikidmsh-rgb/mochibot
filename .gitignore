@@ -41,6 +41,9 @@ ARCHITECTURE.md
 # WIP (work-in-progress notes, not shipped)
 wip/
 
+# E2E tests (require local environment)
+tests/e2e/
+
 # Temp scripts
 run_admin.py
 

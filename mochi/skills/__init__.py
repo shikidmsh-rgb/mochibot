@@ -266,7 +266,7 @@ def get_always_on_skill_names(transport: str = "") -> list[str]:
     return names
 
 
-# Alias for consistency with internal project
+# Legacy alias
 skill_for_tool = get_tool_skill
 
 

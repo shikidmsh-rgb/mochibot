@@ -30,7 +30,7 @@ except ImportError:
     HAS_FASTAPI = False
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-_PROMPTS_DIR = _PROJECT_ROOT / "prompts"
+_PROMPTS_DIR = _PROJECT_ROOT / "mochi" / "prompts"
 _DATA_PROMPTS_DIR = _PROJECT_ROOT / "data" / "prompts"
 
 # Prompts written to data/prompts/ so git pull never overwrites user edits

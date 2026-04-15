@@ -522,8 +522,8 @@ class TestTextSimilarity:
     def test_near_duplicate_core_memory(self):
         """The exact bug scenario: two lines differing only by '用户是女生'."""
         from mochi.db import text_similarity
-        a = "用户是我的主人，我是用户的赛博好友。我们的关系是：我会唠叨用户喝水、关心用户的健康和生活、偶尔毒舌吐槽，但永远站在用户这边。用户有只叫小白的英短金渐层（5岁，感冒）和一只叫豆豆的狗。"
-        b = "用户是我的主人，我是用户的赛博好友。我们的关系是：我会唠叨用户喝水、关心用户的健康和生活、偶尔毒舌吐槽，但永远站在用户这边。用户是女生，有只叫小白的英短金渐层（5岁，感冒）和一只叫豆豆的狗。"
+        a = "用户是我的主人，我是用户的赛博好友。我们的关系是：我会唠叨用户喝水、关心用户的健康和生活、偶尔毒舌吐槽，但永远站在用户这边。用户有只叫小白的英短银渐层（3岁，健康）和一只叫豆豆的狗。"
+        b = "用户是我的主人，我是用户的赛博好友。我们的关系是：我会唠叨用户喝水、关心用户的健康和生活、偶尔毒舌吐槽，但永远站在用户这边。用户养了只叫小白的英短银渐层（3岁，健康）和一只叫豆豆的狗。"
         ratio = text_similarity(a, b)
         assert ratio >= 0.85, f"Expected >=0.85 for near-duplicate, got {ratio}"
 

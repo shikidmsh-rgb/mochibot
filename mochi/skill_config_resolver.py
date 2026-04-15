@@ -5,7 +5,6 @@ Input: (skill_name, schema from SKILL.md).
 Output: dict of resolved, type-cast config values.
 
 Note: MochiBot uses DB > env > schema (admin portal has highest priority).
-This differs from internal project which uses .env > DB > schema.
 """
 
 from __future__ import annotations

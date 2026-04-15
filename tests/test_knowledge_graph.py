@@ -140,7 +140,7 @@ class TestAddTriple:
     def test_multi_valued_no_invalidation(self):
         s = get_or_create_entity(UID, "小白", entity_type="pet")
         o1 = get_or_create_entity(UID, "感冒", entity_type="concept")
-        o2 = get_or_create_entity(UID, "感冒", entity_type="concept")
+        o2 = get_or_create_entity(UID, "过敏", entity_type="concept")
 
         add_triple(UID, s, "has_condition", o1)
         add_triple(UID, s, "has_condition", o2)
