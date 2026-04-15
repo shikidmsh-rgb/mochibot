@@ -86,7 +86,12 @@ def _start_bot_process():
                 _bot_process.kill()
             _bot_process = None
         _restart_enabled = True
-        env = {**os.environ, "ADMIN_ENABLED": "false", "PYTHONIOENCODING": "utf-8"}
+        # Read fresh .env values so newly-saved credentials (e.g. from QR
+        # login) override stale os.environ entries.  dotenv_values() reads the
+        # file without touching os.environ.
+        from dotenv import dotenv_values
+        fresh_dotenv = dotenv_values(_PROJECT_ROOT / ".env")
+        env = {**os.environ, **fresh_dotenv, "ADMIN_ENABLED": "false", "PYTHONIOENCODING": "utf-8"}
         _bot_log_lines.clear()
         _bot_process = subprocess.Popen(
             [sys.executable, "-u", "-m", "mochi.main"],
