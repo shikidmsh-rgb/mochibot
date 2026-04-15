@@ -1,14 +1,11 @@
-"""Tool router — selective skill injection via LLM classification + keyword fallback.
+"""Tool router — selective skill injection via LLM classification.
 
 Instead of injecting ALL tools into every LLM call (wastes tokens), the router
 classifies the user message first, then injects only the relevant tools.
 
-Two-tier detection:
-  1. LLM classification (LITE tier, ~100 tokens) — primary
-  2. Keyword fallback (0ms, 0 tokens)  — ONLY when LLM returns None or empty
-
-Iron rule: keywords fire ONLY when classify_skills_llm() returns None or empty.
-           Never union keywords with LLM results.
+Safety nets when LLM classification returns empty:
+  - always-on skills (sticker, note) are injected every turn
+  - request_tools escalation allows mid-turn self-rescue
 
 v3 additions:
   - SSOT metadata from SKILL.md scan (lazy-initialized)
@@ -33,7 +30,6 @@ log = logging.getLogger(__name__)
 TOOL_METADATA: dict[str, dict] = {}
 _SKILL_DESCRIPTIONS: dict[str, str] = {}
 _SKILL_DEFAULT_TIER: dict[str, str] = {}
-_SKILL_KEYWORDS: dict[str, tuple[str, ...]] = {}
 _SKILL_METAS: list = []
 _metadata_initialized = False
 
@@ -44,7 +40,7 @@ def _ensure_skill_metadata():
     Safe to call multiple times (idempotent). Uses file-only scan — no handler imports.
     """
     global TOOL_METADATA, _SKILL_DESCRIPTIONS, _SKILL_DEFAULT_TIER
-    global _SKILL_KEYWORDS, _SKILL_METAS, _metadata_initialized
+    global _SKILL_METAS, _metadata_initialized
 
     if _metadata_initialized:
         return
@@ -53,7 +49,6 @@ def _ensure_skill_metadata():
         from mochi.skills.base import (
             scan_skill_metadata, build_skill_descriptions,
             build_tool_metadata, build_tier_defaults,
-            build_skill_keywords,
         )
 
         metas = scan_skill_metadata()
@@ -61,7 +56,6 @@ def _ensure_skill_metadata():
         TOOL_METADATA = build_tool_metadata(metas)
         _SKILL_DESCRIPTIONS = build_skill_descriptions(metas)
         _SKILL_DEFAULT_TIER = build_tier_defaults(metas)
-        _SKILL_KEYWORDS = build_skill_keywords(metas)
 
         tool_count = len([t for t in TOOL_METADATA if t != "request_tools"])
         log.info("[SkillMeta] Auto-generated: %d router skills, %d tools, %d tier overrides",
@@ -131,12 +125,6 @@ def _get_skill_tier_override(skill_name: str) -> str | None:
         return config.get("_tier")
     except Exception:
         return None
-
-
-# ────────────────────────────────────────────────────────────────────────
-# Keyword map — auto-populated from SKILL.md 'keywords:' fields.
-# Fallback when LLM classification fails (zero LLM calls).
-# ────────────────────────────────────────────────────────────────────────
 
 
 def _build_skill_descriptions(transport: str = "") -> dict[str, str]:
@@ -229,13 +217,13 @@ async def classify_skills_llm(message: str, user_id: int | None = None,
                               transport: str = "") -> Optional[list[str]]:
     """Classify which skills a message needs using LITE tier LLM.
 
-    Returns list of skill names, or None on failure (triggers keyword fallback).
+    Returns list of skill names, or None on failure.
     """
     try:
         from mochi.llm import get_client_for_tier
         from mochi.db import log_usage
     except ImportError:
-        log.warning("LLM imports failed, router falling back to keywords")
+        log.warning("LLM imports failed, router returning None")
         return None
 
     descriptions = _build_skill_descriptions(transport=transport)
@@ -288,36 +276,19 @@ async def classify_skills_llm(message: str, user_id: int | None = None,
         return None
 
 
-def keyword_fallback(message: str) -> list[str]:
-    """Detect skills from high-precision keywords. Zero LLM calls.
-
-    ONLY called when classify_skills_llm() returns None.
-    Keywords are auto-populated from SKILL.md 'keywords:' fields.
-    """
-    _ensure_skill_metadata()
-    msg_lower = message.lower()
-    matched = []
-    for skill_name, keywords in _SKILL_KEYWORDS.items():
-        if any(kw in msg_lower for kw in keywords):
-            matched.append(skill_name)
-    if matched:
-        log.info("Keyword fallback matched: %s", matched)
-    return matched
-
-
 async def classify_skills(message: str, user_id: int | None = None,
                           habits: list[dict] | None = None,
                           transport: str = "") -> list[str]:
     """Main entry point: classify skills for a message.
 
-    LLM first, keyword fallback ONLY when LLM fails or returns empty.
+    LLM classification only. Returns empty list for pure-chat messages.
+    Always-on skills and request_tools escalation provide safety nets.
     """
     skills = await classify_skills_llm(message, user_id=user_id, habits=habits,
                                        transport=transport)
     if skills is not None and len(skills) > 0:
         return skills
-    # LLM failed or returned empty — fall back to keywords
-    return keyword_fallback(message)
+    return []
 
 
 # ────────────────────────────────────────────────────────────────────────

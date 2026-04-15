@@ -103,7 +103,7 @@ class SkillMeta:
     triggers: list[dict] = field(default_factory=list)
     has_sense: bool = False  # whether skill declares sense: block
     exclude_transports: list[str] = field(default_factory=list)
-    keywords: list[str] = field(default_factory=list)  # prerouter keyword fallback
+    always_on: bool = False  # always inject tools regardless of router
 
 
 # ---------------------------------------------------------------------------
@@ -166,7 +166,7 @@ def _parse_skill_md(md_path: str) -> dict:
         "nudge_meta": None,
         "writes_meta": None,
         "exclude_transports": [],
-        "keywords": [],
+        "always_on": False,
     }
 
     if not os.path.exists(md_path):
@@ -339,6 +339,8 @@ def _parse_skill_md(md_path: str) -> dict:
                 result["requires_config"] = keys
             elif key == "core":
                 result["core"] = val.lower() in ("true", "yes", "1")
+            elif key == "always_on":
+                result["always_on"] = val.lower() in ("true", "yes", "1")
             elif key == "diary":
                 tags = re.findall(r"[a-z_][a-z0-9_]*", val)
                 result["diary"] = tags
@@ -350,8 +352,6 @@ def _parse_skill_md(md_path: str) -> dict:
             elif key == "exclude_transports":
                 transports = re.findall(r"[a-z_][a-z0-9_]*", val)
                 result["exclude_transports"] = transports
-            elif key == "keywords":
-                result["keywords"] = [k.strip() for k in val.strip("[]").split(",") if k.strip()]
             else:
                 result["meta"][key] = val
 
@@ -646,6 +646,7 @@ class Skill(ABC):
         self._config_schema_typed: list[ConfigField] = []  # v3 typed schema
         self.sub_skills: dict[str, str] = {}
         self.core: bool = False                       # core skills cannot be disabled
+        self.always_on: bool = False                   # always inject tools regardless of router
         self.config: dict = {}                       # resolved config values
         self.diary_status_order: int = 50            # diary panel ordering (lower = higher)
         self.exclude_transports: list[str] = []      # transports where this skill is unavailable
@@ -690,6 +691,7 @@ class Skill(ABC):
         self.usage_rules = parsed.get("usage_rules", "")
         self.has_observer = parsed.get("has_sense", False)
         self.core = parsed.get("core", False)
+        self.always_on = parsed.get("always_on", False)
         self.diary_tags = parsed.get("diary", [])
         self.sub_skills = parsed.get("sub_skills", {})
         self.diary_status_order = int(parsed.get("diary_status_order", 50))
@@ -942,7 +944,7 @@ def scan_skill_metadata(skills_dir: str | None = None) -> list[SkillMeta]:
             triggers=parsed.get("triggers", []),
             has_sense=parsed.get("has_sense", False),
             exclude_transports=parsed.get("exclude_transports", []),
-            keywords=parsed.get("keywords", []),
+            always_on=parsed.get("always_on", False),
         ))
 
     # ── Startup lint validation ──
@@ -1045,17 +1047,4 @@ def build_tier_defaults(metas: list[SkillMeta]) -> dict[str, str]:
                 result[sub_name] = sub_tier
             elif sub_tier is None and m.tier != "chat":
                 result[sub_name] = m.tier
-    return result
-
-
-def build_skill_keywords(metas: list[SkillMeta]) -> dict[str, tuple[str, ...]]:
-    """Build {skill_name: (keyword, ...)} from SKILL.md keywords fields.
-
-    Only includes skills that declare keywords. Used by the prerouter
-    keyword fallback (zero LLM calls).
-    """
-    result: dict[str, tuple[str, ...]] = {}
-    for m in metas:
-        if m.keywords:
-            result[m.name] = tuple(m.keywords)
     return result

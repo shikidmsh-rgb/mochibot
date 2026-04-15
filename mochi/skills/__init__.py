@@ -246,6 +246,26 @@ def get_tool_skill(tool_name: str) -> str | None:
     return _tool_map.get(tool_name)
 
 
+def get_always_on_skill_names(transport: str = "") -> list[str]:
+    """Return names of skills declared ``always_on: true`` in SKILL.md.
+
+    Respects disabled, config-missing, and transport exclusion gates.
+    """
+    disabled = _get_disabled_skills()
+    names = []
+    for skill in _skills.values():
+        if not skill.always_on:
+            continue
+        if skill.name in disabled:
+            continue
+        if getattr(skill, "_config_missing", None):
+            continue
+        if transport and transport in skill.exclude_transports:
+            continue
+        names.append(skill.name)
+    return names
+
+
 # Alias for consistency with internal project
 skill_for_tool = get_tool_skill
 
@@ -459,7 +479,7 @@ def _build_capability_summary(transport: str = "") -> str:
 
     if not lines:
         return ""
-    return "### 当前技能\n" + "\n".join(lines)
+    return "### 你的技能\n" + "\n".join(lines)
 
 
 def get_capability_summary(transport: str = "") -> str:

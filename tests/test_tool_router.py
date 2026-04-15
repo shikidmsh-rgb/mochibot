@@ -28,13 +28,6 @@ def reset_router(monkeypatch):
         "habit": "chat",
         "maintenance": "deep",
     })
-    monkeypatch.setattr(router, "_SKILL_KEYWORDS", {
-        "reminder": ("remind", "提醒", "alarm", "闹钟", "timer", "定时"),
-        "todo": ("todo", "待办", "task", "任务", "to-do", "checklist"),
-        "memory": ("remember", "记住", "forget", "忘记", "recall", "回忆"),
-        "oura": ("sleep", "睡眠", "heart rate", "心率", "hrv", "readiness", "stress", "oura"),
-        "web_search": ("web search", "google", "look up", "查一下", "搜一下", "duckduckgo", "ddg"),
-    })
 
 
 # ── resolve_tier ──
@@ -88,40 +81,6 @@ class TestGetToolMeta:
         meta = router.get_tool_meta("nonexistent")
         assert meta["skill"] == "unknown"
         assert meta["risk_level"] == "L0"
-
-
-# ── keyword_fallback ──
-
-class TestKeywordFallback:
-
-    def test_reminder_english(self):
-        result = router.keyword_fallback("remind me to buy milk")
-        assert "reminder" in result
-
-    def test_reminder_chinese(self):
-        result = router.keyword_fallback("提醒我下午开会")
-        assert "reminder" in result
-
-    def test_todo_keyword(self):
-        result = router.keyword_fallback("add a task to my todo list")
-        assert "todo" in result
-
-    def test_memory_keyword(self):
-        result = router.keyword_fallback("remember that I like tea")
-        assert "memory" in result
-
-    def test_multiple_matches(self):
-        result = router.keyword_fallback("remind me to add this task to todo")
-        assert "reminder" in result
-        assert "todo" in result
-
-    def test_no_match(self):
-        result = router.keyword_fallback("hello how are you")
-        assert result == []
-
-    def test_case_insensitive(self):
-        result = router.keyword_fallback("REMIND me please")
-        assert "reminder" in result
 
 
 # ── classify_skills_llm ──
@@ -190,16 +149,16 @@ class TestClassifySkills:
         assert result == ["todo"]
 
     @pytest.mark.asyncio
-    async def test_llm_empty_triggers_fallback(self, monkeypatch):
+    async def test_llm_empty_returns_empty(self, monkeypatch):
         with patch.object(router, "classify_skills_llm", return_value=[]):
             result = await router.classify_skills("remind me to buy milk")
-        assert "reminder" in result
+        assert result == []
 
     @pytest.mark.asyncio
-    async def test_llm_none_triggers_fallback(self, monkeypatch):
+    async def test_llm_none_returns_empty(self, monkeypatch):
         with patch.object(router, "classify_skills_llm", return_value=None):
             result = await router.classify_skills("add a task to my todo")
-        assert "todo" in result
+        assert result == []
 
     @pytest.mark.asyncio
     async def test_both_fail_returns_empty(self, monkeypatch):

@@ -3,7 +3,7 @@ name: my_skill
 description: "What this skill does — keep it concise, the pre-router reads this"
 type: tool
 expose_as_tool: true
-keywords: [my_keyword, 我的关键词]
+always_on: false
 ---
 
 ## Tools

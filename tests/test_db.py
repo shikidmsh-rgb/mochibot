@@ -506,3 +506,40 @@ class TestProactiveLog:
         types = {s["type"] for s in sent}
         assert "sleep_transition" in types
         assert "habit_nudge" in types
+
+
+class TestTextSimilarity:
+    """Tests for the module-level text_similarity utility."""
+
+    def test_identical_strings(self):
+        from mochi.db import text_similarity
+        assert text_similarity("hello world", "hello world") == 1.0
+
+    def test_identical_chinese(self):
+        from mochi.db import text_similarity
+        assert text_similarity("用户喜欢吃辣", "用户喜欢吃辣") == 1.0
+
+    def test_near_duplicate_core_memory(self):
+        """The exact bug scenario: two lines differing only by '用户是女生'."""
+        from mochi.db import text_similarity
+        a = "用户是我的主人，我是用户的赛博好友。我们的关系是：我会唠叨用户喝水、关心用户的健康和生活、偶尔毒舌吐槽，但永远站在用户这边。用户有只叫小白的英短金渐层（5岁，感冒）和一只叫豆豆的狗。"
+        b = "用户是我的主人，我是用户的赛博好友。我们的关系是：我会唠叨用户喝水、关心用户的健康和生活、偶尔毒舌吐槽，但永远站在用户这边。用户是女生，有只叫小白的英短金渐层（5岁，感冒）和一只叫豆豆的狗。"
+        ratio = text_similarity(a, b)
+        assert ratio >= 0.85, f"Expected >=0.85 for near-duplicate, got {ratio}"
+
+    def test_different_content_below_threshold(self):
+        """Semantically different short strings should be below threshold."""
+        from mochi.db import text_similarity
+        ratio = text_similarity("用户喜欢吃辣", "用户喜欢吃甜")
+        assert ratio < 0.85, f"Expected <0.85 for different content, got {ratio}"
+
+    def test_empty_string_returns_zero(self):
+        from mochi.db import text_similarity
+        assert text_similarity("", "hello") == 0.0
+        assert text_similarity("hello", "") == 0.0
+        assert text_similarity("", "") == 0.0
+
+    def test_punctuation_ignored(self):
+        """Punctuation differences should not affect similarity."""
+        from mochi.db import text_similarity
+        assert text_similarity("hello, world!", "hello world") == 1.0

@@ -231,6 +231,11 @@ def _build_system_prompt(user_id: int, usage_rules: str = "",
     parts = []
     if personality:
         parts.append(personality)
+
+    # Inject current time early — it anchors all subsequent context
+    # (memory staleness, relative reminders like "5分钟后", habit check-in dates)
+    parts.append(f"## 当前时间\n现在是 **{now_str}**（UTC{TIMEZONE_OFFSET_HOURS:+d}）。")
+
     if agent_desc:
         parts.append(agent_desc)
 
@@ -239,9 +244,6 @@ def _build_system_prompt(user_id: int, usage_rules: str = "",
     cap = get_capability_summary(transport=transport)
     if cap:
         parts.append(cap)
-
-    # Always inject current time so relative reminders ("5分钟后") can be resolved
-    parts.append(f"## 当前时间\n现在是 **{now_str}**（UTC{TIMEZONE_OFFSET_HOURS:+d}）。")
 
     if core_memory:
         parts.append(f"## 你对用户的了解\n{core_memory}")
@@ -262,6 +264,13 @@ def _build_system_prompt(user_id: int, usage_rules: str = "",
 
     if usage_rules:
         parts.append(f"## 工具使用规则\n{usage_rules}")
+
+    # Bubble formatting instruction (system-level, not in soul.md)
+    from mochi.config import BUBBLE_ENABLED
+    if BUBBLE_ENABLED:
+        bubble_inst = get_prompt("system_chat/_bubble")
+        if bubble_inst:
+            parts.append(bubble_inst)
 
     # Active habits (only when habit tools are available this turn)
     if user_id and tool_names and habits:
@@ -356,18 +365,24 @@ async def chat(message: IncomingMessage) -> ChatResult:
             asyncio.to_thread(get_recent_messages, user_id, 20),
             asyncio.to_thread(_retrieve_memories_for_turn, text, user_id),
         )
+
+        # Always-on skills (declared in SKILL.md) + router-selected, deduplicated
+        always_on = skill_registry.get_always_on_skill_names(
+            transport=message.transport)
+        all_skill_names = list(dict.fromkeys(always_on + skill_names))
+
+        # Tier from router-selected skills only (always-on are lite,
+        # shouldn't downgrade default "chat" tier for pure-chat messages)
         if skill_names:
-            tools = skill_registry.get_tools_by_names(
-                skill_names, transport=message.transport)
-            # Resolve model tier from classified skills
             tier = resolve_tier(llm_skills=set(skill_names))
-            # Collect usage rules for selected tools only
-            tool_names_list = [
-                t["function"]["name"] for t in tools if "function" in t
-            ]
-            usage_rules = skill_registry.get_usage_rules_for_tools(tool_names_list)
-        else:
-            tools = []
+
+        # Tools from merged list
+        tools = skill_registry.get_tools_by_names(
+            all_skill_names, transport=message.transport)
+        tool_names_list = [
+            t["function"]["name"] for t in tools if "function" in t
+        ]
+        usage_rules = skill_registry.get_usage_rules_for_tools(tool_names_list)
 
         # Inject escalation virtual tool when router is active
         if TOOL_ESCALATION_ENABLED:

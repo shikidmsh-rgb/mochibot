@@ -18,48 +18,37 @@ Tool-only mode: `log_meal` (record meals with nutrition estimation) + `query_mea
 ## Tools
 
 ### log_meal (L1)
-Record a meal with LLM-estimated nutrition breakdown. Estimate calories and macros from the user's description or food photo, then call this tool. Don't ask for confirmation.
+记录一餐饮食，由 LLM 估算营养成分。根据用户描述或食物照片估算热量和宏量营养素，然后调用此工具。不需要确认。
 
-**After logging**: Always tell the user the breakdown — total calories AND per-item details (calories, protein, carbs, fat). This is the main value of the feature. Example reply: "记下了～早餐284kcal，蛋白2个(34kcal, 蛋白质7g) + 豆豆1个(250kcal, 碳水24g 脂肪16g)"
+**记录后**：务必告知用户营养明细——总热量 + 每个食物的热量、蛋白质、碳水、脂肪。这是这个功能的核心价值。示例回复："记下了～早餐284kcal，蛋白2个(34kcal, 蛋白质7g) + 豆豆1个(250kcal, 碳水24g 脂肪16g)"
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | meal_type | string | yes | `breakfast` / `lunch` / `dinner` / `snack` |
-| items | string | yes | JSON array of food items: `[{"name":"麻婆豆腐","calories":250,"protein_g":15,"carbs_g":8,"fat_g":18}]` |
-| total_calories | integer | yes | Estimated total calories for this meal |
-| total_protein_g | number | | Total protein grams |
-| total_carbs_g | number | | Total carbs grams |
-| total_fat_g | number | | Total fat grams |
-| source | string | | `text` / `photo` / `voice`. Default: `text` |
-| date | string | | YYYY-MM-DD. Default: today |
+| items | string | yes | JSON 食物数组：`[{"name":"麻婆豆腐","calories":250,"protein_g":15,"carbs_g":8,"fat_g":18}]` |
+| total_calories | integer | yes | 本餐估算总热量 |
+| total_protein_g | number | | 总蛋白质克数 |
+| total_carbs_g | number | | 总碳水克数 |
+| total_fat_g | number | | 总脂肪克数 |
+| source | string | | `text` / `photo` / `voice`，默认 `text` |
+| date | string | | YYYY-MM-DD，默认今天 |
 
 ### query_meals (L0)
-Query meal/nutrition history with daily macro summaries.
+查询饮食历史，含每日宏量营养素汇总。
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| days | integer | | Look-back days. Default 1 (today). Use 7 for weekly. |
-| date | string | | Specific date YYYY-MM-DD. Overrides days. |
+| days | integer | | 回看天数，默认 1（今天）。查一周用 7。 |
+| date | string | | 指定日期 YYYY-MM-DD，会覆盖 days。 |
 
 ### delete_meal (L1, extended)
-Delete a meal record by date and meal type. Use when the user says a meal was logged wrong or wants to remove it.
+按日期和餐型删除饮食记录。用于用户说记错了或想删掉的情况。
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | meal_type | string | yes | `breakfast` / `lunch` / `dinner` / `snack` |
-| date | string | | YYYY-MM-DD. Default: today |
+| date | string | | YYYY-MM-DD，默认今天 |
 
 ## Usage Rules
 
-**Editing a meal**: There is no edit_meal tool. To modify a logged meal, `delete_meal` the old record then `log_meal` the corrected version.
-
-## Meal Estimation Guidelines
-
-Portion baselines (standard single serving):
-- Rice: ~150kcal/bowl, ~80kcal for a small portion
-- Stir-fried dishes: 150-300kcal (include cooking oil +30-80kcal)
-- Hotpot solo: 400-650kcal for the entire meal (already includes staple — do NOT add rice on top)
-- BBQ solo: 400-600kcal total
-- Shared dishes (large plate / pizza): estimate the user's share based on party size
-- Takeout: +10-20% vs home cooking
-- When unsure about portion size, ask the user rather than guessing
+**修改已记录的餐食**：没有 edit_meal 工具。先 `delete_meal` 删除旧记录，再 `log_meal` 记录正确版本。

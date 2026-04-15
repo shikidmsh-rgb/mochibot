@@ -492,3 +492,42 @@ class TestBedtimeTidyToolResolution:
                 user_id=1,
             )
         assert result is not None
+
+
+class TestAlwaysOnSkills:
+    """Always-on skills must be injected regardless of router classification."""
+
+    def test_always_on_skill_names_include_sticker_and_note(self):
+        """get_always_on_skill_names() returns sticker and note."""
+        import mochi.skills as skill_registry
+        names = skill_registry.get_always_on_skill_names()
+        assert "sticker" in names, f"sticker not in always-on: {names}"
+        assert "note" in names, f"note not in always-on: {names}"
+
+    def test_always_on_resolves_to_valid_tools(self):
+        """Always-on skill names resolve to actual tool definitions."""
+        import mochi.skills as skill_registry
+        names = skill_registry.get_always_on_skill_names()
+        tools = skill_registry.get_tools_by_names(names)
+        tool_names = [t["function"]["name"] for t in tools]
+        assert "send_sticker" in tool_names, f"send_sticker missing: {tool_names}"
+        assert "manage_note" in tool_names, f"manage_note missing: {tool_names}"
+
+    def test_always_on_respects_transport_exclusion(self):
+        """sticker is excluded on wechat transport."""
+        import mochi.skills as skill_registry
+        names = skill_registry.get_always_on_skill_names(transport="wechat")
+        assert "sticker" not in names, f"sticker should be excluded on wechat: {names}"
+        assert "note" in names, f"note should still be present on wechat: {names}"
+
+    def test_dedup_when_router_also_selects_always_on(self):
+        """Merging always-on + router skills deduplicates correctly."""
+        import mochi.skills as skill_registry
+        always_on = skill_registry.get_always_on_skill_names()
+        router_skills = ["sticker", "memory"]  # sticker appears in both
+        merged = list(dict.fromkeys(always_on + router_skills))
+        assert merged.count("sticker") == 1, f"sticker duplicated: {merged}"
+        tools = skill_registry.get_tools_by_names(merged)
+        tool_names = [t["function"]["name"] for t in tools]
+        sticker_count = tool_names.count("send_sticker")
+        assert sticker_count == 1, f"send_sticker duplicated in tools: {tool_names}"

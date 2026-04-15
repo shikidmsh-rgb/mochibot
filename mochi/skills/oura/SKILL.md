@@ -3,7 +3,6 @@ name: oura
 description: "Oura 智能戒指 — 睡眠、活动、准备度、压力、心率、血氧"
 type: tool
 expose_as_tool: true
-keywords: [sleep, 睡眠, heart rate, 心率, hrv, readiness, stress, oura]
 requires:
   env: [OURA_CLIENT_ID, OURA_CLIENT_SECRET, OURA_REFRESH_TOKEN]
 sense:
@@ -27,34 +26,18 @@ config:
 ## Tools
 
 ### get_oura_data (L0)
-Query Oura Ring health data. Use for current or recent health questions (sleep, activity, readiness, stress, blood oxygen, heart rate, workouts). Returns structured data from Oura API cache.
+查询 Oura 戒指健康数据。用于回答关于睡眠、活动、准备度、压力、血氧、心率、运动等健康问题。返回 Oura API 缓存中的结构化数据。
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| category | string | no | sleep / activity / readiness / stress / spo2 / heartrate / workout / all (default: all) |
-| date | string | no | YYYY-MM-DD format. Default: today (falls back to yesterday if unavailable) |
-| force_refresh | boolean | no | Set true to bypass the 10-min API cache and fetch fresh data |
+| category | string | no | sleep / activity / readiness / stress / spo2 / heartrate / workout / all（默认 all） |
+| date | string | no | YYYY-MM-DD 格式，默认今天（今日不可用时回退到昨天） |
+| force_refresh | boolean | no | 设为 true 可绕过 10 分钟 API 缓存，拉取最新数据 |
 
 ## Usage Rules
-- **Always call this tool** when the user asks about health, sleep, stress, activity, or status — even if you already have Oura data in conversation context. Never infer "no data" from prior results; always fetch fresh.
-- **Stale data handling:** If the response has `"stale": true`, it means today's data hasn't synced yet and the result is yesterday's. Tell the user exactly that — do NOT present it as today's data. Check the `_note` field for details.
-- **Force refresh:** If the user asks to re-check or get the latest data, pass `force_refresh: true` to bypass the API cache.
-
-## Category Guide
-
-| Category | When to use |
-|----------|-------------|
-| `sleep` | Sleep duration / quality / deep sleep / HRV |
-| `activity` | Steps / calories / sedentary time / activity level |
-| `readiness` | Readiness score / temperature / why readiness is low |
-| `stress` | Stress level / recovery |
-| `spo2` | Blood oxygen / breathing |
-| `heartrate` | Heart rate / daytime heart rate |
-| `workout` | Exercise / workouts / running |
-| `all` | General health query / status overview |
+- 用户问健康、睡眠、压力、活动等相关问题时，调用本工具获取数据再回答，即使上下文中已有 Oura 数据也要重新拉取
+- **过期数据**：响应中 `"stale": true` 表示今日数据尚未同步、返回的是昨天的，如实告知用户（参考 `_note` 字段）
 
 ## Response Gotchas
-- `stress_high_hr` / `recovery_high_hr`: unit is **hours** (duration), NOT ratio
-- `total_sleep_sec`: unit is **seconds** — divide by 3600 for hours
-- `score` (sleep/activity/readiness): 0–100 score, NOT hours
-- Oura records sleep under the date you **wake up**, not the date you fell asleep
+- `stress_high_hr` / `recovery_high_hr`：单位是**小时**
+- Oura 把睡眠记录在**醒来**那天
