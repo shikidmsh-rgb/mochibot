@@ -4,7 +4,6 @@ description: "网络搜索 — 在线查找最新信息（无需 API 密钥）"
 type: tool
 tier: chat
 expose_as_tool: true
-keywords: [web search, google, look up, 查一下, 搜一下, duckduckgo, ddg]
 ---
 
 # Web Search Skill
@@ -12,14 +11,9 @@ keywords: [web search, google, look up, 查一下, 搜一下, duckduckgo, ddg]
 ## Tools
 
 ### web_search (L0)
-Search the internet using DuckDuckGo. Use for current events, news, prices, facts, how-to.
+通过 DuckDuckGo 搜索互联网。用于查询时事、新闻、价格、知识、教程等。
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| query | string | yes | Search query. Use the language most likely to get good results. |
-| max_results | integer | no | Max number of results to return (1-10, default 5). |
-
-## Usage Rules
-- Use this tool when the user asks about current events, recent news, prices, or any question that needs up-to-date information.
-- After getting search results, summarize the findings in a clear, concise answer.
-- If results are empty or a bot challenge is hit, tell the user the search failed and suggest rephrasing.
+| query | string | yes | 搜索关键词。使用最可能获得好结果的语言。 |
+| max_results | integer | no | 最大返回结果数（1-10，默认 5） |

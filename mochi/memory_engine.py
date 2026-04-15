@@ -39,6 +39,7 @@ from mochi.db import (
     get_all_memory_items, delete_memory_items, merge_memory_items,
     update_memory_importance, cleanup_old_trash,
     log_usage,
+    text_similarity, _CORE_MEMORY_DEDUP_RATIO,
 )
 
 log = logging.getLogger(__name__)
@@ -117,10 +118,22 @@ def extract_memories(user_id: int = 0) -> int:
         return 0
 
     # Build conversation text for LLM
-    conv_text = "\n".join(
-        f"[{m['created_at']}] {m['role']}: {m['content']}"
-        for m in conversations
-    )
+    # Annotate assistant messages with tool_history so the extraction LLM
+    # knows which information was already recorded by dedicated skills.
+    lines = []
+    for m in conversations:
+        prefix = f"[{m['created_at']}] {m['role']}"
+        th = m.get("tool_history")
+        if th and m["role"] == "assistant":
+            try:
+                tools = json.loads(th)
+                names = [t["name"] for t in tools if "name" in t]
+                if names:
+                    prefix += f" (used tools: {', '.join(names)})"
+            except (json.JSONDecodeError, TypeError):
+                pass
+        lines.append(f"{prefix}: {m['content']}")
+    conv_text = "\n".join(lines)
 
     prompt = get_prompt("memory_extract")
     if not prompt:
@@ -210,28 +223,39 @@ def _append_relational_to_core(user_id: int, items: list[str]) -> None:
             )
             return
 
-    # Build set of existing lines for dedup (strip "- " prefix, lowercase)
-    existing_lines = {
-        line.lstrip("- ").strip().lower()
-        for line in current_core.split("\n")
-        if line.strip()
-    }
+    # Split existing core memory into lines for similarity-based dedup
+    core_lines = [l for l in current_core.split("\n") if l.strip()]
 
-    # Filter new items: dedup + cap
+    # Filter new items: similarity dedup + cap
     new_lines = []
+    replaced = False
     for content in items[:_MAX_RELATIONAL_PER_CYCLE]:
-        if content.strip().lower() not in existing_lines:
+        best_ratio, best_idx = 0.0, -1
+        for i, line in enumerate(core_lines):
+            stripped = line.lstrip("- ").strip()
+            if not stripped:
+                continue
+            ratio = text_similarity(content, stripped)
+            if ratio > best_ratio:
+                best_ratio, best_idx = ratio, i
+
+        if best_ratio >= _CORE_MEMORY_DEDUP_RATIO and best_idx >= 0:
+            # Similar line found — replace if new content is longer
+            old_text = core_lines[best_idx].lstrip("- ").strip()
+            if len(content) > len(old_text):
+                core_lines[best_idx] = f"- {content}"
+                replaced = True
+        else:
             new_lines.append(f"- {content}")
 
-    if not new_lines:
+    if not new_lines and not replaced:
         return
 
-    updated = (
-        current_core.rstrip() + "\n" + "\n".join(new_lines)
-        if current_core.strip() else "\n".join(new_lines)
-    )
+    updated = "\n".join(core_lines)
+    if new_lines:
+        updated = (updated.rstrip() + "\n" + "\n".join(new_lines)) if updated.strip() else "\n".join(new_lines)
     update_core_memory(user_id, updated)
-    log.info("Auto-appended %d relational item(s) to core_memory", len(new_lines))
+    log.info("Auto-appended %d relational item(s) to core_memory (replaced=%s)", len(new_lines), replaced)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

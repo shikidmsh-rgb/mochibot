@@ -100,6 +100,45 @@ class TestUpdateCoreMemory:
         assert "Loves cooking" in core
 
     @pytest.mark.asyncio
+    async def test_add_dedup_replaces_similar(self):
+        """Adding a near-duplicate with more info should replace, not append."""
+        update_core_memory(1, "- 用户有只叫红糖的英短金渐层和一只叫蛋挞的狗")
+        ctx = _ctx("update_core_memory", action="add",
+                   content="用户有只叫红糖的英短金渐层（5岁，甲亢）和一只叫蛋挞的狗")
+        result = await MemorySkill().execute(ctx)
+        assert result.success
+        assert "replaced" in result.output.lower()
+        core = get_core_memory(1)
+        assert "甲亢" in core
+        assert core.count("红糖") == 1  # only one line
+
+    @pytest.mark.asyncio
+    async def test_add_dedup_skips_shorter(self):
+        """Adding a near-duplicate with less info should be skipped."""
+        update_core_memory(1, "- 用户有只叫红糖的英短金渐层（5岁，甲亢）和一只叫蛋挞的狗")
+        ctx = _ctx("update_core_memory", action="add",
+                   content="用户有只叫红糖的英短金渐层和一只叫蛋挞的狗")
+        result = await MemorySkill().execute(ctx)
+        assert result.success
+        assert "similar" in result.output.lower() or "kept" in result.output.lower()
+        core = get_core_memory(1)
+        assert "甲亢" in core  # longer version kept
+        assert core.count("红糖") == 1
+
+    @pytest.mark.asyncio
+    async def test_add_different_content_appends(self):
+        """Completely different content should still append normally."""
+        update_core_memory(1, "- 用户喜欢吃辣")
+        ctx = _ctx("update_core_memory", action="add",
+                   content="用户有只猫叫红糖")
+        result = await MemorySkill().execute(ctx)
+        assert result.success
+        assert "added" in result.output.lower()
+        core = get_core_memory(1)
+        assert "吃辣" in core
+        assert "红糖" in core
+
+    @pytest.mark.asyncio
     async def test_delete_from_core(self):
         """Deleting matching lines from core memory."""
         update_core_memory(1, "- Loves cooking\n- Hates rain\n- Loves music")

@@ -13,3 +13,6 @@ MEAL_LABELS: dict[str, str] = {
 }
 
 VALID_MEAL_TYPES: set[str] = set(MEAL_LABELS)
+
+# Ordered main meal types for diary status iteration (snack excluded — no pending state)
+MAIN_MEAL_TYPES: tuple[str, ...] = ("breakfast", "lunch", "dinner")

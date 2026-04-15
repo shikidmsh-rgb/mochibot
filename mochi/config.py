@@ -221,6 +221,11 @@ BEDTIME_TIDY_TOOLS = _env(
 DIARY_STATUS_MAX_LINES = _env_int("DIARY_STATUS_MAX_LINES", 20)
 DIARY_ENTRY_MAX_LINES = _env_int("DIARY_ENTRY_MAX_LINES", 50)
 
+# Hour (0-23) after which an unlogged meal shows as pending (⏳) in diary status.
+MEAL_REMINDER_BREAKFAST_HOUR = _env_int("MEAL_REMINDER_BREAKFAST_HOUR", 10)
+MEAL_REMINDER_LUNCH_HOUR = _env_int("MEAL_REMINDER_LUNCH_HOUR", 14)
+MEAL_REMINDER_DINNER_HOUR = _env_int("MEAL_REMINDER_DINNER_HOUR", 19)
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Optional Integrations
 # ═══════════════════════════════════════════════════════════════════════════
@@ -370,6 +375,7 @@ TOOL_RATE_LIMIT_PER_MIN = _env_int("TOOL_RATE_LIMIT_PER_MIN", 10)
 # Chatty Rhythm
 # ═══════════════════════════════════════════════════════════════════════════
 
+BUBBLE_ENABLED = _env_bool("BUBBLE_ENABLED", True)
 TG_INTERIM_ENABLED = _env_bool("TG_INTERIM_ENABLED", True)
 TG_BUBBLE_DELAY_S = _env_float("TG_BUBBLE_DELAY_S", 1.0)
 TG_BUBBLE_MAX = _env_int("TG_BUBBLE_MAX", 4)

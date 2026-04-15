@@ -270,7 +270,23 @@ server {
 
 ## 配置
 
-所有配置在 `.env`。核心变量：
+MochiBot 有两个配置入口：**`.env` 文件**和**管理后台（Admin Portal）**。
+
+| | `.env` 文件 | 管理后台（Web UI） |
+|---|---|---|
+| **用途** | 首次启动初始化 + 高级覆盖 | 日常管理 |
+| **管理的配置** | Transport token、Admin Portal 设置、日志级别等基础设施 | 模型/API key、心跳参数、时区、Skill 开关、人设 prompt 等运行时配置 |
+| **什么时候用** | 部署时填一次，之后一般不碰 | 随时在浏览器里改 |
+
+**它们如何协作：**
+
+1. **首次启动**：`.env` 的值导入数据库，作为初始配置
+2. **日常使用**：在管理后台改配置 → 保存到数据库，**同时自动同步回 `.env`**（不会不一致）
+3. **高级覆盖**：手动编辑 `.env` + 重启 → `.env` 的值会覆盖数据库（给高级用户留的后门）
+
+> **简单记**：部署时填 `.env`，之后在管理后台改。不要两边同时手动改——以最后操作的为准。
+
+### 核心变量
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
@@ -281,15 +297,17 @@ server {
 | `THINK_MODEL` | *=CHAT* | 心跳 + 维护用的便宜模型（可选） |
 | `TELEGRAM_BOT_TOKEN` | — | 从 @BotFather 获取（Telegram 平台） |
 | `WEIXIN_ENABLED` | `false` | 启用 WeChat 平台（与 Telegram 二选一） |
-| `HEARTBEAT_INTERVAL_MINUTES` | `20` | 心跳循环间隔 |
-| `AWAKE_HOUR_START` / `END` | `7` / `23` | 心跳在这些时间外休眠 |
-| `MAX_DAILY_PROACTIVE` | `10` | 每日主动消息上限 |
-| `TIMEZONE_OFFSET_HOURS` | `8` | 你的 UTC 偏移 |
+| `HEARTBEAT_INTERVAL_MINUTES` | `20` | 心跳循环间隔 † |
+| `AWAKE_HOUR_START` / `END` | `7` / `23` | 心跳在这些时间外休眠 † |
+| `MAX_DAILY_PROACTIVE` | `10` | 每日主动消息上限 † |
+| `TIMEZONE_OFFSET_HOURS` | `8` | 你的 UTC 偏移 † |
+
+> † 首次启动导入数据库，之后在管理后台修改。手动编辑 `.env` + 重启也可覆盖。
 
 <details>
 <summary>进阶：3 级路由、Pre-Router、向量嵌入、集成</summary>
 
-**3 级路由** — 通过 `.env` 或管理面板为每层配置不同模型（DB 配置优先于 `.env`）：
+**3 级路由** — 在管理后台为每层分配不同模型（首次也可通过 `.env` 初始化）：
 
 ```
 TIER_{LITE,CHAT,DEEP}_{PROVIDER,API_KEY,MODEL,BASE_URL}

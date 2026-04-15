@@ -11,6 +11,7 @@ from mochi.db import (
     get_memory_stats as db_stats,
     list_memory_trash as db_list_trash,
     restore_memory_from_trash as db_restore_trash,
+    text_similarity, _CORE_MEMORY_DEDUP_RATIO,
 )
 
 log = logging.getLogger(__name__)
@@ -68,6 +69,31 @@ class MemorySkill(Skill):
             current = get_core_memory(uid) or ""
 
             if action == "add":
+                # Dedup: check if a similar line already exists
+                lines = current.split("\n") if current.strip() else []
+                best_ratio, best_idx = 0.0, -1
+                for i, line in enumerate(lines):
+                    stripped = line.lstrip("- ").strip()
+                    if not stripped:
+                        continue
+                    ratio = text_similarity(content, stripped)
+                    if ratio > best_ratio:
+                        best_ratio, best_idx = ratio, i
+
+                if best_ratio >= _CORE_MEMORY_DEDUP_RATIO and best_idx >= 0:
+                    old_line = lines[best_idx].lstrip("- ").strip()
+                    if len(content) >= len(old_line):
+                        lines[best_idx] = f"- {content}"
+                        updated = "\n".join(lines)
+                        try:
+                            update_core_memory(uid, updated)
+                        except Exception as e:
+                            log.error("update_core_memory replace failed: %s", e, exc_info=True)
+                            return SkillResult(output=f"Failed: {e}", success=False)
+                        return SkillResult(output=f"Core memory: replaced similar line → {content}")
+                    else:
+                        return SkillResult(output=f"Core memory: similar line already exists (kept longer version).")
+
                 new_line = f"- {content}"
                 updated = (current.rstrip() + "\n" + new_line) if current.strip() else new_line
                 try:

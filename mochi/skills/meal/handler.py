@@ -10,9 +10,9 @@ import json
 import logging
 from datetime import datetime
 
-from mochi.config import TZ, logical_today
+from mochi.config import TZ, logical_today, MEAL_REMINDER_BREAKFAST_HOUR, MEAL_REMINDER_LUNCH_HOUR, MEAL_REMINDER_DINNER_HOUR
 from mochi.skills.base import Skill, SkillContext, SkillResult
-from mochi.skills.meal.constants import MEAL_LABELS, VALID_MEAL_TYPES
+from mochi.skills.meal.constants import MEAL_LABELS, VALID_MEAL_TYPES, MAIN_MEAL_TYPES
 from mochi.skills.meal.queries import save_health_log, query_health_log, delete_health_log_items
 
 log = logging.getLogger(__name__)
@@ -286,28 +286,58 @@ class MealSkill(Skill):
 
     def diary_status(self, user_id: int, today: str, now: datetime) -> list[str] | None:
         records = query_health_log(user_id=user_id, types=["meal"], date=today)
-        if not records:
-            return None
 
-        lines: list[str] = []
-        day_total_cal = 0
-
+        # Parse metrics and index by meal_type
+        logged: dict[str, dict] = {}
+        snacks: list[dict] = []
         for r in records:
             try:
                 m = json.loads(r.get("metrics") or "{}")
             except (json.JSONDecodeError, TypeError):
                 m = {}
-
             mt = m.get("meal_type", "?")
-            label = MEAL_LABELS.get(mt, mt)
+            if mt == "snack":
+                snacks.append(m)
+            else:
+                logged[mt] = m
+
+        reminder_hours = {
+            "breakfast": MEAL_REMINDER_BREAKFAST_HOUR,
+            "lunch": MEAL_REMINDER_LUNCH_HOUR,
+            "dinner": MEAL_REMINDER_DINNER_HOUR,
+        }
+
+        lines: list[str] = []
+        day_total_cal = 0
+
+        # Always iterate main meals in order
+        for mt in MAIN_MEAL_TYPES:
+            label = MEAL_LABELS[mt]
+            if mt in logged:
+                m = logged[mt]
+                total = m.get("total", {})
+                cal = total.get("calories", 0)
+                day_total_cal += cal
+                item_names = ", ".join(
+                    it.get("name", "?") for it in m.get("items", [])[:3]
+                )
+                if len(m.get("items", [])) > 3:
+                    item_names += "..."
+                lines.append(f"- {label}: {item_names} ~{cal}kcal ✅")
+            elif now.hour >= reminder_hours[mt]:
+                lines.append(f"- {label} ⏳")
+
+        # Snacks: show only if logged (no pending state)
+        for m in snacks:
             total = m.get("total", {})
             cal = total.get("calories", 0)
             day_total_cal += cal
-
-            item_names = ", ".join(it.get("name", "?") for it in m.get("items", [])[:3])
+            item_names = ", ".join(
+                it.get("name", "?") for it in m.get("items", [])[:3]
+            )
             if len(m.get("items", [])) > 3:
                 item_names += "..."
-            lines.append(f"- {label}: {item_names} ~{cal}kcal")
+            lines.append(f"- {MEAL_LABELS['snack']}: {item_names} ~{cal}kcal")
 
         if day_total_cal > 0:
             lines.append(f"- 累計: {day_total_cal}kcal")

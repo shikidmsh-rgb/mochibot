@@ -654,7 +654,7 @@ def get_unprocessed_conversations(user_id: int) -> list[dict]:
     """Get messages not yet processed for memory extraction."""
     conn = _connect()
     rows = conn.execute(
-        """SELECT id, role, content, created_at FROM messages
+        """SELECT id, role, content, created_at, tool_history FROM messages
            WHERE user_id = ? AND id > COALESCE(
                (SELECT MAX(id) FROM messages WHERE user_id = ? AND content LIKE '%[memory_extracted]%'), 0
            )
@@ -681,6 +681,23 @@ def mark_messages_processed(user_id: int, up_to_id: int) -> None:
 # Memory Items (Layer 2)
 # ═══════════════════════════════════════════════════════════════════════════
 
+_CORE_MEMORY_DEDUP_RATIO = 0.85
+
+
+def _normalize_text(text: str) -> str:
+    """Normalize text for similarity comparison: NFKC + lowercase + alphanum/CJK only."""
+    normalized = unicodedata.normalize("NFKC", text or "").lower()
+    return "".join(ch for ch in normalized if ch.isalnum() or "\u4e00" <= ch <= "\u9fff")
+
+
+def text_similarity(a: str, b: str) -> float:
+    """Return 0.0–1.0 similarity ratio between two strings after normalization."""
+    na, nb = _normalize_text(a), _normalize_text(b)
+    if not na or not nb:
+        return 0.0
+    return difflib.SequenceMatcher(None, na, nb).ratio()
+
+
 def save_memory_item(user_id: int, category: str, content: str,
                      importance: int = 1, source: str = "extracted",
                      embedding: bytes | None = None,
@@ -701,10 +718,6 @@ def save_memory_item(user_id: int, category: str, content: str,
     """
     now = datetime.now(TZ).isoformat()
     conn = _connect()
-
-    def _normalize_text(text: str) -> str:
-        normalized = unicodedata.normalize("NFKC", text or "").lower()
-        return "".join(ch for ch in normalized if ch.isalnum() or "\u4e00" <= ch <= "\u9fff")
 
     def _extract_date(text: str) -> str | None:
         m = re.search(r"\d{4}-\d{2}-\d{2}", text or "")

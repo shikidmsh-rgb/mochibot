@@ -1,23 +1,26 @@
 ---
 name: note
-description: "工作笔记/备忘 — 不是定时的，不是打卡的，只是需要之后注意、条件触发、或持续关注的事（如'遛狗后再做XX'、'压力高时提醒我'）。heartbeat 每轮都会看到。"
+description: "便签/备忘 — 记一下、留个笔记、稍后提醒、条件型观察（写入 notes.md）"
 type: tool
 tier: lite
 expose_as_tool: true
+always_on: true
 core: true
 ---
 
 # Note Skill
 
-工作笔记。写在这里的内容，heartbeat 每次巡逻（~20min）都会看到。
-适合：口头交代（"遛狗后再做"）、条件型观察（"压力高时提醒我"）、软提醒、临时备忘。
+便签纸。写在这里的内容，heartbeat 每次巡逻（~20min）都会看到。
+适合：口头交代（"遛狗后再做"）、条件型观察（"压力高时提醒我"）、软提醒、临时备忘、长期规则。
 
 **不适合**：精确时间提醒（用 reminder）、定期打卡（用 habit）。
 
 ## Tools
 
 ### manage_note (L0)
-Add, list, or remove notes from the working notepad.
+备忘条。写在这里的东西 heartbeat 每次巡逻都会看到，帮助记住该怎么陪伴用户——状态、心情、偏好、需要关注的事。写了 note = 系统会持续留意、主动关心、随时提醒。
+
+举例：用户说"下午心情不好"→ 记下来，巡逻时多关心；用户说"明天有考试别烦我"→ 记下来，明天调整互动方式。
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -27,9 +30,6 @@ Add, list, or remove notes from the working notepad.
 
 ## Usage Rules
 
-- **"记一下" / "帮我记住" / "留个备注"** → `manage_note` add
-- **"遛狗后再做XX"** → add a note (条件型，不是定时器)
-- Notes are persistent — Think reads them every patrol cycle
-- If the user's request is about **modifying when/how to do an existing habit or todo**, use a note instead of creating a reminder
-- **"我每天早上需要更多关怀"** → add as a note (Think will read it and adjust behavior)
-- **"晚上11点以后疯狂提醒我睡觉"** → add as a note (Think will see it at night and act)
+- 判断标准：**下次巡逻时系统需要记得这件事来更好地陪伴用户吗？** 需要就记
+- **条件型交代**（"遛狗后再做XX"）→ note（不是定时器）
+- **修改已有 habit/todo 的执行条件** → 用 note，不要创建 reminder

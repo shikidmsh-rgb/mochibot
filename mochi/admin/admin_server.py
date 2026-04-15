@@ -1680,6 +1680,18 @@ if HAS_FASTAPI:
             },
         )
 
+    # ── Checkup (lightweight health report) ────────────────────────────
+    @app.get("/api/checkup", dependencies=[Depends(_verify_token)])
+    async def api_checkup():
+        """Lightweight system health check — prompt size, DB, memory, runtime."""
+        try:
+            from mochi.checkup_core import run_checkup
+            from mochi.config import OWNER_USER_ID
+            data = run_checkup(OWNER_USER_ID)
+            return {"ok": True, **data}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
     # ── Optional debug routes (prompt dump, etc.) ─────────────────────
     try:
         from mochi.admin.prompt_dump_routes import register_prompt_dump_routes

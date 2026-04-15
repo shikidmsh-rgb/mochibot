@@ -39,7 +39,6 @@ name: my_skill
 description: "技能功能描述 — pre-router 靠这个分类，务必写清楚"
 type: tool
 expose_as_tool: true
-keywords: [my_keyword, 我的关键词]
 ---
 ```
 
@@ -94,9 +93,8 @@ class MySkill(Skill):
 4. **只用 `CREATE TABLE IF NOT EXISTS`** — `init_schema()` 中禁止破坏性 DDL
 5. **禁止跨 skill 外键** — 每个 skill 只拥有自己的表
 6. **用 `ensure_column()` 做 schema 迁移**（从 `mochi.db` 导入）
-7. **`keywords` 必须高精度** — 只放能明确指向该 skill 的关键词
-8. **平台不兼容时声明 `exclude_transports`** — 如果 skill 依赖特定平台特性（如 Telegram file_id），在 SKILL.md 中用 `exclude_transports: [wechat]` 排除不兼容平台。不确定时不要排除
-9. **代码全英文** — 变量名、函数名、注释、docstring 一律英文
+7. **平台不兼容时声明 `exclude_transports`** — 如果 skill 依赖特定平台特性（如 Telegram file_id），在 SKILL.md 中用 `exclude_transports: [wechat]` 排除不兼容平台。不确定时不要排除
+8. **代码全英文** — 变量名、函数名、注释、docstring 一律英文
 
 重启 MochiBot → 日志中看到 `Registered skill: my_skill` 即成功。
 
@@ -199,6 +197,87 @@ mochi/observers/my_observer/
 重启 MochiBot → 日志中看到 `Registered observer: my_observer` 即成功。
 
 禁用方式：在 `OBSERVATION.md` 中设 `enabled: false`，或重命名为 `OBSERVATION.md.disabled`。
+
+---
+
+## 开发 & 测试（不需要 API key 或 bot token）
+
+MochiBot 的测试基建完全自包含——**不需要 `.env`、不需要 API key、不需要 Telegram bot token**。Code agent 或开发者 clone 后直接就能写代码和跑测试。
+
+### 环境准备
+
+```bash
+git clone https://github.com/shikidmsh-rgb/mochibot.git && cd mochibot
+python3 -m venv venv && source venv/bin/activate   # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+pip install pytest pytest-asyncio                    # 测试依赖
+```
+
+不需要创建 `.env` 文件。所有测试通过 fixture 自动 mock 配置。
+
+### 跑测试
+
+```bash
+pytest                  # 全部测试
+pytest tests/           # 仅单元测试
+pytest tests/e2e/       # 仅 E2E 测试
+```
+
+### 测试基建
+
+测试分两层，基础 fixture 在 `conftest.py` 中 autouse（自动生效），无需手动设置：
+
+| 层级 | 位置 | 自动生效（autouse） | 按需使用 |
+|------|------|-------------------|---------|
+| **单元测试** | `tests/` | `fresh_db`（独立 DB）、`mock_config`（覆盖 config） | — |
+| **E2E 测试** | `tests/e2e/` | 以上 + `discover_skills`、`reset_tool_policy`、`reset_heartbeat_state` | `mock_llm_factory`（脚本化 LLM，需声明为测试参数）、`FakeTransport`（需手动 import） |
+
+### 给新 Skill 写测试
+
+在 `tests/` 下创建 `test_my_skill_handler.py`（单元测试），或在 `tests/e2e/` 下创建 E2E 测试。
+
+**E2E 测试示例**——验证完整的 消息 → LLM → 工具调用 → DB 流程：
+
+```python
+import pytest
+from mochi.transport import IncomingMessage
+from mochi.ai_client import chat
+from tests.e2e.mock_llm import make_response, make_tool_call
+
+def _msg(text, user_id=1):
+    return IncomingMessage(user_id=user_id, channel_id=100,
+                           text=text, transport="fake")
+
+class TestMySkill:
+    @pytest.mark.asyncio
+    async def test_add_item(self, mock_llm_factory):
+        # 脚本化 LLM：先返回工具调用，再返回最终回复
+        mock_llm_factory([
+            make_response(tool_calls=[
+                make_tool_call("my_tool", {"action": "add", "item": "买菜"}),
+            ]),
+            make_response("已添加！"),
+        ])
+
+        reply = await chat(_msg("帮我记一下买菜"))
+        assert "已添加" in reply.text
+```
+
+关键点：
+- `mock_llm_factory` 注入脚本化 LLM 响应，**按顺序消费**
+- `make_tool_call` 模拟 LLM 发起工具调用
+- `fresh_db` 保证每个 test 的 DB 是干净的
+- 整个流程不需要网络、API key 或运行中的 bot
+
+### 什么能测、什么不能测
+
+| 能测（不需要 API key） | 不能测 |
+|----------------------|--------|
+| Skill handler 逻辑 | Telegram / WeChat 交互 |
+| 完整 chat → tool → DB 流程 | 真实 LLM 响应质量 |
+| 记忆提取、召回 | 心跳主动消息发送 |
+| DB 读写、schema 迁移 | Observer 外部 API 调用（如 Oura） |
+| Admin portal API | |
 
 ---
 

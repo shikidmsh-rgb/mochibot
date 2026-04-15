@@ -2,6 +2,7 @@
 
 import json
 import pytest
+from datetime import datetime, timezone, timedelta
 from unittest.mock import patch, MagicMock
 
 from mochi.skills.base import SkillContext, SkillResult
@@ -183,3 +184,86 @@ class TestMealSkillUnknownTool:
         result = await skill.execute(ctx)
         assert result.success is False
         assert "Unknown meal tool" in result.output
+
+
+class TestMealDiaryStatus:
+    """Tests for diary_status() — pending meal (⏳) display logic."""
+
+    def _now(self, hour: int):
+        tz = timezone(timedelta(hours=8))
+        return datetime(2026, 4, 15, hour, 30, tzinfo=tz)
+
+    def _meal_record(self, meal_type: str, items: list[dict], total: dict):
+        return {
+            "id": 1,
+            "date": "2026-04-15",
+            "metrics": json.dumps({
+                "meal_type": meal_type,
+                "items": items,
+                "total": total,
+            }),
+        }
+
+    @patch("mochi.skills.meal.handler.query_health_log", return_value=[])
+    def test_no_records_before_any_hour(self, mock_q):
+        """8:00 — before breakfast hour (10), nothing to show."""
+        skill = MealSkill()
+        result = skill.diary_status(user_id=1, today="2026-04-15", now=self._now(8))
+        assert result is None
+
+    @patch("mochi.skills.meal.handler.query_health_log", return_value=[])
+    def test_no_records_after_breakfast_hour(self, mock_q):
+        """11:00 — past breakfast hour, show ⏳."""
+        skill = MealSkill()
+        result = skill.diary_status(user_id=1, today="2026-04-15", now=self._now(11))
+        assert result == ["- 早餐 ⏳"]
+
+    @patch("mochi.skills.meal.handler.query_health_log", return_value=[])
+    def test_no_records_after_all_hours(self, mock_q):
+        """20:00 — all three meals pending."""
+        skill = MealSkill()
+        result = skill.diary_status(user_id=1, today="2026-04-15", now=self._now(20))
+        assert result == ["- 早餐 ⏳", "- 午餐 ⏳", "- 晚餐 ⏳"]
+
+    @patch("mochi.skills.meal.handler.query_health_log")
+    def test_breakfast_logged_lunch_pending(self, mock_q):
+        """15:00 — breakfast logged, lunch pending, dinner not yet."""
+        mock_q.return_value = [
+            self._meal_record("breakfast", [{"name": "Egg"}], {"calories": 150}),
+        ]
+        skill = MealSkill()
+        result = skill.diary_status(user_id=1, today="2026-04-15", now=self._now(15))
+        assert len(result) == 3  # breakfast ✅ + lunch ⏳ + total
+        assert "早餐" in result[0] and "✅" in result[0]
+        assert result[1] == "- 午餐 ⏳"
+        assert "累計" in result[2]
+
+    @patch("mochi.skills.meal.handler.query_health_log")
+    def test_all_logged(self, mock_q):
+        """20:00 — all three meals logged, no ⏳."""
+        mock_q.return_value = [
+            self._meal_record("breakfast", [{"name": "Egg"}], {"calories": 150}),
+            self._meal_record("lunch", [{"name": "Rice"}], {"calories": 500}),
+            self._meal_record("dinner", [{"name": "Salad"}], {"calories": 300}),
+        ]
+        skill = MealSkill()
+        result = skill.diary_status(user_id=1, today="2026-04-15", now=self._now(20))
+        assert all("✅" in line for line in result[:3])
+        assert "⏳" not in " ".join(result)
+        assert "累計: 950kcal" in result[-1]
+
+    @patch("mochi.skills.meal.handler.query_health_log")
+    def test_with_snack(self, mock_q):
+        """20:00 — lunch logged + snack, breakfast/dinner pending."""
+        mock_q.return_value = [
+            self._meal_record("lunch", [{"name": "Rice"}], {"calories": 500}),
+            self._meal_record("snack", [{"name": "Cookie"}], {"calories": 80}),
+        ]
+        skill = MealSkill()
+        result = skill.diary_status(user_id=1, today="2026-04-15", now=self._now(20))
+        labels = " ".join(result)
+        assert "早餐 ⏳" in labels
+        assert "午餐" in labels and "✅" in labels
+        assert "晚餐 ⏳" in labels
+        assert "零食" in labels and "Cookie" in labels
+        assert "累計: 580kcal" in labels

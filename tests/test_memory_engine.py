@@ -533,6 +533,39 @@ class TestAppendRelationalToCore:
         assert "全新的关系记忆" in args[1]
         assert args[1].count("已有的关系记忆") == 1  # only the original
 
+    @patch("mochi.memory_engine.update_core_memory")
+    @patch("mochi.memory_engine.get_core_memory")
+    def test_dedup_near_duplicate_skipped(self, mock_get_core, mock_update):
+        """Near-duplicate (shorter) items should be silently skipped."""
+        mock_get_core.return_value = "- 用户是女生，有只叫红糖的英短金渐层和一只叫蛋挞的狗"
+        from mochi.memory_engine import _append_relational_to_core
+        _append_relational_to_core(1, ["用户有只叫红糖的英短金渐层和一只叫蛋挞的狗"])
+        mock_update.assert_not_called()
+
+    @patch("mochi.memory_engine.update_core_memory")
+    @patch("mochi.memory_engine.get_core_memory")
+    def test_dedup_near_duplicate_replaced_by_longer(self, mock_get_core, mock_update):
+        """Near-duplicate with more info should replace the old line."""
+        mock_get_core.return_value = "- 用户有只叫红糖的英短金渐层和一只叫蛋挞的狗"
+        from mochi.memory_engine import _append_relational_to_core
+        _append_relational_to_core(1, ["用户有只叫红糖的英短金渐层（5岁，甲亢）和一只叫蛋挞的狗"])
+        mock_update.assert_called_once()
+        updated = mock_update.call_args[0][1]
+        assert "5岁" in updated
+        assert updated.count("红糖") == 1  # only one line, not two
+
+    @patch("mochi.memory_engine.update_core_memory")
+    @patch("mochi.memory_engine.get_core_memory")
+    def test_dedup_different_content_still_appends(self, mock_get_core, mock_update):
+        """Completely different content should still append normally."""
+        mock_get_core.return_value = "- 用户喜欢吃辣"
+        from mochi.memory_engine import _append_relational_to_core
+        _append_relational_to_core(1, ["用户有一只叫红糖的猫"])
+        mock_update.assert_called_once()
+        updated = mock_update.call_args[0][1]
+        assert "吃辣" in updated
+        assert "红糖" in updated
+
 
 class TestExtractMemoriesRelational:
     """Test that extract_memories routes 关系 items to core_memory."""
