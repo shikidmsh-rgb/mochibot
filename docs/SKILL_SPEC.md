@@ -284,9 +284,96 @@ from mochi.skills.my_skill.queries import create_item, get_items
 
 ## Observer（可选）
 
-需要周期性数据采集的 skill，添加 `observer.py` + `OBSERVATION.md`。
+Observer 让 heartbeat 能感知 skill 的状态。**大多数 skill 不需要 observer** — 只有当 heartbeat 的 Think 步骤需要知道你的 skill 数据时才添加。
 
-参考已有 observer（如 `mochi/skills/oura/observer.py`）了解完整模式。Observer 独立于工具调用运行，写入的数据供 skill 或 heartbeat 后续读取。
+### 什么时候需要？
+
+| Skill 类型 | 例子 | 需要 observer? |
+|------------|------|---------------|
+| 被动工具型 — 用户调用才干活 | 翻译、搜索、笔记 | 不需要 |
+| 有持续状态型 — heartbeat 应该知晓 | reminder、todo、健康数据 | 需要 |
+
+**判断标准**：heartbeat 巡逻时需不需要看到这个 skill 的数据？不需要就别加。
+
+### 文件结构
+
+在 skill 目录下添加两个文件：
+
+```
+mochi/skills/my_skill/
+├── observer.py        # Observer 子类
+└── OBSERVATION.md     # 元数据（name、interval、fields）
+```
+
+并在 `SKILL.md` front-matter 中声明：
+
+```yaml
+sense:
+  interval: 20    # Observer 运行间隔（分钟）
+```
+
+### observer.py 模板
+
+```python
+"""My Skill Observer — 一句话描述。"""
+
+import logging
+from mochi.observers.base import Observer
+
+log = logging.getLogger(__name__)
+
+
+class MySkillObserver(Observer):
+
+    async def observe(self) -> dict:
+        from mochi.config import OWNER_USER_ID
+        from mochi.skills.my_skill.queries import some_query
+
+        user_id = OWNER_USER_ID
+        if not user_id:
+            return {}
+
+        # 查询数据，返回 flat dict。返回 {} 表示无数据可报告。
+        data = some_query(user_id)
+        return {"some_key": data}
+```
+
+### OBSERVATION.md 模板
+
+```yaml
+---
+name: my_skill          # 必须与 SKILL.md 的 name 一致
+interval: 20            # 采集间隔（分钟）
+type: context           # source（外部 API）| context（内部 DB）
+enabled: true
+requires_config: []     # 需要的环境变量/DB 配置（无则留空）
+skill_name: my_skill    # 关联到 skill toggle — 禁用 skill = 禁用此 observer
+---
+
+一句话描述。
+
+## Fields
+| Field | Type | Description |
+|-------|------|-------------|
+| some_key | int | 数据含义 |
+```
+
+### 关键规则
+
+- **`name` 必须匹配**：`OBSERVATION.md` 的 `name` 字段是 observer registry 的 key，heartbeat 通过 `observation["observers"]["my_skill"]` 读取数据。名字不匹配 = 静默丢失数据。
+- **`skill_name` 关联 toggle**：admin 禁用 skill 时，observer 也自动停止采集。
+- **返回 `{}` 表示无数据**：空 dict 不会缓存，下次 tick 会重试。
+- **observer 只读**：禁止发送消息、调用其他 skill、写入数据。纯数据采集。
+- **`has_delta()` 可选重写**：默认 `prev != curr` 即触发 Think。如果你的数据变化不需要触发 Think（如天气），重写返回 `False`。
+
+### 已有示例
+
+| Observer | 位置 | 特点 |
+|----------|------|------|
+| weather | `mochi/skills/weather/observer.py` | 外部 API、`has_delta` 返回 False |
+| oura | `mochi/skills/oura/observer.py` | 外部 API、带缓存、默认 delta |
+| reminder | `mochi/skills/reminder/observer.py` | 纯 DB 查询、默认 delta |
+| todo | `mochi/skills/todo/observer.py` | 纯 DB 查询、自定义 `has_delta` |
 
 ## 配置系统
 
@@ -350,6 +437,7 @@ class TestMySkill:
 - [ ] 如果用到 DB：`queries.py` 存在 + `init_schema()` 创建表
 - [ ] 没有导入其他 skill（skill 之间完全隔离）
 - [ ] 没有导入框架内部模块（heartbeat、ai_client 等） — 只能用 `mochi.skills.base`、`mochi.db`、`mochi.config`、`mochi.llm`
+- [ ] 如果加了 observer：`observer.py` + `OBSERVATION.md` 存在，`SKILL.md` 有 `sense:` 字段，`OBSERVATION.md` 的 `name` 与 skill name 一致
 - [ ] 代码全英文（变量名、函数名、注释、docstring）
 - [ ] 测试通过：`pytest tests/test_my_skill_handler.py`
 - [ ] Bot 启动成功：日志中看到 `Registered skill: my_skill`

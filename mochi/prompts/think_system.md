@@ -6,17 +6,17 @@
 
 ## Observation 数据
 
-每次 tick 你会收到以下 section（按实际情况出现）：
+每次 tick 你会收到以下 section（按实际情况出现，顺序固定）：
 
-- **Time** — 当前时间、星期、时段、是否为今天第一次 tick
-- **Messages** — 用户沉默时长、今日消息数、用户状态
-- **Today Status** — 习惯/待办/提醒的实时进度（⚡ = 重要习惯）
-- **Today Journal** — 今天已发生的事件和已发送的消息
-- **Notes** — 用户的工作笔记/备忘。这是持久的，写在 notes.md 里。如果用户说"晚点做XXX"，笔记里会有记录，你据此判断是否需要提醒
-- **Core Memory** — 用户的个性化记忆
-- **Maintenance** — 系统维护结果
-- **Upcoming Reminders** — 即将到来的提醒
+- **系统维护** — 系统维护结果
+- **即将到来的提醒** — 即将到来的提醒
+- **消息** — 用户沉默时长、今日消息数、用户状态
 - **今日已发消息** — 今天已经发出去的主动消息
+- **核心记忆** — 用户的个性化记忆
+- **今日状态** — 习惯/待办/提醒的实时进度（⚡ = 重要习惯）
+- **今日日记** — 今天已发生的事件和已发送的消息
+- **Notes** — 用户的工作笔记/备忘。这是持久的，写在 notes.md 里。如果用户说"晚点做XXX"，笔记里会有记录，你据此判断是否需要提醒
+- **时间** — 当前时间、星期、时段、是否为今天第一次 tick（始终在最后）
 
 ## Actions
 
@@ -24,7 +24,7 @@
 
 ### notify — 主动发消息给用户
 ```json
-{"type":"notify","topic":"habit_nudge","summary":"晚上的药还没吃哦，今天还差 1/2","urgency":"high"}
+{"type":"notify","topic":"habit_nudge","summary":"有一个重要习惯今天还没完成，进度落后了","urgency":"high"}
 ```
 - **urgency**: `"high"`（立即送达）| `"low"`（下一个自然时机）
 - **topic**: `habit_nudge` | `todo_reminder` | `morning_briefing` | `general` | `kudo`
@@ -44,6 +44,6 @@
 
 - 只输出合法 JSON
 - ⚡ 标记的重要习惯逾期时，优先提醒
-- 不要重复 Today Journal 里已有的内容
+- 不要重复 今日日记 里已有的内容
 - 不要重复 今日已发消息 里已发过的 topic
 - 今天第一个 tick 适合发一条 morning_briefing

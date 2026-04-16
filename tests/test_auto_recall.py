@@ -294,23 +294,31 @@ class TestBuildSystemPromptRecall:
             {"text": "User loves ramen", "score": 0.85, "ts": "2026-04-10", "category": "preference"},
             {"text": "User has a cat", "score": 0.78, "ts": "2026-04-08", "category": "fact"},
         ]
-        with patch("mochi.ai_client.get_prompt", return_value=""):
+        with patch("mochi.ai_client.get_system_chat_modules",
+                    return_value={"soul": "Test", "agent": "Test"}), \
+             patch("mochi.ai_client.get_prompt", return_value=""):
             prompt = _build_system_prompt(user_id=1, recalled_memories=memories)
 
         assert "相关记忆" in prompt
         assert "User loves ramen" in prompt
         assert "User has a cat" in prompt
-        assert "score=0.85" in prompt
-        assert "category=preference" in prompt
+        # score is intentionally excluded from prompt (LLM doesn't need it)
+        assert "score=" not in prompt
+        assert "preference" in prompt
+        assert "2026-04-10" in prompt
 
     def test_no_recalled_memories_no_section(self):
         """Empty recalled_memories → no 相关记忆 section."""
-        with patch("mochi.ai_client.get_prompt", return_value=""):
+        with patch("mochi.ai_client.get_system_chat_modules",
+                    return_value={"soul": "Test", "agent": "Test"}), \
+             patch("mochi.ai_client.get_prompt", return_value=""):
             prompt = _build_system_prompt(user_id=1, recalled_memories=[])
         assert "相关记忆" not in prompt
 
     def test_none_recalled_memories_no_section(self):
         """None recalled_memories → no 相关记忆 section."""
-        with patch("mochi.ai_client.get_prompt", return_value=""):
+        with patch("mochi.ai_client.get_system_chat_modules",
+                    return_value={"soul": "Test", "agent": "Test"}), \
+             patch("mochi.ai_client.get_prompt", return_value=""):
             prompt = _build_system_prompt(user_id=1, recalled_memories=None)
         assert "相关记忆" not in prompt

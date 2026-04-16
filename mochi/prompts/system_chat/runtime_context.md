@@ -1,3 +1,8 @@
-# Runtime Context
+## 今日
+用户今天的状态与经历，由系统自动汇总。
 
-This section is dynamically populated with diary, memory, and other runtime context.
+### 状态速览
+{{diary_status}}
+
+### 日记
+{{diary_entry}}

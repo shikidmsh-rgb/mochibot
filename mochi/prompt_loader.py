@@ -44,6 +44,37 @@ def get_prompt(name: str) -> str:
     return ""
 
 
+# ── Modular system_chat prompt assembly ──────────────────────────────
+
+_SYSTEM_CHAT_DIR = _PROMPTS_DIR / "system_chat"
+_SYSTEM_CHAT_MODULE_ORDER = ("soul", "user", "agent", "runtime_context")
+
+
+def _is_empty_template(content: str) -> bool:
+    """True if content is only heading lines (no real body text)."""
+    return all(
+        line.startswith("#") or not line
+        for line in content.strip().splitlines()
+    )
+
+
+def get_system_chat_modules() -> dict[str, str]:
+    """Load system_chat/*.md in fixed order, returning name→content mapping.
+
+    Skips modules whose files are empty templates (headings only, e.g.
+    unfilled user.md).  For user-overridable modules, checks data/prompts/
+    first.
+    """
+    modules: dict[str, str] = {}
+    for name in _SYSTEM_CHAT_MODULE_ORDER:
+        key = f"system_chat/{name}"
+        content = get_prompt(key)
+        if not content or _is_empty_template(content):
+            continue
+        modules[name] = content
+    return modules
+
+
 def reload_all() -> dict[str, int]:
     """Reload all prompts from disk. Returns {name: char_count}."""
     result = {}

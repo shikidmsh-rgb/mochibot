@@ -6,6 +6,8 @@ expose_as_tool: true
 diary_status_order: 20
 writes:
   db: [todos]
+sense:
+  interval: 20
 ---
 
 # Todo Skill

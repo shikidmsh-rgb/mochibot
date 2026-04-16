@@ -263,9 +263,9 @@ class TestSkillV2Attributes:
         assert oura.has_observer is True
 
         # A skill without observer: should be False
-        todo = skill_registry.get_skill("todo")
-        assert todo is not None
-        assert todo.has_observer is False
+        note = skill_registry.get_skill("note")
+        assert note is not None
+        assert note.has_observer is False
 
     def test_has_trigger_simple(self):
         """Test has_trigger with simple string triggers."""

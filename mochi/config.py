@@ -383,6 +383,11 @@ TG_BUBBLE_DELIMITER = _env("TG_BUBBLE_DELIMITER", "|||")
 TG_BUBBLE_MIN_CHARS = _env_int("TG_BUBBLE_MIN_CHARS", 8)
 TG_AGGREGATE_ENABLED = _env_bool("TG_AGGREGATE_ENABLED", True)
 
+# Tool-call status UX (Telegram DM only)
+TG_STATUS_REACTIONS_ENABLED = _env_bool("TG_STATUS_REACTIONS_ENABLED", True)
+TG_STATUS_MESSAGE_ENABLED = _env_bool("TG_STATUS_MESSAGE_ENABLED", True)
+TG_STATUS_EDIT_INTERVAL_S = _env_float("TG_STATUS_EDIT_INTERVAL_S", 1.0)
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Admin Portal

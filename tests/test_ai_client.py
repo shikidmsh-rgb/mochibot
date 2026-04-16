@@ -11,40 +11,53 @@ from mochi.llm import LLMResponse
 from mochi.transport import IncomingMessage
 
 
+def _mock_modules(**overrides):
+    """Build a mock get_system_chat_modules return value for tests."""
+    defaults = {"soul": "Test soul", "agent": "Test agent"}
+    defaults.update(overrides)
+    return defaults
+
+
 class TestBuildSystemPrompt:
 
     def test_includes_personality(self):
         """System prompt includes personality from soul prompt."""
-        with patch("mochi.ai_client.get_prompt") as mock_prompt:
-            mock_prompt.side_effect = lambda name: {
-                "system_chat/soul": "I am a friendly bot",
-                "system_chat/agent": "I help with tasks",
-            }.get(name, "")
+        with patch("mochi.ai_client.get_system_chat_modules",
+                    return_value=_mock_modules(soul="I am a friendly bot")), \
+             patch("mochi.ai_client.get_prompt", return_value=""):
             prompt = _build_system_prompt(user_id=1)
         assert "friendly bot" in prompt
 
     def test_includes_time(self):
         """System prompt includes current time section."""
-        with patch("mochi.ai_client.get_prompt", return_value=""):
+        with patch("mochi.ai_client.get_system_chat_modules",
+                    return_value=_mock_modules()), \
+             patch("mochi.ai_client.get_prompt", return_value=""):
             prompt = _build_system_prompt(user_id=1)
         assert "当前时间" in prompt
 
     def test_includes_core_memory(self):
         """System prompt includes core memory when provided."""
-        with patch("mochi.ai_client.get_prompt", return_value=""):
+        with patch("mochi.ai_client.get_system_chat_modules",
+                    return_value=_mock_modules()), \
+             patch("mochi.ai_client.get_prompt", return_value=""):
             prompt = _build_system_prompt(user_id=1, core_memory="User likes cats")
         assert "User likes cats" in prompt
         assert "你对用户的了解" in prompt
 
     def test_no_core_memory_section_when_empty(self):
         """Core memory section is omitted when empty."""
-        with patch("mochi.ai_client.get_prompt", return_value=""):
+        with patch("mochi.ai_client.get_system_chat_modules",
+                    return_value=_mock_modules()), \
+             patch("mochi.ai_client.get_prompt", return_value=""):
             prompt = _build_system_prompt(user_id=1, core_memory="")
         assert "What you know about the user" not in prompt
 
     def test_includes_usage_rules(self):
         """System prompt includes tool usage rules when provided."""
-        with patch("mochi.ai_client.get_prompt", return_value=""):
+        with patch("mochi.ai_client.get_system_chat_modules",
+                    return_value=_mock_modules()), \
+             patch("mochi.ai_client.get_prompt", return_value=""):
             prompt = _build_system_prompt(user_id=1, usage_rules="Always be polite")
         assert "Always be polite" in prompt
         assert "工具使用规则" in prompt
@@ -55,7 +68,9 @@ class TestBuildSystemPrompt:
             {"id": 1, "name": "Read", "frequency": "daily:1"},
             {"id": 2, "name": "Exercise", "frequency": "weekly:3"},
         ]
-        with patch("mochi.ai_client.get_prompt", return_value=""):
+        with patch("mochi.ai_client.get_system_chat_modules",
+                    return_value=_mock_modules()), \
+             patch("mochi.ai_client.get_prompt", return_value=""):
             prompt = _build_system_prompt(
                 user_id=1,
                 tool_names=["checkin_habit", "query_habit"],
@@ -67,7 +82,9 @@ class TestBuildSystemPrompt:
     def test_no_habits_when_no_habit_tools(self):
         """Habit list is omitted when no habit tools are in tool_names."""
         habits = [{"id": 1, "name": "Read", "frequency": "daily:1"}]
-        with patch("mochi.ai_client.get_prompt", return_value=""):
+        with patch("mochi.ai_client.get_system_chat_modules",
+                    return_value=_mock_modules()), \
+             patch("mochi.ai_client.get_prompt", return_value=""):
             prompt = _build_system_prompt(
                 user_id=1,
                 tool_names=["save_memory"],
@@ -77,7 +94,9 @@ class TestBuildSystemPrompt:
 
     def test_fallback_when_no_prompts(self):
         """Returns default fallback if personality prompts are empty/missing."""
-        with patch("mochi.ai_client.get_prompt", return_value=""):
+        with patch("mochi.ai_client.get_system_chat_modules",
+                    return_value=_mock_modules()), \
+             patch("mochi.ai_client.get_prompt", return_value=""):
             prompt = _build_system_prompt(user_id=1)
         # Should still have at least the time section
         assert "当前时间" in prompt

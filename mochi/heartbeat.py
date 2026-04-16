@@ -37,8 +37,6 @@ from mochi.db import (
     log_usage,
     log_proactive,
 )
-from mochi.skills.reminder.queries import get_upcoming_reminders
-from mochi.skills.todo.queries import get_active_todo_count
 from mochi.runtime_state import (
     get_maintenance_summary,
     clear_maintenance_summary,
@@ -455,19 +453,6 @@ async def _observe(user_id: int) -> dict:
     msg_count = get_message_count_today(user_id)
     observation["messages_today"] = msg_count
 
-    # Active todos
-    todo_count = get_active_todo_count(user_id)
-    if todo_count > 0:
-        observation["active_todos"] = todo_count
-
-    # Upcoming reminders (within 2 hours)
-    upcoming = get_upcoming_reminders(user_id, hours_ahead=2)
-    if upcoming:
-        observation["upcoming_reminders"] = [
-            {"message": r["message"], "remind_at": r["remind_at"]}
-            for r in upcoming
-        ]
-
     # Core memory snapshot
     core = get_core_memory(user_id)
     if core:
@@ -641,8 +626,9 @@ def _should_think(observation: dict) -> bool:
     if observation.get("maintenance_summary"):
         return True
 
-    # Delta: upcoming reminders need attention
-    if observation.get("upcoming_reminders"):
+    # Delta: upcoming reminders need attention (via observer)
+    obs_data = observation.get("observers", {})
+    if obs_data.get("reminder", {}).get("upcoming"):
         return True
 
     # Delta: per-observer change detection
@@ -703,58 +689,40 @@ async def _think(observation: dict, user_id: int) -> dict | None:
 
 
 def _build_observation_text(obs: dict) -> str:
-    """Format observation dict into structured text for Think prompt."""
+    """Format observation dict into structured text for Think prompt.
+
+    Layout follows LLM primacy/recency attention pattern:
+      Block 1 — Operational/alerts (sparse, low attention)
+      Block 2 — Messages & meta (transition)
+      Block 3 — Core context (tail = highest recency attention)
+    """
     sections = []
 
-    # Time
-    time_lines = (
-        f"## Time\n"
-        f"- {obs.get('timestamp', '?')}\n"
-        f"- {obs.get('weekday', '?')}, {obs.get('time_of_day', '?')}"
-    )
-    if obs.get("is_first_tick_today"):
-        time_lines += "\n- **First tick of the day** (morning briefing opportunity)"
-    sections.append(time_lines)
-
-    # Messages
-    sections.append(
-        f"## Messages\n"
-        f"- Silence: {obs.get('silence_hours', '?')}h\n"
-        f"- Messages today: {obs.get('messages_today', 0)}\n"
-        f"- User status: {obs.get('user_status', 'unknown')}"
-    )
-
-    # Diary status (the key panel for habit/todo/reminder awareness)
-    diary_status = obs.get("diary_status", "")
-    if diary_status:
-        sections.append(f"## Today Status\n{diary_status}")
-
-    diary_journal = obs.get("diary_journal", "")
-    if diary_journal:
-        sections.append(f"## Today Journal\n{diary_journal}")
-
-    # Notes (persistent working memory from notes.md)
-    notes = obs.get("notes", "")
-    if notes:
-        sections.append(notes)
-
-    # Core memory
-    core = obs.get("core_memory_preview", "")
-    if core:
-        sections.append(f"## Core Memory\n{core}")
+    # ── Block 1: 运维/告警 (lowest attention) ────────────────────
 
     # Maintenance summary
     maint = obs.get("maintenance_summary", "")
     if maint:
-        sections.append(f"## Maintenance\n{maint}")
+        sections.append(f"## 系统维护\n{maint}")
 
-    # Upcoming reminders (within 2h)
-    reminders = obs.get("upcoming_reminders", [])
+    # Upcoming reminders (within 2h, from observer)
+    obs_data = obs.get("observers", {})
+    reminders = obs_data.get("reminder", {}).get("upcoming", [])
     if reminders:
-        lines = ["## Upcoming Reminders"]
+        lines = ["## 即将到来的提醒"]
         for r in reminders:
             lines.append(f"- {r.get('remind_at', '?')}: {r.get('message', '?')}")
         sections.append("\n".join(lines))
+
+    # ── Block 2: 消息/元数据 (transition) ────────────────────────
+
+    # Messages
+    sections.append(
+        f"## 消息\n"
+        f"- 沉默时长: {obs.get('silence_hours', '?')}h\n"
+        f"- 今日消息数: {obs.get('messages_today', 0)}\n"
+        f"- 用户状态: {obs.get('user_status', 'unknown')}"
+    )
 
     # Today's sent proactive messages (for repeat avoidance)
     sent = obs.get("today_proactive_sent", [])
@@ -766,6 +734,37 @@ def _build_observation_text(obs: dict) -> str:
             time_str = s.get("time", "?")
             lines.append(f"- [{topic}] {content_preview} ({time_str})")
         sections.append("\n".join(lines))
+
+    # ── Block 3: 核心上下文 (highest recency attention) ──────────
+
+    # Core memory
+    core = obs.get("core_memory_preview", "")
+    if core:
+        sections.append(f"## 核心记忆\n{core}")
+
+    # Diary status (the key panel for habit/todo/reminder awareness)
+    diary_status = obs.get("diary_status", "")
+    if diary_status:
+        sections.append(f"## 今日状态\n{diary_status}")
+
+    diary_journal = obs.get("diary_journal", "")
+    if diary_journal:
+        sections.append(f"## 今日日记\n{diary_journal}")
+
+    # Notes (persistent working memory from notes.md)
+    notes = obs.get("notes", "")
+    if notes:
+        sections.append(notes)
+
+    # Time — absolute last for maximum recency bias
+    time_lines = (
+        f"## 时间\n"
+        f"- {obs.get('timestamp', '?')}\n"
+        f"- {obs.get('weekday', '?')}, {obs.get('time_of_day', '?')}"
+    )
+    if obs.get("is_first_tick_today"):
+        time_lines += "\n- **今天第一次巡逻**（可发送 morning briefing）"
+    sections.append(time_lines)
 
     return "\n\n".join(sections)
 

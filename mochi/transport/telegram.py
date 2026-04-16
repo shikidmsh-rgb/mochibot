@@ -5,7 +5,9 @@ This is the default transport. Requires TELEGRAM_BOT_TOKEN in .env.
 
 import asyncio
 import logging
-from telegram import Update
+import time
+from dataclasses import dataclass, field
+from telegram import Update, ReactionTypeEmoji
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
     ContextTypes, filters,
@@ -17,9 +19,65 @@ from mochi.config import (
     TELEGRAM_BOT_TOKEN, OWNER_USER_ID, set_owner_user_id,
     TG_BUBBLE_DELAY_S, TG_BUBBLE_MAX, TG_BUBBLE_DELIMITER,
     TG_BUBBLE_MIN_CHARS,
+    TG_STATUS_REACTIONS_ENABLED, TG_STATUS_MESSAGE_ENABLED,
+    TG_STATUS_EDIT_INTERVAL_S,
 )
 
 log = logging.getLogger(__name__)
+
+
+# ── Tool Status UX ───────────────────────────────────────────
+
+_TOOL_STATUS_LABELS: dict[str, str] = {
+    "web_search": "正在搜索…",
+    "recall_memory": "正在回忆…",
+    "save_memory": "正在记录…",
+    "update_core_memory": "正在更新记忆…",
+    "list_memories": "正在查记忆…",
+    "manage_note": "正在整理笔记…",
+    "manage_todo": "正在整理待办…",
+    "checkin_habit": "正在打卡…",
+    "query_habit": "正在查习惯…",
+    "edit_habit": "正在编辑习惯…",
+    "get_oura_data": "正在查 Oura…",
+    "log_meal": "正在记录饮食…",
+    "query_meals": "正在查饮食…",
+    "manage_reminder": "正在设置提醒…",
+    "get_weather": "正在查天气…",
+    "run_checkup": "正在检查…",
+    "send_sticker": "正在选贴纸…",
+    "request_tools": "正在加载工具…",
+}
+_TOOL_STATUS_DEFAULT = "正在处理…"
+
+
+def _tool_label(tool_name: str | None) -> str:
+    if not tool_name:
+        return "思考中…"
+    return _TOOL_STATUS_LABELS.get(tool_name, _TOOL_STATUS_DEFAULT)
+
+
+@dataclass
+class _StatusState:
+    """Per-request tool-call status message and reaction state."""
+    status_msg_id: int | None = None
+    last_edit_time: float = 0.0
+    last_label: str = ""
+    reaction_state: str = ""  # "" | "working" | "done"
+
+
+async def _set_reaction(bot, chat_id: int, message_id: int, emoji: str | None) -> None:
+    """Set or clear an emoji reaction on a message. Silently ignores all errors."""
+    try:
+        if emoji is None:
+            await bot.set_message_reaction(chat_id, message_id, reaction=[])
+        else:
+            await bot.set_message_reaction(
+                chat_id, message_id,
+                reaction=[ReactionTypeEmoji(emoji=emoji)],
+            )
+    except Exception:
+        pass
 
 
 def _split_bubbles(text: str, max_bubbles: int = 4,
@@ -285,23 +343,128 @@ class TelegramTransport(Transport):
 
         self._dispatch_state_signals()
 
+        chat_id = update.effective_chat.id
+        user_msg_id = update.message.message_id
+        status = _StatusState()
+
+        async def _on_interim(text=None, *, tool_name: str | None = None) -> None:
+            # Refresh typing indicator
+            try:
+                await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+            except Exception:
+                pass
+
+            # Reaction: set 👨‍💻 on first tool call
+            if TG_STATUS_REACTIONS_ENABLED and tool_name is not None:
+                if status.reaction_state != "working":
+                    status.reaction_state = "working"
+                    await _set_reaction(context.bot, chat_id, user_msg_id, "\U0001F468\u200D\U0001F4BB")
+
+            # Status message
+            if not TG_STATUS_MESSAGE_ENABLED or tool_name is None:
+                return
+
+            label = _tool_label(tool_name)
+            now = time.monotonic()
+            same_label = label == status.last_label
+            throttle_ok = (now - status.last_edit_time) >= TG_STATUS_EDIT_INTERVAL_S
+
+            if same_label and status.status_msg_id is not None:
+                return
+
+            try:
+                if status.status_msg_id is None:
+                    sent = await update.message.reply_text(label)
+                    status.status_msg_id = sent.message_id
+                    status.last_edit_time = now
+                    status.last_label = label
+                elif throttle_ok:
+                    await context.bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=status.status_msg_id,
+                        text=label,
+                    )
+                    status.last_edit_time = now
+                    status.last_label = label
+            except Exception as e:
+                if "not modified" not in str(e).lower():
+                    log.debug("Status message update failed (ignored): %s", e)
+
         msg = IncomingMessage(
             user_id=user_id,
-            channel_id=update.effective_chat.id,
+            channel_id=chat_id,
             text=update.message.text,
             transport="telegram",
+            on_interim=_on_interim,
         )
 
         if _on_message_callback:
             from mochi.heartbeat import check_sleep_entry, handle_sleep_keyword
             if check_sleep_entry(update.message.text):
-                # Goodnight keyword → bedtime tidy handles the goodbye.
-                # Skip normal Chat to avoid double goodnight message.
                 await handle_sleep_keyword(user_id, update.message.text)
             else:
-                result = await _on_message_callback(msg)
+                result = None
+                try:
+                    result = await _on_message_callback(msg)
+                finally:
+                    # Finalize status UX: set 👍
+                    if TG_STATUS_REACTIONS_ENABLED and status.reaction_state not in ("", "done"):
+                        status.reaction_state = "done"
+                        await _set_reaction(context.bot, chat_id, user_msg_id, "\U0001F44D")
+                    # Clean up orphan status message on error
+                    if result is None and status.status_msg_id:
+                        try:
+                            await context.bot.delete_message(
+                                chat_id=chat_id, message_id=status.status_msg_id,
+                            )
+                        except Exception:
+                            pass
+
                 if result:
-                    await self._send_chat_result(update.effective_chat.id, result)
+                    if status.status_msg_id and result.text:
+                        # Edit status message into final reply, with bubble splitting
+                        try:
+                            bubbles = _split_bubbles(
+                                result.text, TG_BUBBLE_MAX,
+                                TG_BUBBLE_DELIMITER, TG_BUBBLE_MIN_CHARS,
+                            )
+                            # First bubble → edit status message in-place
+                            first = bubbles[0]
+                            for start in range(0, len(first), 4096):
+                                if start == 0:
+                                    await context.bot.edit_message_text(
+                                        chat_id=chat_id,
+                                        message_id=status.status_msg_id,
+                                        text=first[:4096],
+                                    )
+                                else:
+                                    await context.bot.send_message(
+                                        chat_id=chat_id,
+                                        text=first[start:start + 4096],
+                                    )
+                            # Remaining bubbles → send with typing delay
+                            for bubble in bubbles[1:]:
+                                await context.bot.send_chat_action(
+                                    chat_id=chat_id, action="typing",
+                                )
+                                await asyncio.sleep(TG_BUBBLE_DELAY_S)
+                                for start in range(0, len(bubble), 4096):
+                                    await context.bot.send_message(
+                                        chat_id=chat_id,
+                                        text=bubble[start:start + 4096],
+                                    )
+                            # Stickers
+                            for file_id in result.stickers:
+                                await self.send_sticker(chat_id, file_id)
+                                import mochi.skills as skill_registry
+                                sticker_skill = skill_registry.get_skill("sticker")
+                                if sticker_skill:
+                                    sticker_skill.record_last_sent(chat_id, file_id)
+                        except Exception:
+                            # Fallback: send normally if edit fails
+                            await self._send_chat_result(chat_id, result)
+                    else:
+                        await self._send_chat_result(chat_id, result)
         else:
             await update.message.reply_text("I'm still waking up... try again in a moment.")
 

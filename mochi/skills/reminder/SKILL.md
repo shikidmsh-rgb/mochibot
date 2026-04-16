@@ -4,6 +4,8 @@ description: "定时提醒 — 到点通知一下，不追踪完成情况。"
 type: tool
 expose_as_tool: true
 diary_status_order: 30
+sense:
+  interval: 5
 ---
 
 ## Tools

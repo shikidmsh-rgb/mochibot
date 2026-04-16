@@ -5,7 +5,8 @@ A transport handles sending and receiving messages via this abstraction.
 
 import logging
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 
 log = logging.getLogger(__name__)
 
@@ -18,6 +19,11 @@ class IncomingMessage:
     text: str
     transport: str  # "telegram"
     raw: dict | None = None  # transport-specific raw data
+    # Optional callback fired during tool execution (set by transport layer).
+    # Signature: async def on_interim(text=None, *, tool_name=None) -> None
+    on_interim: Callable[..., Awaitable[None]] | None = field(
+        default=None, repr=False,
+    )
 
 
 class Transport(ABC):

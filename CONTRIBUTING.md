@@ -220,8 +220,18 @@ pip install pytest pytest-asyncio                    # 测试依赖
 ```bash
 pytest                  # 全部测试
 pytest tests/           # 仅单元测试
-pytest tests/e2e/       # 仅 E2E 测试
+pytest tests/e2e/       # 自包含 E2E + 自动跳过的 live E2E
 ```
+
+`tests/` 和默认的 `tests/e2e/` 运行不需要 `.env`。只有显式设置 `MOCHIBOT_RUN_LIVE_E2E=1` 时，live E2E 才会执行。
+
+```powershell
+$env:MOCHIBOT_RUN_LIVE_E2E = "1"
+pytest tests/e2e/test_prerouter_live.py -v -s
+pytest tests/e2e/test_chat_proactive_e2e.py -v -s
+```
+
+live E2E 需要在一个已经配置好 `.env` 和 `data/mochi.db` 的本地 checkout 中运行；缺任一条件时会自动 skip。
 
 ### 测试基建
 
@@ -231,6 +241,8 @@ pytest tests/e2e/       # 仅 E2E 测试
 |------|------|-------------------|---------|
 | **单元测试** | `tests/` | `fresh_db`（独立 DB）、`mock_config`（覆盖 config） | — |
 | **E2E 测试** | `tests/e2e/` | 以上 + `discover_skills`、`reset_tool_policy`、`reset_heartbeat_state` | `mock_llm_factory`（脚本化 LLM，需声明为测试参数）、`FakeTransport`（需手动 import） |
+
+说明：`tests/e2e/test_prerouter_live.py` 和 `tests/e2e/test_chat_proactive_e2e.py` 属于 live E2E。它们默认自动 skip，只有在显式设置 `MOCHIBOT_RUN_LIVE_E2E=1` 且本地 checkout 已配置真实 `.env`/`data/mochi.db` 时才会运行。
 
 ### 给新 Skill 写测试
 

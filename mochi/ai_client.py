@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 
 from mochi.llm import get_client_for_tier, LLMResponse
-from mochi.prompt_loader import get_prompt
+from mochi.prompt_loader import get_prompt, get_system_chat_modules
 from mochi.db import (
     save_message, get_recent_messages, get_core_memory, log_usage,
     recall_memory,
@@ -202,13 +202,50 @@ class ChatResult:
     stickers: list[str] = field(default_factory=list)
 
 
+def _render_runtime_context(template: str, diary_status: str = "",
+                            diary_journal: str = "") -> str:
+    """Fill runtime_context.md placeholders. Remove sections with no data."""
+    result = template
+
+    if diary_status:
+        result = result.replace("{{diary_status}}", diary_status)
+    else:
+        # Remove ### 状态速览 block
+        result = re.sub(
+            r"### 状态速览\n\{\{diary_status\}\}\n*", "", result,
+        )
+
+    if diary_journal:
+        result = result.replace("{{diary_entry}}", diary_journal)
+    else:
+        # Remove ### 日记 block
+        result = re.sub(
+            r"### 日记\n\{\{diary_entry\}\}\n*", "", result,
+        )
+
+    # If both sub-sections removed, remove the entire ## 今日 header + intro
+    result = re.sub(
+        r"## 今日\n用户今天的状态与经历，由系统自动汇总。\n*$", "", result,
+    )
+
+    return result.strip()
+
+
 def _build_system_prompt(user_id: int, usage_rules: str = "",
                          tool_names: list[str] | None = None,
                          core_memory: str = "",
                          habits: list[dict] | None = None,
                          transport: str = "",
-                         recalled_memories: list[dict] | None = None) -> str:
-    """Build the system prompt: personality(Chat) + heartbeat context + core memory.
+                         recalled_memories: list[dict] | None = None,
+                         diary_status: str = "",
+                         diary_journal: str = "") -> str:
+    """Build the system prompt using Zone A/B/C architecture.
+
+    Zone A (primacy)  — identity & relationship (soul, user, core memory,
+                        recalled memories)
+    Zone B (reference) — capabilities & reference (agent, skills, usage rules,
+                         habits, notes, bubble format)
+    Zone C (recency)   — temporal context (diary, current time)
 
     Args:
         user_id: Owner user ID for core memory lookup.
@@ -218,10 +255,12 @@ def _build_system_prompt(user_id: int, usage_rules: str = "",
         habits: Pre-fetched habit list (avoids redundant DB call).
         transport: Transport name for transport-aware capability summary.
         recalled_memories: Auto-recalled memories to inject (from _retrieve_memories_for_turn).
+        diary_status: Today's status panel (habits/todos/reminders progress).
+        diary_journal: Today's journal entries.
     """
     from mochi.config import TIMEZONE_OFFSET_HOURS
-    personality = get_prompt("system_chat/soul")
-    agent_desc = get_prompt("system_chat/agent")
+
+    modules = get_system_chat_modules()
 
     # Current local time (respects TIMEZONE_OFFSET_HOURS)
     tz = timezone(timedelta(hours=TIMEZONE_OFFSET_HOURS))
@@ -229,15 +268,33 @@ def _build_system_prompt(user_id: int, usage_rules: str = "",
     now_str = now.strftime("%Y-%m-%d %H:%M:%S %Z")
 
     parts = []
-    if personality:
-        parts.append(personality)
 
-    # Inject current time early — it anchors all subsequent context
-    # (memory staleness, relative reminders like "5分钟后", habit check-in dates)
-    parts.append(f"## 当前时间\n现在是 **{now_str}**（UTC{TIMEZONE_OFFSET_HOURS:+d}）。")
+    # ── Zone A: 身份与关系 (primacy — prompt 最前) ──────────────
+    if "soul" in modules:
+        parts.append(modules["soul"])
 
-    if agent_desc:
-        parts.append(agent_desc)
+    if "user" in modules:
+        parts.append(modules["user"])
+
+    if core_memory:
+        parts.append(f"## 你对用户的了解\n{core_memory}")
+
+    if recalled_memories:
+        lines = []
+        for m in recalled_memories:
+            lines.append(
+                f"- [{m.get('ts', '')}] {m.get('category', '')} — "
+                f"{m.get('text', '')}"
+            )
+        parts.append(
+            "## 相关记忆\n"
+            "以下是系统根据当前对话自动检索的历史片段，可能与当前话题相关：\n"
+            + "\n".join(lines)
+        )
+
+    # ── Zone B: 能力与参考 (reference — 中间) ──────────────────
+    if "agent" in modules:
+        parts.append(modules["agent"])
 
     # Dynamic capability list (cached, refreshed on skill toggle)
     from mochi.skills import get_capability_summary
@@ -245,32 +302,8 @@ def _build_system_prompt(user_id: int, usage_rules: str = "",
     if cap:
         parts.append(cap)
 
-    if core_memory:
-        parts.append(f"## 你对用户的了解\n{core_memory}")
-
-    # Auto-recalled memories (embedding-based, pre-turn retrieval)
-    if recalled_memories:
-        lines = []
-        for m in recalled_memories:
-            lines.append(
-                f"- score={m.get('score', 0)} ts={m.get('ts', '')} "
-                f"category={m.get('category', '')} | {m.get('text', '')}"
-            )
-        parts.append("## 相关记忆\n" + "\n".join(lines))
-
-    # Notes (persistent working memory — via prompt section hook)
-    for section in skill_registry.get_prompt_sections(compact=True):
-        parts.append(section)
-
     if usage_rules:
         parts.append(f"## 工具使用规则\n{usage_rules}")
-
-    # Bubble formatting instruction (system-level, not in soul.md)
-    from mochi.config import BUBBLE_ENABLED
-    if BUBBLE_ENABLED:
-        bubble_inst = get_prompt("system_chat/_bubble")
-        if bubble_inst:
-            parts.append(bubble_inst)
 
     # Active habits (only when habit tools are available this turn)
     if user_id and tool_names and habits:
@@ -282,6 +315,30 @@ def _build_system_prompt(user_id: int, usage_rules: str = "",
             )
             if habit_lines:
                 parts.append(f"## 习惯列表 (打卡用)\n{habit_lines}")
+
+    # Notes (persistent working memory — via prompt section hook)
+    for section in skill_registry.get_prompt_sections(compact=True):
+        parts.append(section)
+
+    # Bubble formatting instruction
+    from mochi.config import BUBBLE_ENABLED
+    if BUBBLE_ENABLED:
+        bubble_inst = get_prompt("system_chat/_bubble")
+        if bubble_inst:
+            parts.append(bubble_inst)
+
+    # [预留] conv_summary — 对话早期摘要，功能实现后在此注入
+
+    # ── Zone C: 当下语境 (recency — prompt 最后) ────────────────
+    if "runtime_context" in modules:
+        rendered_rc = _render_runtime_context(
+            modules["runtime_context"], diary_status, diary_journal,
+        )
+        if rendered_rc:
+            parts.append(rendered_rc)
+
+    # Current time — 绝对最后，利用 LLM recency bias 强化时间感知
+    parts.append(f"## 当前时间\n现在是 **{now_str}**（UTC{TIMEZONE_OFFSET_HOURS:+d}）。")
 
     if not parts:
         raise RuntimeError("System prompt is empty — check prompts/ directory and prompt_loader")
@@ -402,10 +459,19 @@ async def chat(message: IncomingMessage) -> ChatResult:
 
     # Build context
     active_tool_names = [t["function"]["name"] for t in tools if "function" in t]
+
+    # Fetch diary data for Zone C runtime context
+    # Only journal (events) — status panel (habits/todos) excluded from chat
+    # to avoid LLM parroting progress in every reply. Status is available
+    # via tools (query_habit, manage_todo) when the user asks.
+    from mochi.diary import diary as _diary
+    _dj = _diary.read(section="今日日記")
+
     system_prompt = _build_system_prompt(
         user_id, usage_rules=usage_rules, tool_names=active_tool_names,
         core_memory=core_memory, habits=habits, transport=message.transport,
         recalled_memories=recalled_memories,
+        diary_status="", diary_journal=_dj,
     )
 
     # Build messages array
@@ -417,6 +483,7 @@ async def chat(message: IncomingMessage) -> ChatResult:
     client = get_client_for_tier(tier)
     escalation_count = 0
     tool_names_used: list[str] = []  # track for tool_history persistence
+    on_interim = message.on_interim
 
     for round_num in range(max_tool_rounds):
         for _attempt in range(2):
@@ -504,6 +571,13 @@ async def chat(message: IncomingMessage) -> ChatResult:
             # ── Normal tool execution ──
             log.info("Tool call: %s", tc["name"])
             log.debug("Tool args: %s(%s)", tc["name"], tc["arguments"])
+
+            # Notify transport of tool execution (status UX)
+            if on_interim:
+                try:
+                    await on_interim(None, tool_name=tc["name"])
+                except Exception:
+                    pass
 
             # Policy check before execution
             decision = policy_check(tc["name"], user_id)
