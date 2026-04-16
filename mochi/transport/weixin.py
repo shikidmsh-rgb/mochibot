@@ -331,6 +331,8 @@ class WeixinTransport(Transport):
         if self._owner_weixin_id is None:
             self._owner_weixin_id = from_user
             log.info("WeChat: owner ID learned: %s", from_user)
+            from mochi.db import set_skill_config
+            set_skill_config("_transport:wechat", "owner_weixin_id", from_user)
 
         # System command: /restart (owner only)
         if text.strip() == "/restart":

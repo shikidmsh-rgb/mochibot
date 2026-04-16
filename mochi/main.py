@@ -104,6 +104,13 @@ async def main():
         await transport.start()
         log.info("Transport started: %s", transport.name)
 
+    # 3a. Restore owner ID from DB (persists across all restart types)
+    if transport and hasattr(transport, "restore_owner_id"):
+        from mochi.db import get_skill_config
+        saved_id = get_skill_config("_transport:wechat").get("owner_weixin_id")
+        if saved_id:
+            transport.restore_owner_id(saved_id)
+
     # 3b. Send restart-complete notification if restarting
     restart_info = consume_restart_flag()
     if restart_info and transport:
