@@ -140,6 +140,9 @@ def _retrieve_memories_for_turn(text: str, user_id: int) -> list[dict]:
 def _expand_history(history: list[dict]) -> list[dict]:
     """Expand conversation history into API-native messages.
 
+    Each message is prefixed with its original timestamp so the LLM can
+    distinguish "what was said then" from "what time is it now".
+
     For assistant messages with tool_history, reconstructs the tool call
     sequence so the LLM structurally recognizes prior tool usage:
       1. assistant message with tool_calls (content=None)
@@ -151,6 +154,12 @@ def _expand_history(history: list[dict]) -> list[dict]:
         role = msg.get("role")
         content = msg.get("content")
         tool_history_raw = msg.get("tool_history")
+
+        # Prefix content with timestamp so LLM sees when each message was sent
+        created_at = msg.get("created_at", "")
+        if created_at and content:
+            ts = created_at[:16]  # "2026-04-16T18:28"
+            content = f"[{ts}] {content}"
 
         if role == "assistant" and tool_history_raw:
             try:
@@ -265,7 +274,7 @@ def _build_system_prompt(user_id: int, usage_rules: str = "",
     # Current local time (respects TIMEZONE_OFFSET_HOURS)
     tz = timezone(timedelta(hours=TIMEZONE_OFFSET_HOURS))
     now = datetime.now(tz)
-    now_str = now.strftime("%Y-%m-%d %H:%M:%S %Z")
+    now_str = now.strftime("%Y-%m-%d %H:%M:%S")
 
     parts = []
 
@@ -337,8 +346,8 @@ def _build_system_prompt(user_id: int, usage_rules: str = "",
         if rendered_rc:
             parts.append(rendered_rc)
 
-    # Current time — 绝对最后，利用 LLM recency bias 强化时间感知
-    parts.append(f"## 当前时间\n现在是 **{now_str}**（UTC{TIMEZONE_OFFSET_HOURS:+d}）。")
+    # Current time — system block 末尾，利用 block 内 recency bias
+    parts.append(f"当前时间：{now_str}")
 
     if not parts:
         raise RuntimeError("System prompt is empty — check prompts/ directory and prompt_loader")
