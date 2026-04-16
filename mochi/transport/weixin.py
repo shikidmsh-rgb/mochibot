@@ -134,10 +134,10 @@ class WeixinTransport(Transport):
         """True when iLink session is expired and awaiting QR re-scan."""
         return self._session_expired
 
-    def restore_owner_id(self, weixin_id: str) -> None:
+    def restore_owner_id(self, weixin_id: str, *, source: str = "restart flag") -> None:
         """Pre-set the owner WeChat ID (used after restart)."""
         self._owner_weixin_id = weixin_id
-        log.info("WeChat: owner ID restored from restart flag: %s", weixin_id)
+        log.info("WeChat: owner ID restored (%s): %s", source, weixin_id)
 
     async def start(self) -> None:
         try:

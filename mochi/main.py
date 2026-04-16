@@ -109,7 +109,7 @@ async def main():
         from mochi.db import get_skill_config
         saved_id = get_skill_config("_transport:wechat").get("owner_weixin_id")
         if saved_id:
-            transport.restore_owner_id(saved_id)
+            transport.restore_owner_id(saved_id, source="DB")
 
     # 3b. Send restart-complete notification if restarting
     restart_info = consume_restart_flag()
