@@ -287,21 +287,9 @@ _PROMPT_META: dict[str, dict[str, str]] = {
         "label": "灵魂 Soul",
         "desc": "Agent 的核心人格：说话风格、语气、性格特点",
     },
-    "system_chat/agent.md": {
-        "label": "能力 Agent",
-        "desc": "Agent 能做什么、怎么做：技能、工具、行为规则",
-    },
     "system_chat/user.md": {
         "label": "用户画像 User",
         "desc": "user的信息，让ta更了解你",
-    },
-    "think_system.md": {
-        "label": "思考框架 Think",
-        "desc": "Agent 内部思考时使用的 system prompt",
-    },
-    "memory_extract.md": {
-        "label": "记忆提取 Memory",
-        "desc": "从对话中提取长期记忆的指令模板",
     },
 }
 
