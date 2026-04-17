@@ -6,7 +6,7 @@
 
 轻量自托管 · SQLite · 支持 OpenAI / Azure / Anthropic
 
-**零门槛配置**——运行脚本后自动打开管理后台（Web UI），在浏览器里填 API key 和 bot token，点一下就能启动。云服务器？只填 bot token，发 `/admin` 给 bot 就能在手机上完成全部配置。
+**零门槛配置**——运行脚本后自动打开管理后台（Web UI），在浏览器里填 API key 和 bot token，点一下就能启动。
 
 </div>
 <img width="1296" height="1244" alt="image" src="https://github.com/user-attachments/assets/1cad382d-2edd-4876-ab81-4747254e132b" />
@@ -66,7 +66,7 @@
 - **轻量**——单进程、SQLite，不需要 Docker/Redis/Postgres，`pip install` 就能跑
 - **自托管**——数据留在你自己的机器上
 - **易扩展**——Skill 和 Observer 即插即用，放个文件夹重启就行
-- **管理后台**——Web UI 配置模型、调心跳参数、开关 skill、编辑人设 prompt。手机适配，支持 `/admin` 命令远程获取管理链接。云服务器上只填一个 bot token 就能启动（Setup Mode），在手机上完成全部配置
+- **管理后台**——Web UI 配置模型、调心跳参数、开关 skill、编辑人设 prompt。本地部署时自动打开浏览器；云服务器需通过 SSH 隧道或反向代理访问（详见下方部署章节）
 - **ChatGPT 搬家**——上传 ChatGPT 导出的 JSON，LLM 自动提取人格、用户画像、核心记忆和记忆条目，预览编辑后一键导入 MochiBot
 - **支持 Telegram 和 WeChat**——二选一，在管理后台配置。推荐 Telegram（支持表情包、语音等丰富交互）
 
@@ -236,15 +236,9 @@ sudo journalctl -u mochibot -f          # 查看日志
 
 ### 云服务器上使用管理后台
 
-配置了消息平台（Telegram / WeChat）后，管理后台会自动绑定到 `0.0.0.0` 并生成 `ADMIN_TOKEN`，无需手动配置。
+管理后台默认监听 `localhost`。配置了消息平台（Telegram / WeChat）后会自动绑定到 `0.0.0.0` 并生成 `ADMIN_TOKEN`，但你仍需通过以下方式之一从外部访问：
 
-#### 方式一：`/admin` 命令（最简单）
-
-给 bot 发 `/admin`，TA 会回复管理后台的 URL（带 token）。在手机浏览器里打开就能配置。
-
-> 同一局域网下直接可用。云服务器需要确保端口（默认 8080）在安全组/防火墙中放开。
-
-#### 方式二：SSH 隧道（安全远程访问）
+#### 方式一：SSH 隧道（推荐，安全且无需开放端口）
 
 在你**本地电脑**的终端运行：
 
@@ -254,7 +248,7 @@ ssh -L 8080:localhost:8080 user@your-server-ip
 
 然后在本地浏览器打开 `http://localhost:8080`。流量通过 SSH 加密传输。
 
-#### 方式三：反向代理 + HTTPS（长期使用）
+#### 方式二：反向代理 + HTTPS（长期使用）
 
 适合需要频繁访问、或多人管理的场景。用 Caddy / Nginx 做反向代理，处理 HTTPS：
 
@@ -380,7 +374,7 @@ THINK_MODEL=gpt-4o-mini      # 心跳 + 维护
 - [x] Oura Ring 集成
 - [x] 日记系统（今日状态面板 + 夜间归档）
 - [x] 管理后台（Web UI）
-- [x] Setup Mode + `/admin` 命令（手机配置）
+- [x] Setup Mode（`.env` 只填 bot token 即可启动，通过管理后台完成其余配置）
 - [x] 打字节奏（多气泡 + 打字指示器）
 - [x] 早间汇报（Think 驱动）
 - [ ] 语音消息
