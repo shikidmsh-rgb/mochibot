@@ -9,7 +9,8 @@
 **零门槛配置**——运行脚本后自动打开管理后台（Web UI），在浏览器里填 API key 和 bot token，点一下就能启动。云服务器？只填 bot token，发 `/admin` 给 bot 就能在手机上完成全部配置。
 
 </div>
-<img width="1110" height="544" alt="image" src="https://github.com/user-attachments/assets/3e81dc4d-b517-43a9-ac37-9899b73e5fea" />
+<img width="1296" height="1244" alt="image" src="https://github.com/user-attachments/assets/1cad382d-2edd-4876-ab81-4747254e132b" />
+
 
 ---
 
