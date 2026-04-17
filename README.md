@@ -102,6 +102,8 @@
 | `/notes` | 查看备忘笔记 |
 | `/diary` | 查看今日日记——今日状态面板 + 日记内容 |
 | `/admin` | 获取管理后台链接（带 token，可在手机浏览器打开） |
+| `/skilloff` | 切换到闲聊模式——关闭非核心 skill 和 prerouter，省 token |
+| `/skillon` | 恢复完整模式——重新启用所有 skill |
 | `/restart` | 重启 Bot 进程 |
 
 ---
@@ -149,6 +151,17 @@ cd mochibot
 
 > 一台小 VM（1 vCPU、1 GB RAM）足够——单进程、SQLite、资源占用极低。
 
+> **⚠️ 境内 vs 境外服务器**
+>
+> | | 境内（阿里云、腾讯云等） | 境外（AWS、Azure、GCP 等） |
+> |---|---|---|
+> | **Telegram** | ❌ 无法访问 | ✅ |
+> | **国外 AI API**（OpenAI、Anthropic、Groq 等） | ❌ 无法直接调用 | ✅ |
+> | **WeChat** | ✅ | ✅ |
+> | **DeepSeek / Ollama 本地** | ✅ | ✅ |
+>
+> 如果你用 **Telegram + 国外 AI**，选境外服务器最省心。境内服务器只适合 **WeChat + 国内模型**（如 DeepSeek）的组合。
+
 ### Docker 部署（推荐）
 
 ```bash
@@ -163,6 +176,8 @@ docker compose up -d         # 后台运行
 
 数据保存在 `data/` 目录，容器删除不丢失。
 通过管理后台修改的 prompt 会写到 `data/prompts/`，也会随这个卷一起持久化。
+
+> **安全提示**：`data/` 目录包含数据库（含 API key、聊天记录等敏感信息）。MochiBot 不额外加密本地数据——请确保你的服务器/机器有适当的访问权限控制，建议开启磁盘加密（如 BitLocker / LUKS）。
 
 ### 手动运行（无 Docker / 无 systemd）
 
