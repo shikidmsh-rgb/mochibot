@@ -131,7 +131,7 @@ class TestPreprocess:
     def test_basic_filtering(self):
         conversations = [_make_conversation(messages=[
             ("system", "You are a helpful assistant"),
-            ("user", "Hi"),  # < 8 chars, filtered
+            ("user", "Hi"),  # < 4 chars, filtered
             ("user", "Remember that I love cooking pasta"),
             ("assistant", "I'll remember that!"),
             ("tool", "search result"),
@@ -144,15 +144,15 @@ class TestPreprocess:
         assert result.estimated_tokens > 0
         assert result.session_id in _sessions
 
-    def test_drops_long_assistant(self):
+    def test_truncates_long_assistant(self):
         long_reply = "A" * 501
         conversations = [_make_conversation(messages=[
             ("user", "Tell me about something interesting"),
             ("assistant", long_reply),
         ])]
         result = preprocess(conversations)
-        # The long assistant reply should be filtered
-        assert result.filtered_message_count == 1
+        # Long assistant reply is truncated, not dropped
+        assert result.filtered_message_count == 2
 
     def test_drops_code_heavy_conversation(self):
         conversations = [_make_conversation(messages=[

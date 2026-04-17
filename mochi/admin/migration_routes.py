@@ -16,12 +16,15 @@ log = logging.getLogger(__name__)
 class ExtractRequest(BaseModel):
     session_id: str
     model_name: str
+    granularity: str = "standard"
 
 
-class ApplyRequest(BaseModel):
-    soul: str = ""
-    user_profile: str = ""
-    core_memory: str = ""
+class SectionApplyRequest(BaseModel):
+    section: str       # "soul" | "user_profile" | "core_memory"
+    content: str = ""
+
+
+class MemoriesApplyRequest(BaseModel):
     memory_items: list[dict] = []
 
 
@@ -35,7 +38,8 @@ def register_migration_routes(app, verify_token_dep):
         estimate_context_fit,
         start_extract_job,
         get_job_status,
-        apply_migration,
+        apply_section,
+        start_apply_memories_job,
         MODEL_CONTEXT_WINDOWS,
     )
     from mochi.admin.admin_db import list_models
@@ -48,7 +52,10 @@ def register_migration_routes(app, verify_token_dep):
         # Chunked read with size enforcement
         chunks = []
         total = 0
-        async for chunk in file:
+        while True:
+            chunk = await file.read(1024 * 1024)  # 1MB chunks
+            if not chunk:
+                break
             chunks.append(chunk)
             total += len(chunk)
             if total > _MAX_UPLOAD_BYTES:
@@ -96,7 +103,7 @@ def register_migration_routes(app, verify_token_dep):
     async def api_migration_extract(req: ExtractRequest):
         """Start a background LLM extraction job."""
         try:
-            job_id = start_extract_job(req.session_id, req.model_name)
+            job_id = start_extract_job(req.session_id, req.model_name, req.granularity)
         except KeyError as e:
             raise HTTPException(status_code=404, detail=str(e))
         except Exception as e:
@@ -104,25 +111,42 @@ def register_migration_routes(app, verify_token_dep):
             return {"ok": False, "error": str(e)}
         return {"ok": True, "job_id": job_id}
 
-    # ── Poll Extraction Status ────────────────────────────────────────────
+    # ── Poll Job Status (extract or apply) ────────────────────────────────
 
-    @app.get("/api/migration/extract/status", dependencies=[Depends(verify_token_dep)])
-    async def api_migration_extract_status(job_id: str):
-        """Poll for extraction job completion."""
+    @app.get("/api/migration/job/status", dependencies=[Depends(verify_token_dep)])
+    async def api_migration_job_status(job_id: str):
+        """Poll for job completion (works for both extract and apply jobs)."""
         try:
             status = get_job_status(job_id)
         except KeyError as e:
             raise HTTPException(status_code=404, detail=str(e))
         return status
 
-    # ── Apply Migration ───────────────────────────────────────────────────
+    # Keep old endpoint for backwards compat
+    @app.get("/api/migration/extract/status", dependencies=[Depends(verify_token_dep)])
+    async def api_migration_extract_status(job_id: str):
+        return await api_migration_job_status(job_id)
 
-    @app.post("/api/migration/apply", dependencies=[Depends(verify_token_dep)])
-    async def api_migration_apply(req: ApplyRequest):
-        """Write user-confirmed extraction results into MochiBot."""
+    # ── Apply Section (soul / user / core — fast, synchronous) ────────────
+
+    @app.post("/api/migration/apply/section", dependencies=[Depends(verify_token_dep)])
+    async def api_migration_apply_section(req: SectionApplyRequest):
+        """Write a single section into MochiBot."""
         try:
-            result = await asyncio.to_thread(apply_migration, req.model_dump())
+            result = await asyncio.to_thread(apply_section, req.section, req.content)
         except Exception as e:
-            log.exception("Migration apply failed")
+            log.exception("Migration section apply failed")
             return {"ok": False, "error": str(e)}
         return result
+
+    # ── Apply Memory Items (slow — background job with progress) ──────────
+
+    @app.post("/api/migration/apply/memories", dependencies=[Depends(verify_token_dep)])
+    async def api_migration_apply_memories(req: MemoriesApplyRequest):
+        """Start background job to import memory items."""
+        try:
+            job_id = start_apply_memories_job(req.memory_items)
+        except Exception as e:
+            log.exception("Failed to start memory import job")
+            return {"ok": False, "error": str(e)}
+        return {"ok": True, "job_id": job_id}

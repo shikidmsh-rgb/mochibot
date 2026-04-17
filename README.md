@@ -66,6 +66,7 @@
 - **自托管**——数据留在你自己的机器上
 - **易扩展**——Skill 和 Observer 即插即用，放个文件夹重启就行
 - **管理后台**——Web UI 配置模型、调心跳参数、开关 skill、编辑人设 prompt。手机适配，支持 `/admin` 命令远程获取管理链接。云服务器上只填一个 bot token 就能启动（Setup Mode），在手机上完成全部配置
+- **ChatGPT 搬家**——上传 ChatGPT 导出的 JSON，LLM 自动提取人格、用户画像、核心记忆和记忆条目，预览编辑后一键导入 MochiBot
 - **支持 Telegram 和 WeChat**——二选一，在管理后台配置。推荐 Telegram（支持表情包、语音等丰富交互）
 
 ---

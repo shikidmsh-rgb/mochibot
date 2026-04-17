@@ -2876,6 +2876,21 @@ function migShowStep2() {
           ${modelOpts}
         </select>
       </div>
+
+      <div class="form-group">
+        <label class="form-label">记忆提取颗粒度</label>
+        <div style="display:flex;gap:16px;flex-wrap:wrap">
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
+            <input type="radio" name="mig-granularity" value="detailed"> 精细 <span style="color:var(--text-soft);font-size:11px">— 尽可能多，包括日常琐事</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
+            <input type="radio" name="mig-granularity" value="standard" checked> 标准 <span style="color:var(--text-soft);font-size:11px">— 有记忆价值的，跳过纯闲聊</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
+            <input type="radio" name="mig-granularity" value="essential"> 精简 <span style="color:var(--text-soft);font-size:11px">— 只保留关键信息</span>
+          </label>
+        </div>
+      </div>
       <div id="mig-context-warning" style="margin-bottom:12px"></div>
 
       <div style="display:flex;align-items:center;gap:12px">
@@ -2926,9 +2941,11 @@ async function migStartExtract() {
   btn.disabled = true; btn.textContent = '启动中...';
 
   try {
+    const granularity = document.querySelector('input[name="mig-granularity"]:checked')?.value || 'standard';
     const data = await api('POST', '/migration/extract', {
       session_id: _migSession,
       model_name: modelName,
+      granularity: granularity,
     });
     if (!data.ok) throw new Error(data.error || '启动失败');
     _migJobId = data.job_id;
@@ -2958,7 +2975,7 @@ function migShowStep3() {
 
 async function migPollJob() {
   try {
-    const data = await api('GET', '/migration/extract/status?job_id=' + _migJobId);
+    const data = await api('GET', '/migration/job/status?job_id=' + _migJobId);
     const elapsed = Math.round((Date.now() - _migPollStart) / 1000);
     const pollEl = document.getElementById('mig-poll-status');
     if (pollEl) pollEl.textContent = `已等待 ${elapsed} 秒...`;
@@ -3011,34 +3028,36 @@ function migShowStep4() {
     </tr>
   `).join('');
 
+  // Helper to make a section card with its own save button
+  function sectionCard(id, title, desc, content, height) {
+    return `
+    <div class="card" style="margin-bottom:16px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <div class="card-title" style="margin-bottom:0">${title}</div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span id="mig-${id}-status" style="font-size:12px"></span>
+          <button class="btn btn-primary btn-sm" onclick="migApplySection('${id}')">确认写入</button>
+        </div>
+      </div>
+      <p style="font-size:12px;color:var(--text-soft);margin-bottom:8px">${desc}</p>
+      <textarea id="mig-${id}" class="form-input" style="min-height:${height};font-size:13px;font-family:inherit;resize:vertical">${esc(content)}</textarea>
+    </div>`;
+  }
+
   el.innerHTML = `
-    <div class="card" style="margin-bottom:16px">
-      <div class="card-title">Soul（AI 人格）</div>
-      <p style="font-size:12px;color:var(--text-soft);margin-bottom:8px">提取到的 AI 性格特征和说话风格，将写入 soul.md（覆盖现有内容）</p>
-      <textarea id="mig-soul" class="form-input" style="min-height:100px;font-size:13px;font-family:inherit;resize:vertical">${esc(r.soul||'')}</textarea>
-    </div>
-
-    <div class="card" style="margin-bottom:16px">
-      <div class="card-title">User（用户画像）</div>
-      <p style="font-size:12px;color:var(--text-soft);margin-bottom:8px">提取到的用户个人信息，将写入 user.md（覆盖现有内容）</p>
-      <textarea id="mig-user" class="form-input" style="min-height:100px;font-size:13px;font-family:inherit;resize:vertical">${esc(r.user_profile||'')}</textarea>
-    </div>
-
-    <div class="card" style="margin-bottom:16px">
-      <div class="card-title">Core Memory（核心记忆）</div>
-      <p style="font-size:12px;color:var(--text-soft);margin-bottom:8px">核心事实摘要（覆盖现有 core memory）</p>
-      <textarea id="mig-core" class="form-input" style="min-height:80px;font-size:13px;font-family:inherit;resize:vertical">${esc(r.core_memory||'')}</textarea>
-    </div>
+    ${sectionCard('soul', 'Soul（AI 人格）', '提取到的 AI 性格特征和说话风格，将写入 soul.md（覆盖现有内容）', r.soul||'', '100px')}
+    ${sectionCard('user', 'User（用户画像）', '提取到的用户个人信息，将写入 user.md（覆盖现有内容）', r.user_profile||'', '100px')}
+    ${sectionCard('core', 'Core Memory（核心记忆）', '核心事实摘要（覆盖现有 core memory）', r.core_memory||'', '80px')}
 
     <div class="card" style="margin-bottom:16px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
         <div class="card-title" style="margin-bottom:0">Memory Items（记忆条目）</div>
-        <div style="display:flex;gap:8px">
+        <div style="display:flex;gap:8px;align-items:center">
           <button class="btn btn-ghost btn-sm" onclick="migToggleAll(true)">全选</button>
           <button class="btn btn-ghost btn-sm" onclick="migToggleAll(false)">全不选</button>
         </div>
       </div>
-      <p style="font-size:12px;color:var(--text-soft);margin-bottom:8px">勾选要导入的条目，可编辑内容、分类和重要性</p>
+      <p style="font-size:12px;color:var(--text-soft);margin-bottom:8px">勾选要导入的条目，可编辑内容、分类和重要性（最多导入 500 条）</p>
       ${items.length ? `
       <div style="overflow-x:auto">
         <table class="tbl" style="width:100%">
@@ -3051,11 +3070,20 @@ function migShowStep4() {
           <tbody>${itemRows}</tbody>
         </table>
       </div>` : '<p style="font-size:13px;color:var(--text-soft)">未提取到记忆条目</p>'}
+      <div style="margin-top:12px;display:flex;align-items:center;gap:12px">
+        <button class="btn btn-primary btn-sm" onclick="migApplyMemories()" id="mig-mem-btn">开始导入</button>
+        <span id="mig-mem-status" style="font-size:12px"></span>
+      </div>
+      <div id="mig-mem-progress" style="display:none;margin-top:8px">
+        <div style="background:var(--bg-subtle);border-radius:4px;height:8px;overflow:hidden">
+          <div id="mig-mem-bar" style="height:100%;background:var(--primary);width:0%;transition:width .3s"></div>
+        </div>
+        <div id="mig-mem-progress-text" style="font-size:11px;color:var(--text-soft);margin-top:4px"></div>
+      </div>
     </div>
 
     <div style="display:flex;gap:12px;align-items:center">
-      <button class="btn btn-primary" onclick="migApply()" id="mig-apply-btn">确认导入</button>
-      <button class="btn btn-ghost" onclick="loadMigration()">取消</button>
+      <button class="btn btn-ghost" onclick="loadMigration()">重新开始</button>
       <span style="font-size:12px;color:var(--text-soft)">未配置 embedding 时，导入的记忆条目不支持向量搜索</span>
     </div>
   `;
@@ -3065,11 +3093,34 @@ function migToggleAll(checked) {
   document.querySelectorAll('[data-mig-item]').forEach(cb => cb.checked = checked);
 }
 
-async function migApply() {
-  const btn = document.getElementById('mig-apply-btn');
-  btn.disabled = true; btn.textContent = '导入中...';
+async function migApplySection(id) {
+  const sectionMap = {soul: 'soul', user: 'user_profile', core: 'core_memory'};
+  const section = sectionMap[id];
+  if (!section) return;
 
-  // Collect memory items
+  const statusEl = document.getElementById(`mig-${id}-status`);
+  const content = document.getElementById(`mig-${id}`)?.value || '';
+  statusEl.innerHTML = '<span style="color:var(--text-soft)">保存中...</span>';
+
+  try {
+    const data = await api('POST', '/migration/apply/section', {section, content});
+    if (!data.ok) throw new Error(data.error || '保存失败');
+    statusEl.innerHTML = data.written
+      ? '<span style="color:var(--success)">✅ 已写入</span>'
+      : '<span style="color:var(--text-soft)">⏭ 跳过（内容为空）</span>';
+    loaded.prompts = false;
+    if (section === 'core_memory') loaded.memory = false;
+  } catch(e) {
+    statusEl.innerHTML = `<span style="color:var(--danger)">❌ ${esc(e.message)}</span>`;
+  }
+}
+
+async function migApplyMemories() {
+  const btn = document.getElementById('mig-mem-btn');
+  const statusEl = document.getElementById('mig-mem-status');
+  const progressWrap = document.getElementById('mig-mem-progress');
+
+  // Collect selected items
   const items = (_migResult?.memory_items || []).map((_, i) => {
     const cb = document.querySelector(`[data-mig-item="${i}"]`);
     const cat = document.querySelector(`[data-mig-cat="${i}"]`);
@@ -3083,41 +3134,53 @@ async function migApply() {
     };
   });
 
-  const payload = {
-    soul: document.getElementById('mig-soul')?.value || '',
-    user_profile: document.getElementById('mig-user')?.value || '',
-    core_memory: document.getElementById('mig-core')?.value || '',
-    memory_items: items,
-  };
+  const selectedCount = items.filter(it => it.selected && it.content.trim()).length;
+  if (!selectedCount) { showToast('没有勾选任何条目'); return; }
+
+  btn.disabled = true; btn.textContent = '导入中...';
+  statusEl.innerHTML = '';
+  progressWrap.style.display = 'block';
 
   try {
-    const data = await api('POST', '/migration/apply', payload);
-    if (!data.ok) throw new Error(data.error || '导入失败');
-    migShowStep5(data);
+    const data = await api('POST', '/migration/apply/memories', {memory_items: items});
+    if (!data.ok) throw new Error(data.error || '启动失败');
+    _migMemJobId = data.job_id;
+    _migMemPollTimer = setInterval(migPollMemJob, 2000);
   } catch(e) {
-    btn.disabled = false; btn.textContent = '确认导入';
+    btn.disabled = false; btn.textContent = '开始导入';
+    progressWrap.style.display = 'none';
     showToast('❌ ' + e.message);
   }
 }
 
-function migShowStep5(data) {
-  const el = document.getElementById('migration-content');
-  el.innerHTML = `
-    <div class="card" style="text-align:center;padding:40px 24px">
-      <div style="font-size:48px;margin-bottom:12px">✅</div>
-      <h3 style="color:var(--text-heading);margin-bottom:16px">搬家完成！</h3>
-      <div style="text-align:left;max-width:320px;margin:0 auto;font-size:14px;line-height:2">
-        ${data.soul_written ? '✅ Soul（AI 人格）已写入' : '⏭ Soul — 跳过（内容为空）'}<br>
-        ${data.user_written ? '✅ User（用户画像）已写入' : '⏭ User — 跳过（内容为空）'}<br>
-        ${data.core_memory_written ? '✅ Core Memory 已更新' : '⏭ Core Memory — 跳过（内容为空）'}<br>
-        ✅ 记忆条目已导入 <strong>${data.memory_items_imported}</strong> 条
-      </div>
-      <button class="btn btn-primary" style="margin-top:24px" onclick="loadMigration()">开始新的搬家</button>
-    </div>
-  `;
-  // Invalidate memory page cache so next visit refreshes
-  loaded.memory = false;
-  loaded.prompts = false;
+let _migMemJobId = null;
+let _migMemPollTimer = null;
+
+async function migPollMemJob() {
+  try {
+    const data = await api('GET', '/migration/job/status?job_id=' + _migMemJobId);
+    const bar = document.getElementById('mig-mem-bar');
+    const txt = document.getElementById('mig-mem-progress-text');
+    const pct = data.total > 0 ? Math.round((data.progress / data.total) * 100) : 0;
+    if (bar) bar.style.width = pct + '%';
+    if (txt) txt.textContent = `${data.progress || 0} / ${data.total || 0} 条`;
+
+    if (data.status === 'done') {
+      clearInterval(_migMemPollTimer); _migMemPollTimer = null;
+      const btn = document.getElementById('mig-mem-btn');
+      const statusEl = document.getElementById('mig-mem-status');
+      if (bar) bar.style.width = '100%';
+      if (btn) { btn.disabled = true; btn.textContent = '导入完成'; }
+      if (statusEl) statusEl.innerHTML = `<span style="color:var(--success)">✅ 已导入 ${data.result?.memory_items_imported || 0} 条</span>`;
+      loaded.memory = false;
+    } else if (data.status === 'error') {
+      clearInterval(_migMemPollTimer); _migMemPollTimer = null;
+      const btn = document.getElementById('mig-mem-btn');
+      const statusEl = document.getElementById('mig-mem-status');
+      if (btn) { btn.disabled = false; btn.textContent = '重试'; }
+      if (statusEl) statusEl.innerHTML = `<span style="color:var(--danger)">❌ ${esc(data.error || '导入失败')}</span>`;
+    }
+  } catch(e) { /* network blip — keep polling */ }
 }
 </script>
 </body>
