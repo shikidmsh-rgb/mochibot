@@ -1359,7 +1359,7 @@ async function loadWelcome() {
     let ownerLine = '';
     if (tgConfigured) {
       if (ownerBound) {
-        ownerLine = '<div style="font-size:12px;color:var(--success);margin-top:2px">Owner 已绑定: <code style="font-size:11px;background:var(--primary-bg);padding:1px 5px;border-radius:4px">' + esc(ownerUid) + '</code></div>';
+        ownerLine = '<div style="font-size:12px;color:var(--success);margin-top:2px">✓ Owner 已绑定</div>';
       } else {
         ownerLine = '<div style="font-size:12px;color:var(--warning);margin-top:2px">⚠ Owner 未绑定 — 在 Telegram 中向 bot 发送一条消息即可自动绑定</div>';
       }
