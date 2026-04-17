@@ -9,7 +9,8 @@
 **零门槛配置**——运行脚本后自动打开管理后台（Web UI），在浏览器里填 API key 和 bot token，点一下就能启动。
 
 </div>
-<img width="1296" height="1244" alt="image" src="https://github.com/user-attachments/assets/1cad382d-2edd-4876-ab81-4747254e132b" />
+<img width="1319" height="1261" alt="image" src="https://github.com/user-attachments/assets/4b5b2abe-e07a-465c-9e39-0ad83c5adb69" />
+
 
 
 ---
