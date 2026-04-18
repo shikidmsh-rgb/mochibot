@@ -10,7 +10,7 @@ class TestGetPrompt:
     def test_loads_existing_prompt(self):
         content = get_prompt("think_system")
         assert content
-        assert "Actions" in content or "nothing" in content
+        assert "Actions" in content or "nothing" in content or "thought" in content
 
     def test_loads_subdirectory_prompt(self):
         content = get_prompt("system_chat/soul")

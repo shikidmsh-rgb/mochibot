@@ -1,3 +1,7 @@
+<!-- DEPRECATED: Think V2 generates messages directly. This template is only
+     used by the V1 fallback path and the goodnight (silence-sleep) path.
+     Will be removed once goodnight is migrated to Think V2. -->
+
 以下是你的内部观测（heartbeat）发现的事实。
 
 {findings_text}

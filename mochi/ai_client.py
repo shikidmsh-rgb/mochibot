@@ -834,6 +834,10 @@ async def chat(message: IncomingMessage) -> ChatResult:
 async def chat_proactive(findings: list[dict], user_id: int) -> str | None:
     """Generate a proactive message using the Chat persona.
 
+    DEPRECATED: Think V2 generates messages directly. This function is only
+    used by the V1 fallback path and the goodnight (silence-sleep) path.
+    Will be removed once goodnight is migrated to Think V2.
+
     Takes structured findings from Think (heartbeat) and passes them through
     the full Chat model with personality, core memory, and conversation history.
     The LLM decides how to express the findings — or skip them entirely.
