@@ -498,7 +498,7 @@ class GeminiProvider(LLMProvider):
 
         system_msg = ""
         contents = []
-
+        call_id_to_name = {}  # tool_call_id → function name mapping
         i = 0
         while i < len(messages):
             m = messages[i]
@@ -526,8 +526,13 @@ class GeminiProvider(LLMProvider):
                                 args = json.loads(args)
                             except json.JSONDecodeError:
                                 args = {}
+                        fn_name = func.get("name", "")
+                        # Map tool_call_id → name for later tool result lookup
+                        tc_id = tc.get("id", "")
+                        if tc_id and fn_name:
+                            call_id_to_name[tc_id] = fn_name
                         parts.append(types.Part.from_function_call(
-                            name=func.get("name", ""),
+                            name=fn_name,
                             args=args,
                         ))
                 if parts:
@@ -546,7 +551,7 @@ class GeminiProvider(LLMProvider):
                     except (json.JSONDecodeError, TypeError):
                         result_data = {"result": tool_content}
                     parts.append(types.Part.from_function_response(
-                        name=tm.get("name", ""),
+                        name=tm.get("name") or call_id_to_name.get(tm.get("tool_call_id", ""), "unknown"),
                         response=result_data,
                     ))
                     i += 1

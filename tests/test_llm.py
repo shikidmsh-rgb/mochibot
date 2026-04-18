@@ -314,3 +314,27 @@ class TestGeminiConvertTools:
         assert len(result) == 2
         assert result[0]["name"] == "a"
         assert result[1]["name"] == "b"
+
+    def test_tool_result_without_name_uses_id_lookup(self):
+        """Tool result messages without 'name' field should resolve via tool_call_id."""
+        msgs = [
+            {"role": "user", "content": "Do it"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_abc",
+                        "type": "function",
+                        "function": {"name": "my_tool", "arguments": "{}"},
+                    }
+                ],
+            },
+            # No "name" field — only tool_call_id (common in MochiBot pipeline)
+            {"role": "tool", "tool_call_id": "call_abc", "content": '{"ok": true}'},
+        ]
+        _, contents = GeminiProvider._convert_messages(msgs)
+        # Tool result part should have resolved name from assistant's tool_calls
+        tool_part = contents[2].parts[0]
+        assert hasattr(tool_part, "function_response")
+        assert tool_part.function_response.name == "my_tool"
