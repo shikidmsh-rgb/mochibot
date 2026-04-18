@@ -1,8 +1,8 @@
 """Reminder timer — precise delivery of time-based reminders.
 
 Lightweight asyncio loop that fires reminders at their exact remind_at time.
-Handles recurrence (daily/weekdays/weekly/monthly). No LLM calls — just
-database queries and message delivery.
+Handles recurrence (daily/weekdays/weekly/monthly). Uses LLM to rephrase
+reminders in Mochi's voice before delivery (falls back to raw text on failure).
 """
 
 import asyncio
@@ -15,7 +15,9 @@ from mochi.skills.reminder.queries import (
     mark_reminder_fired,
     reschedule_reminder,
 )
-from mochi.db import save_message
+from mochi.db import save_message, get_core_memory, log_usage
+from mochi.llm import get_client_for_tier
+from mochi.prompt_loader import get_prompt
 
 log = logging.getLogger(__name__)
 
@@ -71,6 +73,53 @@ def _compute_next_occurrence(remind_at: datetime, recurrence: str) -> datetime |
     return None
 
 
+async def _rephrase_reminder(message: str, user_id: int) -> str:
+    """Ask LLM to rephrase reminder in Mochi's voice. Falls back to raw text."""
+    fallback = f"⏰ {message}"
+    try:
+        soul = get_prompt("system_chat/soul") or ""
+        template = get_prompt("reminder_deliver")
+        if not template:
+            return fallback
+
+        system_prompt = template.replace("{soul_personality}", soul)
+        core_memory = get_core_memory(user_id)
+        if core_memory:
+            system_prompt += f"\n\n## 你对用户的了解\n{core_memory}"
+
+        user_msg = message
+
+        client = get_client_for_tier("chat")
+        response = await asyncio.wait_for(
+            asyncio.to_thread(
+                client.chat,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_msg},
+                ],
+                temperature=0.7,
+                max_tokens=256,
+            ),
+            timeout=30,
+        )
+
+        log_usage(
+            response.prompt_tokens, response.completion_tokens,
+            response.total_tokens, model=response.model,
+            purpose="reminder_deliver",
+        )
+
+        text = (response.content or "").strip()
+        return text if text else fallback
+
+    except asyncio.TimeoutError:
+        log.warning("LLM rephrase timed out for reminder, using fallback")
+        return fallback
+    except Exception as e:
+        log.warning("LLM rephrase failed for reminder: %s", e)
+        return fallback
+
+
 async def reminder_loop() -> None:
     """Main reminder loop. Polls for next reminder, sleeps until fire time."""
     log.info("Reminder timer started")
@@ -111,8 +160,9 @@ async def reminder_loop() -> None:
             log.info("Firing reminder #%d: %s", reminder["id"], message[:50])
 
             if _send_callback:
-                await _send_callback(user_id, f"⏰ {message}")
-                save_message(user_id, "assistant", f"⏰ {message}")
+                rephrased = await _rephrase_reminder(message, user_id)
+                await _send_callback(user_id, rephrased)
+                save_message(user_id, "assistant", rephrased)
 
             # Handle recurrence
             recurrence = reminder.get("recurrence")
