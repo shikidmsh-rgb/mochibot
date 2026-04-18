@@ -791,6 +791,7 @@ if HAS_FASTAPI:
             return {"ok": True, "model": resp.model, "latency_ms": elapsed}
         except Exception as e:
             err_str = str(e)
+            log.warning("Model test failed for '%s': %s", name, err_str[:300])
             # o-series models reject max_tokens — treat as connected
             if "max_tokens" in err_str.lower() or "max_completion_tokens" in err_str.lower():
                 return {"ok": True, "model": entry["model"], "note": "Connected (reasoning model)"}
