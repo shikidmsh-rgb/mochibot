@@ -419,7 +419,7 @@ def _build_system_prompt(user_id: int, usage_rules: str = "",
     # Current local time (respects TIMEZONE_OFFSET_HOURS)
     tz = timezone(timedelta(hours=TIMEZONE_OFFSET_HOURS))
     now = datetime.now(tz)
-    now_str = now.strftime("%Y-%m-%d %H:%M:%S")
+    now_str = now.strftime("%Y-%m-%d %H:%M:%S %z")
 
     parts = []
 
