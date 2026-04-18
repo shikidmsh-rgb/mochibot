@@ -256,12 +256,12 @@ async def _run_bedtime_tidy(user_id: int, reason: str = "unknown") -> None:
 
         findings = []
 
-        # Include diary status as findings context
-        diary_status = diary.read(section="今日状態")
-        if diary_status:
+        # Include full diary (今日状態 + 今日日記) as findings context
+        diary_full = diary.read()
+        if diary_full:
             findings.append({
-                "topic": "today_status",
-                "summary": diary_status[:300],
+                "topic": "today_diary",
+                "summary": diary_full[:800],
             })
 
         findings.append({
