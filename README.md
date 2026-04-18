@@ -4,7 +4,7 @@
 
 **一个有记忆、会主动找你、能催你吃药的 AI 陪伴 bot。**
 
-轻量自托管 · SQLite · 支持 OpenAI / Azure / Anthropic
+轻量自托管 · SQLite · 支持 OpenAI / Azure / Anthropic / Gemini
 
 **零门槛配置**——运行脚本后自动打开管理后台（Web UI），在浏览器里填 API key 和 bot token，点一下就能启动。
 
@@ -140,6 +140,7 @@ cd mochibot
 > | Ollama（本地） | `openai` | `http://localhost:11434/v1` | `llama3` |
 > | Azure OpenAI | `azure_openai` | *（你的 Azure 端点）* | `gpt-4o` |
 > | Anthropic Claude | `anthropic` | *（不需要）* | `claude-sonnet-4-20250514` |
+> | Google Gemini | `gemini` | *（不需要）* | `gemini-2.5-flash` |
 
 ---
 
@@ -305,7 +306,7 @@ MochiBot 有两个配置入口：**`.env` 文件**和**管理后台（Admin Port
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `CHAT_PROVIDER` | `openai` | SDK：`openai`（+ 兼容）、`azure_openai`、`anthropic` |
+| `CHAT_PROVIDER` | `openai` | SDK：`openai`（+ 兼容）、`azure_openai`、`anthropic`、`gemini` |
 | `CHAT_API_KEY` | — | 你的 API key |
 | `CHAT_MODEL` | — | 对话模型（必填） |
 | `CHAT_BASE_URL` | — | OpenAI 兼容 API 的自定义端点 |
@@ -330,7 +331,7 @@ TIER_{LITE,CHAT,DEEP}_{PROVIDER,API_KEY,MODEL,BASE_URL}
 
 **Pre-Router** — `TOOL_ROUTER_ENABLED=true` 启用基于 LLM 的 skill 自动选择。`TOOL_ESCALATION_ENABLED=true`（默认）允许对话中途请求缺少的 skill。
 
-**向量嵌入** — `EMBEDDING_PROVIDER`（openai / azure_openai / ollama / none）、`EMBEDDING_API_KEY`、`EMBEDDING_MODEL`。配置后记忆检索从纯关键词升级为语义搜索，并通过 `sqlite-vec`（已包含在依赖中）实现原生向量 KNN 加速。
+**向量嵌入** — `EMBEDDING_PROVIDER`（openai / azure_openai / ollama / gemini / none）、`EMBEDDING_API_KEY`、`EMBEDDING_MODEL`。配置后记忆检索从纯关键词升级为语义搜索，并通过 `sqlite-vec`（已包含在依赖中）实现原生向量 KNN 加速。
 
 **Oura Ring** — `OURA_CLIENT_ID`、`OURA_CLIENT_SECRET`（运行 `python scripts/oura_auth.py` 设置）
 
@@ -363,7 +364,7 @@ THINK_MODEL=gpt-4o-mini      # 心跳 + 维护
 
 ## 路线图
 
-- [x] 多 API 提供商（OpenAI 兼容 / Azure OpenAI / Anthropic）
+- [x] 多 API 提供商（OpenAI 兼容 / Azure OpenAI / Anthropic / Google Gemini）
 - [x] 双模型架构（Chat + Think）
 - [x] 3 级模型路由 + Pre-Router
 - [x] 持久记忆（三层 + 8 工具 + 夜间维护）
