@@ -543,6 +543,92 @@ async function exportDiagnostics() {
   }
 }
 
+async function checkSystemUpdate(btn) {
+  const orig = btn.textContent;
+  btn.textContent = '检查中...';
+  btn.disabled = true;
+  const container = document.getElementById('update-status');
+  container.innerHTML = '';
+  try {
+    const r = await api('POST', '/system/update-check');
+    if (!r.ok) {
+      container.innerHTML = `<div style="font-size:12px;color:var(--danger)">${esc(r.error)}</div>`;
+      return;
+    }
+    if (!r.available) {
+      container.innerHTML = `<div style="font-size:12px;color:var(--success);display:flex;align-items:center;gap:6px">${statusIcon('ok')} 已是最新版本 (${esc(r.current_hash)})</div>`;
+      showToast('已是最新版本');
+      return;
+    }
+    let h = `<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:12px;margin-top:8px">`;
+    h += `<div style="font-size:13px;margin-bottom:8px;display:flex;align-items:center;gap:8px">`;
+    h += `${statusIcon('warn')} 有新版本可用`;
+    h += `<span class="badge badge-info">v${esc(r.current_version)}</span>`;
+    h += `<span style="color:var(--text-soft)">→</span>`;
+    h += `<span class="badge badge-ok">v${esc(r.remote_version)}</span>`;
+    h += `<span style="font-size:11px;color:var(--text-soft)">(${r.commits_behind} 个提交)</span>`;
+    h += `</div>`;
+    if (r.changelog_diff) {
+      h += `<details style="margin-bottom:10px"><summary style="cursor:pointer;font-size:12px;color:var(--text-soft)">查看更新日志</summary>`;
+      h += `<div class="bot-log" style="max-height:180px;overflow:auto;margin-top:6px;font-size:11px;white-space:pre-wrap">${esc(r.changelog_diff)}</div>`;
+      h += `</details>`;
+    }
+    h += `<button class="btn btn-primary btn-sm" onclick="applySystemUpdate(this)">更新并重启</button>`;
+    h += `</div>`;
+    container.innerHTML = h;
+  } catch(e) {
+    container.innerHTML = `<div style="font-size:12px;color:var(--danger)">检查失败：${esc(e.message)}</div>`;
+  } finally {
+    btn.textContent = orig;
+    btn.disabled = false;
+  }
+}
+
+async function applySystemUpdate(btn) {
+  btn.textContent = '更新中...';
+  btn.disabled = true;
+  const container = document.getElementById('update-status');
+  try {
+    const r = await api('POST', '/system/update-apply');
+    if (!r.ok) {
+      let msg = `<div style="font-size:12px;color:var(--danger);margin-top:8px">${esc(r.error)}</div>`;
+      if (r.dirty_files) {
+        msg += `<div class="bot-log" style="max-height:120px;overflow:auto;margin-top:6px;font-size:11px;white-space:pre-wrap">${esc(r.dirty_files)}</div>`;
+      }
+      if (r.hint) {
+        msg += `<div style="font-size:11px;color:var(--text-soft);margin-top:6px">${esc(r.hint)}</div>`;
+      }
+      container.innerHTML = msg;
+      showToast('更新失败');
+      return;
+    }
+    let h = `<div style="font-size:13px;color:var(--success);display:flex;align-items:center;gap:6px;margin-top:8px">${statusIcon('ok')} ${esc(r.message)}</div>`;
+    h += `<div style="font-size:11px;color:var(--text-soft);margin-top:4px">新版本：v${esc(r.new_version)}</div>`;
+    h += `<div style="margin-top:10px;display:flex;gap:8px">`;
+    h += `<button class="btn btn-primary btn-sm" onclick="restartAfterUpdate()">重启 Bot + Admin</button>`;
+    h += `</div>`;
+    container.innerHTML = h;
+    showToast('✅ 更新完成，请重启生效');
+  } catch(e) {
+    container.innerHTML = `<div style="font-size:12px;color:var(--danger);margin-top:8px">更新失败：${esc(e.message)}</div>`;
+    showToast('更新失败');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function restartAfterUpdate() {
+  try {
+    await api('POST', '/admin/restart');
+    showToast('正在重启...');
+    document.getElementById('update-status').innerHTML = '<div style="font-size:12px;color:var(--text-soft);margin-top:8px">正在重启，页面将在几秒后自动刷新...</div>';
+    setTimeout(() => location.reload(), 5000);
+  } catch(e) {
+    showToast('重启请求已发送，请手动刷新页面');
+    setTimeout(() => location.reload(), 3000);
+  }
+}
+
 function toggleWeixinConfig() {
   showTransportConfig('weixin');
 }
@@ -1503,6 +1589,24 @@ async function loadWelcome() {
     }
     html += `<div style="font-size:11px;color:var(--text-soft);margin-top:6px">路径: ${esc(s.db_path)}</div>`;
     html += '</div>';
+
+    // ── System Update ──
+    if (s.git_available) {
+      html += '<div class="card"><div class="card-title">系统更新</div>';
+      html += `<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">`;
+      html += `<span class="badge badge-info">v${esc(s.version || 'unknown')}</span>`;
+      html += `<button class="btn btn-ghost btn-sm" onclick="checkSystemUpdate(this)">检查更新</button>`;
+      html += `</div>`;
+      html += `<div id="update-status"></div>`;
+      html += '</div>';
+    } else {
+      html += '<div class="card"><div class="card-title">系统更新</div>';
+      html += `<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">`;
+      html += `<span class="badge badge-info">v${esc(s.version || 'unknown')}</span>`;
+      html += `</div>`;
+      html += `<div style="font-size:12px;color:var(--text-soft)">当前安装不是 Git 仓库，请通过命令行或 Docker 手动更新。</div>`;
+      html += '</div>';
+    }
 
     // ── Diagnostics ──
     const errCount = s.recent_error_count || 0;

@@ -61,6 +61,15 @@ _RESTART_EXIT_CODE = 42
 _GRACEFUL_TIMEOUT = 10   # seconds to wait for bot to exit after signal
 
 
+def _get_app_version() -> str:
+    """Return the application version from mochi.__init__."""
+    try:
+        from mochi import __version__
+        return __version__
+    except Exception:
+        return "unknown"
+
+
 def _graceful_terminate_proc(proc: subprocess.Popen, timeout: int = _GRACEFUL_TIMEOUT):
     """Send a graceful shutdown signal, fall back to hard kill.
 
@@ -693,6 +702,8 @@ if HAS_FASTAPI:
             "db_size_bytes": db_size,
             "db_writable": db_writable,
             "recent_error_count": recent_error_count,
+            "version": _get_app_version(),
+            "git_available": (_PROJECT_ROOT / ".git").is_dir(),
         }
 
     # ═══════════════════════════════════════════════════════════════════════
@@ -760,6 +771,139 @@ if HAS_FASTAPI:
         loop = asyncio.get_event_loop()
         loop.call_later(0.5, lambda: os._exit(ADMIN_RESTART_EXIT_CODE))
         return {"ok": True, "message": "Admin server restarting..."}
+
+    # ── System update ────────────────────────────────────────────────────
+
+    _update_timestamps: list[float] = []
+    _UPDATE_RATE_LIMIT = 3
+    _UPDATE_RATE_WINDOW = 60.0
+
+    def _check_update_rate():
+        now = time.monotonic()
+        _update_timestamps[:] = [t for t in _update_timestamps if now - t < _UPDATE_RATE_WINDOW]
+        if len(_update_timestamps) >= _UPDATE_RATE_LIMIT:
+            raise HTTPException(status_code=429, detail="请等待 60 秒后再试")
+        _update_timestamps.append(now)
+
+    def _run_git(*args: str, timeout: int = 30) -> tuple[int, str]:
+        """Run a git command with fixed args (no shell). Returns (returncode, output)."""
+        result = subprocess.run(
+            ["git"] + list(args),
+            capture_output=True, text=True, timeout=timeout,
+            cwd=str(_PROJECT_ROOT), encoding="utf-8", errors="replace",
+        )
+        return result.returncode, ((result.stdout or "") + (result.stderr or "")).strip()
+
+    @app.post("/api/system/update-check", dependencies=[Depends(_verify_token)])
+    async def api_system_update_check():
+        _check_update_rate()
+        if not (_PROJECT_ROOT / ".git").is_dir():
+            return {"ok": False, "error": "当前安装不是 Git 仓库，无法通过此方式更新。请使用命令行手动更新。"}
+
+        # Fetch latest from remote
+        rc, out = _run_git("fetch", "origin", "main", timeout=30)
+        if rc != 0:
+            return {"ok": False, "error": f"无法连接远程仓库：{out}"}
+
+        # Count commits behind
+        rc, count_str = _run_git("rev-list", "--count", "HEAD..origin/main")
+        if rc != 0:
+            return {"ok": False, "error": f"无法对比版本：{count_str}"}
+        commits_behind = int(count_str) if count_str.isdigit() else 0
+
+        # Current version + commit
+        current_version = _get_app_version()
+        rc, current_hash = _run_git("rev-parse", "--short", "HEAD")
+        current_hash = current_hash if rc == 0 else ""
+
+        # Remote version: read __init__.py from origin/main
+        remote_version = current_version
+        if commits_behind > 0:
+            rc, remote_init = _run_git("show", "origin/main:mochi/__init__.py")
+            if rc == 0:
+                import re
+                m = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', remote_init)
+                if m:
+                    remote_version = m.group(1)
+
+        # Changelog diff
+        changelog_diff = ""
+        if commits_behind > 0:
+            rc, diff_out = _run_git("diff", "HEAD..origin/main", "--", "CHANGELOG.md")
+            if rc == 0 and diff_out:
+                # Extract only added lines (new changelog entries)
+                added = [ln[1:] for ln in diff_out.split("\n") if ln.startswith("+") and not ln.startswith("+++")]
+                changelog_diff = "\n".join(added).strip()
+
+        return {
+            "ok": True,
+            "available": commits_behind > 0,
+            "current_version": current_version,
+            "current_hash": current_hash,
+            "remote_version": remote_version,
+            "commits_behind": commits_behind,
+            "changelog_diff": changelog_diff,
+        }
+
+    @app.post("/api/system/update-apply", dependencies=[Depends(_verify_token)])
+    async def api_system_update_apply():
+        _check_update_rate()
+        if not (_PROJECT_ROOT / ".git").is_dir():
+            return {"ok": False, "error": "当前安装不是 Git 仓库。"}
+
+        # Check for dirty working tree
+        rc, status_out = _run_git("status", "--porcelain")
+        if rc != 0:
+            return {"ok": False, "error": f"无法检查工作区状态：{status_out}"}
+        if status_out:
+            return {
+                "ok": False,
+                "error": "检测到本地代码改动，请先处理后再更新。",
+                "dirty_files": status_out,
+                "hint": "在终端执行 git stash（暂存改动）或 git checkout .（放弃改动），然后再试。",
+            }
+
+        # Record pre-update hash for rollback reference
+        rc, pre_hash = _run_git("rev-parse", "--short", "HEAD")
+        pre_hash = pre_hash if rc == 0 else "unknown"
+
+        # Pull
+        rc, pull_out = _run_git("pull", "origin", "main", timeout=60)
+        if rc != 0:
+            return {"ok": False, "error": f"拉取代码失败：{pull_out}", "pre_hash": pre_hash}
+
+        # Install dependencies
+        pip_result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-r", "requirements.txt", "-q"],
+            capture_output=True, text=True, timeout=300,
+            cwd=str(_PROJECT_ROOT), encoding="utf-8", errors="replace",
+        )
+        if pip_result.returncode != 0:
+            pip_err = (pip_result.stdout + pip_result.stderr).strip()
+            return {
+                "ok": False,
+                "error": f"依赖安装失败：{pip_err[:500]}",
+                "pre_hash": pre_hash,
+                "hint": f"代码已更新但依赖未完成。如需回滚，在终端执行：git reset --hard {pre_hash}",
+                "code_updated": True,
+            }
+
+        # Get new version
+        rc, new_init = _run_git("show", "HEAD:mochi/__init__.py")
+        new_version = _get_app_version()
+        if rc == 0:
+            import re
+            m = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', new_init)
+            if m:
+                new_version = m.group(1)
+
+        return {
+            "ok": True,
+            "message": "更新完成！点击下方按钮重启生效。",
+            "pre_hash": pre_hash,
+            "new_version": new_version,
+            "pull_output": pull_out[:500],
+        }
 
     # ═══════════════════════════════════════════════════════════════════════
     # Page 1: Models
