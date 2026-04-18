@@ -27,7 +27,7 @@ core: true
 | action | string (enum: add, list, remove, rewrite) | yes | add / list / remove / rewrite |
 | content | string | | Note text. Required for add. |
 | note_id | integer | | Required for remove. Line number from list output. |
-| notes | list[string] | | Required for rewrite. Complete replacement list — old notes are discarded. |
+| notes | array | | Required for rewrite. Complete replacement list — old notes are discarded. |
 
 ## Usage Rules
 
