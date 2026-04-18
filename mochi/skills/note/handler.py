@@ -145,8 +145,10 @@ class NoteSkill(Skill):
             return SkillResult(output=self._list())
         elif action == "remove":
             return SkillResult(output=self._remove(args))
+        elif action == "rewrite":
+            return SkillResult(output=self._rewrite(args))
         return SkillResult(
-            output=f"Unknown action: {action}. Use add/list/remove.",
+            output=f"Unknown action: {action}. Use add/list/remove/rewrite.",
             success=False,
         )
 
@@ -191,3 +193,23 @@ class NoteSkill(Skill):
         _write_notes(notes)
         log.info("note remove #%d: '%s'", int(note_id), removed[:80])
         return f"OK: removed note #{note_id} — \"{removed[:60]}\"."
+
+    def _rewrite(self, args: dict) -> str:
+        notes_input = args.get("notes")
+        if not isinstance(notes_input, list):
+            return "Error: notes (list of strings) is required for rewrite."
+
+        old_notes = _read_notes()
+        today = datetime.now(TZ).strftime("%Y-%m-%d")
+        new_notes = []
+        for n in notes_input:
+            n = str(n).strip()
+            if not n:
+                continue
+            if not re.search(r"\(\d{4}-\d{2}-\d{2}\)", n):
+                n = f"{n} ({today})"
+            new_notes.append(n)
+
+        _write_notes(new_notes)
+        log.info("note rewrite: %d → %d notes", len(old_notes), len(new_notes))
+        return f"OK: notes rewritten ({len(old_notes)} → {len(new_notes)})."

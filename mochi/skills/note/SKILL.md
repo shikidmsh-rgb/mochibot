@@ -24,9 +24,10 @@ core: true
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| action | string (enum: add, list, remove) | yes | add / list / remove |
+| action | string (enum: add, list, remove, rewrite) | yes | add / list / remove / rewrite |
 | content | string | | Note text. Required for add. |
 | note_id | integer | | Required for remove. Line number from list output. |
+| notes | list[string] | | Required for rewrite. Complete replacement list — old notes are discarded. |
 
 ## Usage Rules
 
