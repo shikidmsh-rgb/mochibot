@@ -1756,7 +1756,10 @@ function onVendorChange() {
     urlEl.value = preset.baseUrl;
     _lastAutoBaseUrl = preset.baseUrl;
   }
-  if (preset.placeholder) modelEl.placeholder = '例如 ' + preset.placeholder;
+  if (preset.placeholder) {
+    modelEl.placeholder = '例如 ' + preset.placeholder;
+    if (!modelEl.value) modelEl.value = preset.placeholder;
+  }
   else modelEl.placeholder = '';
 }
 
@@ -2093,7 +2096,10 @@ function onEmbVendorChange() {
     urlEl.value = preset.baseUrl;
     _lastAutoEmbBaseUrl = preset.baseUrl;
   }
-  if (modelEl && preset.placeholder) modelEl.placeholder = '例如 ' + preset.placeholder;
+  if (modelEl && preset.placeholder) {
+    modelEl.placeholder = '例如 ' + preset.placeholder;
+    if (!modelEl.value) modelEl.value = preset.placeholder;
+  }
   else if (modelEl) modelEl.placeholder = '';
   updateEmbeddingFields();
 }

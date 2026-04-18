@@ -87,8 +87,15 @@ class _GeminiEmbedAdapter:
     def __init__(self, api_key: str, model: str):
         from google import genai
         self._client = genai.Client(api_key=api_key)
+        model = self._normalize(model)
         self._model = model if model.startswith("models/") else f"models/{model}"
         self.embeddings = self  # so client.embeddings.create() works
+
+    @staticmethod
+    def _normalize(model: str) -> str:
+        import re
+        m = model.strip().lower()
+        return re.sub(r"[\s_]+", "-", m)
 
     def create(self, model: str = "", input: str | list[str] = "") -> _GeminiEmbedResponse:
         """Mimic openai.embeddings.create(model=..., input=...)."""

@@ -400,8 +400,23 @@ class GeminiProvider(LLMProvider):
 
     def __init__(self, api_key: str, model: str):
         from google import genai
+        model = self._normalize_model(model)
         self._model = model if model.startswith("models/") else f"models/{model}"
         self._client = genai.Client(api_key=api_key)
+
+    @staticmethod
+    def _normalize_model(model: str) -> str:
+        """Normalize user-entered model name to Gemini API format.
+
+        'Gemini 2.5 Flash' → 'gemini-2.5-flash'
+        'gemini-2.5-flash' → 'gemini-2.5-flash' (no-op)
+        'models/gemini-2.5-flash' → 'models/gemini-2.5-flash' (no-op)
+        """
+        m = model.strip().lower()
+        # Collapse whitespace / underscores to hyphens
+        import re
+        m = re.sub(r"[\s_]+", "-", m)
+        return m
 
     def provider_name(self) -> str:
         return "gemini"
@@ -572,6 +587,7 @@ def _resolve_config(purpose: str) -> tuple[str, str, str, str]:
 
 def _make_client(provider: str, api_key: str, model: str, base_url: str) -> LLMProvider:
     """Instantiate a fresh LLM provider."""
+    model = model.strip()
     if not model:
         raise ValueError(
             f"CHAT_MODEL (or THINK_MODEL) is required but not set. "
