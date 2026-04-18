@@ -1679,6 +1679,9 @@ async function loadModels() {
     const embVendorLabel = embConfigured ? resolveVendorLabel(embProvider, embCfg.base_url, EMB_VENDOR_PRESETS) : '';
 
     html += `<div class="card"><div class="card-title">Embedding 配置 ${embBadge}</div>`;
+    if (!embConfigured && !embCfg.disabled) {
+      html += '<div style="font-size:12px;color:var(--text-soft);margin-bottom:12px">💡 建议配置 Embedding 服务。未配置时，记忆检索将退化为关键词匹配，无法进行语义搜索，记忆能力会大幅下降。</div>';
+    }
 
     // Summary row (shown when configured)
     html += `<div id="emb-summary" style="display:${embConfigured ? 'block' : 'none'}">`;
