@@ -2,6 +2,7 @@
 
 from datetime import datetime, date as date_type
 
+from mochi.config import TZ
 from mochi.skills.base import Skill, SkillContext, SkillResult
 from mochi.skills.reminder.queries import create_reminder, get_pending_reminders, mark_reminder_fired
 
@@ -61,7 +62,6 @@ class ReminderSkill(Skill):
 
     def diary_status(self, user_id: int, today: str, now: datetime) -> list[str] | None:
         from mochi.db import _connect
-        from mochi.config import TZ
 
         # Query all unfired reminders for today (including future times)
         conn = _connect()
@@ -80,6 +80,8 @@ class ReminderSkill(Skill):
         for r in rows:
             try:
                 remind_at = datetime.fromisoformat(r["remind_at"])
+                if remind_at.tzinfo is None:
+                    remind_at = remind_at.replace(tzinfo=TZ)
                 time_str = remind_at.strftime("%H:%M")
                 fired = bool(r["fired"]) or remind_at <= now
                 mark = "✅" if fired else "⏳"

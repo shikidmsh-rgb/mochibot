@@ -6,14 +6,12 @@ Reuses oura_client's existing 10-min cache — no extra API calls.
 
 import json
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 
 from mochi.skills.base import Skill, SkillContext, SkillResult
-from mochi.config import TIMEZONE_OFFSET_HOURS
+from mochi.config import TZ
 
 log = logging.getLogger(__name__)
-
-TZ = timezone(timedelta(hours=TIMEZONE_OFFSET_HOURS))
 
 
 def _sensor_response(data: dict | None, cached_at: str | None,

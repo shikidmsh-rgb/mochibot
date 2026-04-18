@@ -26,8 +26,9 @@ class BufferHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord):
         try:
+            from mochi.config import TZ
             entry = {
-                "time": datetime.fromtimestamp(record.created).strftime(
+                "time": datetime.fromtimestamp(record.created, tz=TZ).strftime(
                     "%Y-%m-%d %H:%M:%S"
                 ),
                 "level": record.levelname,
@@ -48,7 +49,8 @@ class BufferHandler(logging.Handler):
 
 def get_recent_errors(hours: int = 24) -> list:
     """Return buffer entries from the last *hours*."""
-    cutoff = datetime.now() - timedelta(hours=hours)
+    from mochi.config import TZ
+    cutoff = datetime.now(TZ) - timedelta(hours=hours)
     cutoff_str = cutoff.strftime("%Y-%m-%d %H:%M:%S")
     return [e for e in _buffer if e["time"] >= cutoff_str]
 
@@ -86,11 +88,11 @@ def get_diagnostic_report() -> str:
         HEARTBEAT_INTERVAL_MINUTES,
         ADMIN_PORT, ADMIN_BIND,
         TIMEZONE_OFFSET_HOURS,
-        DB_PATH,
+        DB_PATH, TZ,
     )
 
     lines: list[str] = []
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
 
     # ── Header ──
     lines.append("=" * 50)

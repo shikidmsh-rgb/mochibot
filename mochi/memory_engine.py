@@ -18,17 +18,17 @@ import json
 import logging
 import re
 from collections import defaultdict
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta
 
 from mochi.config import (
     CORE_MEMORY_MAX_TOKENS,
     COMPRESS_DAILY_AFTER_DAYS,
     COMPRESS_WEEKLY_AFTER_DAYS,
     TRASH_PURGE_DAYS,
-    TIMEZONE_OFFSET_HOURS,
     OWNER_USER_ID,
     MEMORY_DEMOTE_AFTER_DAYS,
     MEMORY_DEMOTE_MIN_ACCESS,
+    TZ,
 )
 from mochi.llm import get_client_for_tier
 from mochi.prompt_loader import get_prompt
@@ -43,8 +43,6 @@ from mochi.db import (
 )
 
 log = logging.getLogger(__name__)
-
-TZ = timezone(timedelta(hours=TIMEZONE_OFFSET_HOURS))
 
 # Max relational items auto-appended to core_memory per extraction cycle
 _MAX_RELATIONAL_PER_CYCLE = 3

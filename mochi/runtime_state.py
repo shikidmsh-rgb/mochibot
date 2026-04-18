@@ -6,14 +6,12 @@ without tight coupling (e.g., heartbeat reads desktop activity status).
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 from threading import Lock
 
-from mochi.config import TIMEZONE_OFFSET_HOURS
+from mochi.config import TZ
 
 log = logging.getLogger(__name__)
-
-TZ = timezone(timedelta(hours=TIMEZONE_OFFSET_HOURS))
 _lock = Lock()
 
 

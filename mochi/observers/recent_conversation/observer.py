@@ -12,14 +12,12 @@ the observation from dominating the Think prompt.
 """
 
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 
 from mochi.observers.base import Observer
-from mochi.config import TIMEZONE_OFFSET_HOURS
+from mochi.config import TZ
 
 log = logging.getLogger(__name__)
-
-TZ = timezone(timedelta(hours=TIMEZONE_OFFSET_HOURS))
 
 # Max characters to include per message (keeps tokens in check)
 MAX_CHARS_PER_MSG = 200

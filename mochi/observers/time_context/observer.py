@@ -10,13 +10,11 @@ structured time data so the Think step can reason about context like
 "it's 2am on a Sunday" or "user hasn't talked in 6 hours".
 """
 
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 
 from mochi.observers.base import Observer
-from mochi.config import TIMEZONE_OFFSET_HOURS
+from mochi.config import TZ
 from mochi.db import get_last_user_message_time
-
-TZ = timezone(timedelta(hours=TIMEZONE_OFFSET_HOURS))
 
 # Static holiday list — easy to extend or replace with external data
 # Format: (month, day) tuples. Add your country's holidays as needed.

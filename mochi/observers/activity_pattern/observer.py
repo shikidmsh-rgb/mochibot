@@ -12,14 +12,12 @@ pure conversation data tells us a lot about user state.
 
 import logging
 import statistics
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 
 from mochi.observers.base import Observer
-from mochi.config import TIMEZONE_OFFSET_HOURS
+from mochi.config import TZ
 
 log = logging.getLogger(__name__)
-
-TZ = timezone(timedelta(hours=TIMEZONE_OFFSET_HOURS))
 
 # Minimum messages on a day to consider it "active"
 _ACTIVE_DAY_THRESHOLD = 3

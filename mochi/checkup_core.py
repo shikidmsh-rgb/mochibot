@@ -9,7 +9,7 @@ Both the checkup skill handler and admin API call run_checkup().
 
 import logging
 import os
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 
 log = logging.getLogger(__name__)
 
@@ -161,7 +161,7 @@ def run_checkup(user_id: int = 0) -> dict:
             log.error("Checkup section '%s' failed: %s", key, e, exc_info=True)
             result[key] = {"error": str(e)}
 
-    tz = timezone(timedelta(hours=8))
-    result["checked_at"] = datetime.now(tz).isoformat(timespec="seconds")
+    from mochi.config import TZ
+    result["checked_at"] = datetime.now(TZ).isoformat(timespec="seconds")
 
     return result

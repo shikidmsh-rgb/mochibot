@@ -13,17 +13,16 @@ Triggered by heartbeat as a cron skill.
 """
 
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 
 from mochi.skills.base import Skill, SkillContext, SkillResult
 from mochi.config import (
-    TIMEZONE_OFFSET_HOURS, CORE_MEMORY_MAX_TOKENS,
+    CORE_MEMORY_MAX_TOKENS,
     OWNER_USER_ID,
+    TZ,
 )
 
 log = logging.getLogger(__name__)
-
-TZ = timezone(timedelta(hours=TIMEZONE_OFFSET_HOURS))
 
 
 async def run_maintenance(user_id: int = 0) -> dict:

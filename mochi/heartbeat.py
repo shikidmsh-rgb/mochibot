@@ -443,6 +443,8 @@ async def _observe(user_id: int) -> dict:
     if last_msg_time:
         try:
             last_dt = datetime.fromisoformat(last_msg_time)
+            if last_dt.tzinfo is None:
+                last_dt = last_dt.replace(tzinfo=TZ)
             silence_hours = (now - last_dt).total_seconds() / 3600
             observation["silence_hours"] = round(silence_hours, 1)
         except (ValueError, TypeError):
@@ -454,10 +456,8 @@ async def _observe(user_id: int) -> dict:
     msg_count = get_message_count_today(user_id)
     observation["messages_today"] = msg_count
 
-    # Core memory snapshot
-    core = get_core_memory(user_id)
-    if core:
-        observation["core_memory_preview"] = core[:200]
+    # Core memory is injected into system prompt by _think(), not here.
+    # Keeping it out of observation avoids duplication.
 
     # User status
     observation["user_status"] = get_user_status()
@@ -761,10 +761,7 @@ def _build_observation_text(obs: dict) -> str:
 
     # ── Block 3: 核心上下文 (highest recency attention) ──────────
 
-    # Core memory
-    core = obs.get("core_memory_preview", "")
-    if core:
-        sections.append(f"## 核心记忆\n{core}")
+    # Core memory is in system prompt, not duplicated here.
 
     # Diary status (the key panel for habit/todo/reminder awareness)
     diary_status = obs.get("diary_status", "")

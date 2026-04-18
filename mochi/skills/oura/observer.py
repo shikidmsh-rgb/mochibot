@@ -5,14 +5,12 @@ Interval: 30 minutes (Oura data updates every 20-30 min during the day).
 """
 
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta
 
 from mochi.observers.base import Observer
-from mochi.config import TIMEZONE_OFFSET_HOURS
+from mochi.config import TZ
 
 log = logging.getLogger(__name__)
-
-TZ = timezone(timedelta(hours=TIMEZONE_OFFSET_HOURS))
 
 # Baselines cache — recalculated once per day
 _baselines_cache: dict | None = None
