@@ -19,7 +19,7 @@ class TodoObserver(Observer):
         from mochi.skills.todo.queries import get_active_todo_count
 
         user_id = OWNER_USER_ID
-        if not user_id:
+        if user_id is None:
             return {}
 
         count = get_active_todo_count(user_id)

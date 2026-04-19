@@ -1452,7 +1452,7 @@ if HAS_FASTAPI:
         """Return current habit list for display in admin panel (read-only)."""
         from mochi.config import OWNER_USER_ID
         from mochi.skills.habit.queries import list_habits
-        if not OWNER_USER_ID:
+        if OWNER_USER_ID is None:
             return {"habits": []}
         rows = list_habits(OWNER_USER_ID, active_only=False)
         return {"habits": [

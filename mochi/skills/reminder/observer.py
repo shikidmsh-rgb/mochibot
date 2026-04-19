@@ -15,7 +15,7 @@ class ReminderObserver(Observer):
         from mochi.skills.reminder.queries import get_upcoming_reminders
 
         user_id = OWNER_USER_ID
-        if not user_id:
+        if user_id is None:
             return {}
 
         upcoming = get_upcoming_reminders(user_id, hours_ahead=2)

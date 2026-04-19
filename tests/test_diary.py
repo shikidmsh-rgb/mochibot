@@ -209,9 +209,8 @@ class TestArchive:
 class TestRefreshDiaryStatus:
 
     def test_no_user(self, monkeypatch):
-        import mochi.config as cfg
-        monkeypatch.setattr(cfg, "OWNER_USER_ID", 0)
-        result = diary_mod.refresh_diary_status(user_id=0)
+        monkeypatch.setattr(diary_mod, "OWNER_USER_ID", None)
+        result = diary_mod.refresh_diary_status(user_id=None)
         assert "No user configured" in result
 
     def test_with_habits(self, monkeypatch, tmp_path):

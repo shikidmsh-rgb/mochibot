@@ -309,7 +309,7 @@ def check_silence_sleep() -> dict | None:
 
     # Check silence duration
     from mochi.config import OWNER_USER_ID as user_id
-    if not user_id:
+    if user_id is None:
         return None
     last_msg_time = get_last_user_message_time(user_id)
     if not last_msg_time:
@@ -369,7 +369,7 @@ def clear_silent_pause() -> None:
 def _check_silence_pause() -> None:
     """Check if we should enter/exit silent pause based on last message time."""
     from mochi.config import OWNER_USER_ID as user_id
-    if not user_id:
+    if user_id is None:
         return
     last_msg_iso = get_last_user_message_time(user_id)
     if not last_msg_iso:
@@ -1117,7 +1117,7 @@ async def heartbeat_loop() -> None:
 
             # Re-read OWNER_USER_ID each cycle (may be auto-detected later)
             from mochi.config import OWNER_USER_ID as user_id
-            if not user_id:
+            if user_id is None:
                 log.debug("No owner set yet, heartbeat paused")
                 await asyncio.sleep(interval)
                 continue

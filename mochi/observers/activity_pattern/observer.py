@@ -40,7 +40,7 @@ class ActivityPatternObserver(Observer):
         from mochi.db import get_daily_message_counts
 
         user_id = OWNER_USER_ID
-        if not user_id:
+        if user_id is None:
             return {}
 
         # Get last 7 days (includes today, always 7 entries)

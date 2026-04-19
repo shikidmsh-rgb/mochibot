@@ -55,7 +55,7 @@ class RecentConversationObserver(Observer):
         from mochi.db import get_recent_messages
 
         user_id = OWNER_USER_ID
-        if not user_id:
+        if user_id is None:
             return {}
 
         messages = get_recent_messages(user_id, limit=MSG_LIMIT)

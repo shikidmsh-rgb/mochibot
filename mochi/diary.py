@@ -381,7 +381,7 @@ def refresh_diary_status(user_id: int | None = None) -> str:
     """
     if user_id is None:
         user_id = OWNER_USER_ID
-    if not user_id:
+    if user_id is None:
         return "No user configured."
 
     now = datetime.now(TZ)
