@@ -171,13 +171,17 @@ def _kill_orphaned_bots():
         pids: list[int] = []
         try:
             if sys.platform == "win32":
+                # wmic is deprecated/removed on newer Windows; use PowerShell.
+                ps_script = (
+                    "Get-CimInstance Win32_Process -Filter \"name='python.exe'\" "
+                    "| Where-Object { $_.CommandLine -like '*mochi.main*' } "
+                    "| ForEach-Object { $_.ProcessId }"
+                )
                 out = subprocess.check_output(
-                    ["wmic", "process", "where",
-                     "CommandLine like '%mochi.main%' and not CommandLine like '%wmic%'",
-                     "get", "ProcessId"],
+                    ["powershell", "-NoProfile", "-Command", ps_script],
                     text=True, stderr=subprocess.DEVNULL,
                 )
-                for line in out.strip().splitlines()[1:]:
+                for line in out.strip().splitlines():
                     line = line.strip()
                     if line.isdigit():
                         pid = int(line)
@@ -768,6 +772,7 @@ if HAS_FASTAPI:
         # Standalone admin — stop bot, then exit with restart code
         from mochi.shutdown import ADMIN_RESTART_EXIT_CODE
         _kill_bot()
+        _kill_orphaned_bots()
         loop = asyncio.get_event_loop()
         loop.call_later(0.5, lambda: os._exit(ADMIN_RESTART_EXIT_CODE))
         return {"ok": True, "message": "Admin server restarting..."}
