@@ -235,6 +235,8 @@ def diary_status(self, user_id, today, now):
             for item in items]
 ```
 
+> **自动刷新**：实现了 `diary_status()` 的 skill，写操作完成后框架会自动调用 `refresh_diary_status()` 重建今日状態面板（在 `Skill.run()` 里），不需要在 handler 里手动刷新。这保证了"用户说做完了 → AI 立刻看到最新状态"的体验。
+
 #### `get_tools(self) -> list[dict]`
 
 仅在需要动态工具定义时重写（极少）。默认情况下工具从 SKILL.md 解析。

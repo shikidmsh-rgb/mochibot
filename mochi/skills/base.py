@@ -825,10 +825,17 @@ class Skill(ABC):
         log.info("Skill %s triggered by %s", self.name, context.trigger)
         try:
             result = await self.execute(context)
-            return result
         except Exception as e:
             log.error("Skill %s failed: %s", self.name, e, exc_info=True)
             return SkillResult(output=f"Skill error: {e}", success=False)
+
+        if result.success and type(self).diary_status is not Skill.diary_status:
+            try:
+                from mochi.diary import refresh_diary_status
+                refresh_diary_status(context.user_id or None)
+            except Exception as e:
+                log.warning("post-skill diary refresh failed for %s: %s", self.name, e)
+        return result
 
     def init_schema(self, conn) -> None:
         """Create DB tables needed by this skill.

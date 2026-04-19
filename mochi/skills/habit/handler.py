@@ -374,13 +374,6 @@ class HabitSkill(Skill):
         done = len(existing) + actual
         remaining = target - done
 
-        # Refresh diary status so habit progress is immediately visible
-        try:
-            from mochi.diary import refresh_diary_status
-            refresh_diary_status()
-        except Exception:
-            pass
-
         extra = f" (x{actual})" if actual > 1 else ""
         if remaining == 0:
             return SkillResult(output=f"✅ {habit['name']} completed! ({done}/{target}) 🎉{extra}")
