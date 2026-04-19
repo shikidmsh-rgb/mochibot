@@ -126,6 +126,8 @@ def extract_memories(user_id: int = 0) -> int:
     log_usage(
         response.prompt_tokens, response.completion_tokens,
         response.total_tokens, model=response.model, purpose="memory_extract",
+        reasoning_tokens=response.reasoning_tokens,
+        cached_prompt_tokens=response.cached_prompt_tokens,
     )
 
     # Generate embeddings for vector search
@@ -290,6 +292,8 @@ def deduplicate_memories(user_id: int = 0) -> int:
         log_usage(
             response.prompt_tokens, response.completion_tokens,
             response.total_tokens, model=response.model, purpose="memory_dedup",
+            reasoning_tokens=response.reasoning_tokens,
+            cached_prompt_tokens=response.cached_prompt_tokens,
         )
 
         parsed = _parse_llm_json(response.content, "memory_dedup")
@@ -377,6 +381,8 @@ def remove_outdated_memories(user_id: int = 0) -> dict:
             log_usage(
                 response.prompt_tokens, response.completion_tokens,
                 response.total_tokens, model=response.model, purpose="memory_outdated",
+                reasoning_tokens=response.reasoning_tokens,
+                cached_prompt_tokens=response.cached_prompt_tokens,
             )
 
             parsed = _parse_llm_json(response.content, "memory_outdated")
@@ -524,6 +530,8 @@ def rebalance_salience(user_id: int = 0) -> dict:
         log_usage(
             response.prompt_tokens, response.completion_tokens,
             response.total_tokens, model=response.model, purpose="salience_rebalance",
+            reasoning_tokens=response.reasoning_tokens,
+            cached_prompt_tokens=response.cached_prompt_tokens,
         )
 
         parsed = _parse_llm_json(response.content, "salience_rebalance")
@@ -713,6 +721,8 @@ def extract_kg(user_id: int = 0) -> dict:
         log_usage(
             response.prompt_tokens, response.completion_tokens,
             response.total_tokens, model=response.model, purpose="kg_extract",
+            reasoning_tokens=response.reasoning_tokens,
+            cached_prompt_tokens=response.cached_prompt_tokens,
         )
     except Exception as e:
         log.error("KG extraction LLM call failed: %s", e)

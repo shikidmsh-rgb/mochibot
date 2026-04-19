@@ -346,6 +346,8 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         ("prompt_history_tokens", "INTEGER DEFAULT NULL"),
         ("prompt_tool_tokens", "INTEGER DEFAULT NULL"),
         ("cost_usd", "REAL DEFAULT NULL"),
+        ("reasoning_tokens", "INTEGER DEFAULT NULL"),
+        ("cached_prompt_tokens", "INTEGER DEFAULT NULL"),
     ]:
         _add_col("usage_log", col, typedef)
 
@@ -1396,7 +1398,9 @@ def log_usage(prompt_tokens: int, completion_tokens: int, total_tokens: int,
               prompt_system_tokens: int | None = None,
               prompt_history_tokens: int | None = None,
               prompt_tool_tokens: int | None = None,
-              cost_usd: float | None = None) -> None:
+              cost_usd: float | None = None,
+              reasoning_tokens: int | None = None,
+              cached_prompt_tokens: int | None = None) -> None:
     now = datetime.now(TZ).isoformat()
     eff_call_type = call_type or purpose
     conn = _connect()
@@ -1404,11 +1408,13 @@ def log_usage(prompt_tokens: int, completion_tokens: int, total_tokens: int,
         """INSERT INTO usage_log (prompt_tokens, completion_tokens, total_tokens,
            tool_calls, model, purpose, created_at,
            tool_name, model_role, call_type, usage_stage,
-           prompt_system_tokens, prompt_history_tokens, prompt_tool_tokens, cost_usd)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           prompt_system_tokens, prompt_history_tokens, prompt_tool_tokens, cost_usd,
+           reasoning_tokens, cached_prompt_tokens)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (prompt_tokens, completion_tokens, total_tokens, tool_calls, model, purpose, now,
          tool_name, model_role, eff_call_type, usage_stage,
-         prompt_system_tokens, prompt_history_tokens, prompt_tool_tokens, cost_usd),
+         prompt_system_tokens, prompt_history_tokens, prompt_tool_tokens, cost_usd,
+         reasoning_tokens, cached_prompt_tokens),
     )
     conn.commit()
     conn.close()
@@ -1434,11 +1440,14 @@ def get_usage_summary(days: int = 30) -> dict:
         for r in conn.execute(
             """SELECT model,
                       COALESCE(SUM(prompt_tokens), 0) as p,
-                      COALESCE(SUM(completion_tokens), 0) as c
+                      COALESCE(SUM(completion_tokens), 0) as c,
+                      COALESCE(SUM(reasoning_tokens), 0) as r
                FROM usage_log WHERE created_at >= ? GROUP BY model""",
             (since,),
         ).fetchall():
-            result[r["model"] or "unknown"] = {"prompt": r["p"], "completion": r["c"]}
+            result[r["model"] or "unknown"] = {
+                "prompt": r["p"], "completion": r["c"], "reasoning": r["r"],
+            }
         return result
 
     today = {"by_model": _by_model(today_start)}

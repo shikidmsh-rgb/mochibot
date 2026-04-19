@@ -283,6 +283,8 @@ async def _generate_summary(
                 call_type="background",
                 tool_name="conv_summary",
                 usage_stage=usage_stage,
+                reasoning_tokens=response.reasoning_tokens,
+                cached_prompt_tokens=response.cached_prompt_tokens,
             )
         return (response.content or "").strip() or None
     except Exception as e:
@@ -725,6 +727,8 @@ async def chat(message: IncomingMessage) -> ChatResult:
             tool_calls=len(response.tool_calls),
             model=response.model,
             purpose=f"chat:{tier}",
+            reasoning_tokens=response.reasoning_tokens,
+            cached_prompt_tokens=response.cached_prompt_tokens,
         )
 
         # No tool calls — we have the final response
@@ -920,6 +924,8 @@ async def chat_proactive(findings: list[dict], user_id: int) -> str | None:
             response.prompt_tokens, response.completion_tokens,
             response.total_tokens, model=response.model,
             purpose="proactive_chat",
+            reasoning_tokens=response.reasoning_tokens,
+            cached_prompt_tokens=response.cached_prompt_tokens,
         )
 
         reply = (response.content or "").strip()
@@ -1027,6 +1033,8 @@ async def chat_bedtime_tidy(
                 tool_calls=len(response.tool_calls),
                 model=response.model,
                 purpose="bedtime_tidy",
+                reasoning_tokens=response.reasoning_tokens,
+                cached_prompt_tokens=response.cached_prompt_tokens,
             )
 
             if not response.tool_calls:

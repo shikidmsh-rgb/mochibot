@@ -531,3 +531,125 @@ class TestAnthropicJsonMode:
         # No spurious JSON-mode-ish keys
         assert "response_format" not in kwargs
         assert "response_mime_type" not in kwargs
+
+
+# ── reasoning_tokens / cached_prompt_tokens parsing ──────────────────────
+
+class TestReasoningTokensParsing:
+    """Verify _openai_response correctly extracts token detail fields."""
+
+    def _build_resp(self, comp_details=None, prompt_details=None):
+        """Build a mock OpenAI response with controllable usage details."""
+        from types import SimpleNamespace
+        msg = MagicMock()
+        msg.content = "ok"
+        msg.tool_calls = None
+        choice = MagicMock()
+        choice.message = msg
+        choice.finish_reason = "stop"
+        # Use SimpleNamespace so getattr returns None for missing attrs
+        # (MagicMock would auto-create them, breaking our None checks).
+        usage = SimpleNamespace(
+            prompt_tokens=10, completion_tokens=5, total_tokens=15,
+            completion_tokens_details=comp_details,
+            prompt_tokens_details=prompt_details,
+        )
+        return MagicMock(choices=[choice], usage=usage, model="gpt-test")
+
+    def setup_method(self):
+        _reset_caches()
+
+    @patch("openai.OpenAI")
+    def test_reasoning_tokens_parsed(self, mock_openai_cls):
+        from types import SimpleNamespace
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        mock_client.chat.completions.create.return_value = self._build_resp(
+            comp_details=SimpleNamespace(reasoning_tokens=42),
+        )
+
+        provider = OpenAIProvider(api_key="k", model="gpt-test")
+        result = provider.chat([{"role": "user", "content": "hi"}])
+        assert result.reasoning_tokens == 42
+
+    @patch("openai.OpenAI")
+    def test_no_details_returns_none(self, mock_openai_cls):
+        """Old SDK / non-reasoning model: no details object → None (not 0)."""
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        mock_client.chat.completions.create.return_value = self._build_resp(
+            comp_details=None, prompt_details=None,
+        )
+
+        provider = OpenAIProvider(api_key="k", model="gpt-test")
+        result = provider.chat([{"role": "user", "content": "hi"}])
+        assert result.reasoning_tokens is None
+        assert result.cached_prompt_tokens is None
+
+    @patch("openai.OpenAI")
+    def test_explicit_zero_preserved(self, mock_openai_cls):
+        """reasoning_tokens=0 from SDK must NOT collapse to None."""
+        from types import SimpleNamespace
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        mock_client.chat.completions.create.return_value = self._build_resp(
+            comp_details=SimpleNamespace(reasoning_tokens=0),
+        )
+
+        provider = OpenAIProvider(api_key="k", model="gpt-test")
+        result = provider.chat([{"role": "user", "content": "hi"}])
+        assert result.reasoning_tokens == 0  # not None
+
+    @patch("openai.OpenAI")
+    def test_cached_prompt_tokens_parsed(self, mock_openai_cls):
+        from types import SimpleNamespace
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        mock_client.chat.completions.create.return_value = self._build_resp(
+            prompt_details=SimpleNamespace(cached_tokens=100),
+        )
+
+        provider = OpenAIProvider(api_key="k", model="gpt-test")
+        result = provider.chat([{"role": "user", "content": "hi"}])
+        assert result.cached_prompt_tokens == 100
+
+    @gemini_required
+    @patch("google.genai.Client")
+    def test_gemini_does_not_set_reasoning_fields(self, mock_genai_cls):
+        """Non-OpenAI providers must leave reasoning_tokens at default None."""
+        mock_client = MagicMock()
+        mock_genai_cls.return_value = mock_client
+        # Reuse the gemini test response builder shape inline
+        part = MagicMock()
+        part.text = "ok"
+        part.function_call = None
+        content_obj = MagicMock(parts=[part])
+        candidate = MagicMock(content=content_obj)
+        candidate.finish_reason.name = "STOP"
+        usage = MagicMock(prompt_token_count=5, candidates_token_count=3)
+        mock_client.models.generate_content.return_value = MagicMock(
+            candidates=[candidate], usage_metadata=usage,
+        )
+
+        provider = GeminiProvider(api_key="k", model="gemini-2.5-flash")
+        result = provider.chat([{"role": "user", "content": "hi"}])
+        assert result.reasoning_tokens is None
+        assert result.cached_prompt_tokens is None
+
+    @anthropic_required
+    @patch("anthropic.Anthropic")
+    def test_anthropic_does_not_set_reasoning_fields(self, mock_anthropic_cls):
+        mock_client = MagicMock()
+        mock_anthropic_cls.return_value = mock_client
+        block = MagicMock()
+        block.type = "text"
+        block.text = "ok"
+        usage = MagicMock(input_tokens=10, output_tokens=5)
+        mock_client.messages.create.return_value = MagicMock(
+            content=[block], usage=usage, stop_reason="end_turn",
+        )
+
+        provider = AnthropicProvider(api_key="k", model="claude-haiku-4-5")
+        result = provider.chat([{"role": "user", "content": "hi"}])
+        assert result.reasoning_tokens is None
+        assert result.cached_prompt_tokens is None

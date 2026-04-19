@@ -283,7 +283,10 @@ class TelegramTransport(Transport):
                 return lines
             for model, data in sorted(by_model.items()):
                 lines.append(f"  {model}")
-                lines.append(f"    input {data['prompt']:,}  |  output {data['completion']:,}")
+                line = f"    input {data['prompt']:,}  |  output {data['completion']:,}"
+                if data.get('reasoning', 0) > 0:
+                    line += f"  (其中 reasoning {data['reasoning']:,})"
+                lines.append(line)
             return lines
 
         lines = _format_block("📊 今日", s["today"]["by_model"])

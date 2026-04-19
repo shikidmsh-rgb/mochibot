@@ -305,6 +305,8 @@ class TestExtractKg:
             completion_tokens = 50
             total_tokens = 150
             model = "test-model"
+            reasoning_tokens = None
+            cached_prompt_tokens = None
 
         class MockClient:
             def chat(self, **kwargs):

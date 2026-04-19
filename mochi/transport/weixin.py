@@ -468,7 +468,10 @@ class WeixinTransport(Transport):
                     return block
                 for model, data in sorted(by_model.items()):
                     block.append(f"  {model}")
-                    block.append(f"    input {data['prompt']:,}  |  output {data['completion']:,}")
+                    line = f"    input {data['prompt']:,}  |  output {data['completion']:,}"
+                    if data.get('reasoning', 0) > 0:
+                        line += f"  (其中 reasoning {data['reasoning']:,})"
+                    block.append(line)
                 return block
 
             lines = _format_block("📊 今日", s["today"]["by_model"])

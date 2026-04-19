@@ -707,6 +707,8 @@ async def _think(observation: dict, user_id: int) -> dict | None:
     log_usage(
         response.prompt_tokens, response.completion_tokens,
         response.total_tokens, model=response.model, purpose="heartbeat_think",
+        reasoning_tokens=response.reasoning_tokens,
+        cached_prompt_tokens=response.cached_prompt_tokens,
     )
 
     # Parse JSON result. Provider layer enforces JSON output natively

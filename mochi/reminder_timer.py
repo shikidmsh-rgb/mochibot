@@ -121,6 +121,8 @@ async def _rephrase_reminder(message: str, user_id: int) -> str:
             response.prompt_tokens, response.completion_tokens,
             response.total_tokens, model=response.model,
             purpose="reminder_deliver",
+            reasoning_tokens=response.reasoning_tokens,
+            cached_prompt_tokens=response.cached_prompt_tokens,
         )
 
         text = (response.content or "").strip()

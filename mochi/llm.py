@@ -49,6 +49,11 @@ class LLMResponse:
     total_tokens: int = 0
     model: str = ""
     finish_reason: str = ""
+    # None = SDK didn't report (legacy SDK / non-reasoning model / non-OpenAI
+    # provider). 0 = model explicitly reported zero. The distinction matters
+    # for cost telemetry — see plan P1-2.
+    reasoning_tokens: int | None = None
+    cached_prompt_tokens: int | None = None
 
 
 class LLMProvider(ABC):
@@ -178,6 +183,17 @@ def _parse_openai_tool_calls(choice) -> list[ToolCallDict]:
 
 def _openai_response(choice, usage, model: str, tool_calls: list[ToolCallDict]) -> LLMResponse:
     """Build LLMResponse from OpenAI-style completion."""
+    reasoning: int | None = None
+    cached: int | None = None
+    if usage:
+        comp_details = getattr(usage, "completion_tokens_details", None)
+        if comp_details is not None:
+            r = getattr(comp_details, "reasoning_tokens", None)
+            reasoning = int(r) if r is not None else None
+        prompt_details = getattr(usage, "prompt_tokens_details", None)
+        if prompt_details is not None:
+            c = getattr(prompt_details, "cached_tokens", None)
+            cached = int(c) if c is not None else None
     return LLMResponse(
         content=choice.message.content or "",
         tool_calls=tool_calls,
@@ -186,6 +202,8 @@ def _openai_response(choice, usage, model: str, tool_calls: list[ToolCallDict]) 
         total_tokens=usage.total_tokens if usage else 0,
         model=model,
         finish_reason=choice.finish_reason or "",
+        reasoning_tokens=reasoning,
+        cached_prompt_tokens=cached,
     )
 
 

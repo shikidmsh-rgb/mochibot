@@ -96,6 +96,8 @@ class TestConvSummaryLogic:
         mock_response.prompt_tokens = 100
         mock_response.completion_tokens = 30
         mock_response.total_tokens = 130
+        mock_response.reasoning_tokens = None
+        mock_response.cached_prompt_tokens = None
         mock_client = MagicMock()
         mock_client.chat.return_value = mock_response
         mock_get_client.return_value = mock_client
