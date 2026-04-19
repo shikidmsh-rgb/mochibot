@@ -29,9 +29,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-anthropic = ["anthropic>=0.25.0"]
+anthropic = ["anthropic>=0.39.0"]
 wechat = ["aiohttp>=3.9"]
-all = ["anthropic>=0.25.0", "aiohttp>=3.9"]
+all = ["anthropic>=0.39.0", "aiohttp>=3.9"]
 
 [project.urls]
 Homepage = "https://github.com/shikidmsh-rgb/mochibot"

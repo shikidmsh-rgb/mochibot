@@ -639,13 +639,13 @@ class TestReasoningTokensParsing:
     @anthropic_required
     @patch("anthropic.Anthropic")
     def test_anthropic_does_not_set_reasoning_fields(self, mock_anthropic_cls):
+        from types import SimpleNamespace
         mock_client = MagicMock()
         mock_anthropic_cls.return_value = mock_client
-        block = MagicMock()
-        block.type = "text"
-        block.text = "ok"
-        usage = MagicMock(input_tokens=10, output_tokens=5)
-        mock_client.messages.create.return_value = MagicMock(
+        # SimpleNamespace (not MagicMock) so missing cache_* attrs stay missing.
+        block = SimpleNamespace(type="text", text="ok")
+        usage = SimpleNamespace(input_tokens=10, output_tokens=5)
+        mock_client.messages.create.return_value = SimpleNamespace(
             content=[block], usage=usage, stop_reason="end_turn",
         )
 
@@ -653,3 +653,176 @@ class TestReasoningTokensParsing:
         result = provider.chat([{"role": "user", "content": "hi"}])
         assert result.reasoning_tokens is None
         assert result.cached_prompt_tokens is None
+
+
+# ── Anthropic prompt caching + extended thinking (P0-1 + P0-2) ───────────
+
+@anthropic_required
+class TestAnthropicCachingAndThinking:
+    """Verify AnthropicProvider sends cache_control + thinking correctly,
+    filters thinking blocks out of content, and parses cache usage fields.
+    """
+
+    def _build_resp(self, blocks, usage=None):
+        """Build a mock anthropic response. Blocks must be SimpleNamespace
+        objects (not MagicMock) so `block.type` checks work and missing
+        attributes don't auto-create."""
+        from types import SimpleNamespace
+        if usage is None:
+            usage = SimpleNamespace(input_tokens=10, output_tokens=5)
+        return SimpleNamespace(
+            content=blocks, usage=usage, stop_reason="end_turn",
+        )
+
+    def _text_block(self, text):
+        from types import SimpleNamespace
+        return SimpleNamespace(type="text", text=text)
+
+    def _tool_block(self, id, name, input):
+        from types import SimpleNamespace
+        return SimpleNamespace(type="tool_use", id=id, name=name, input=input)
+
+    def _thinking_block(self, text):
+        from types import SimpleNamespace
+        return SimpleNamespace(type="thinking", thinking=text)
+
+    def _redacted_thinking_block(self, data):
+        from types import SimpleNamespace
+        return SimpleNamespace(type="redacted_thinking", data=data)
+
+    # 1: caching system block format
+    @patch("anthropic.Anthropic")
+    def test_system_uses_list_with_cache_control(self, mock_anthropic_cls):
+        mock_client = MagicMock()
+        mock_anthropic_cls.return_value = mock_client
+        mock_client.messages.create.return_value = self._build_resp(
+            [self._text_block("ok")],
+        )
+
+        provider = AnthropicProvider(api_key="k", model="claude-haiku-4-5")
+        provider.chat([
+            {"role": "system", "content": "You are Mochi."},
+            {"role": "user", "content": "hi"},
+        ])
+
+        kwargs = mock_client.messages.create.call_args.kwargs
+        system = kwargs.get("system")
+        assert isinstance(system, list), f"expected list, got {type(system)}"
+        assert len(system) >= 1
+        first = system[0]
+        assert first["type"] == "text"
+        assert first["text"] == "You are Mochi."
+        assert first.get("cache_control") == {"type": "ephemeral"}
+
+    # 2: thinking enabled for Claude 4.x
+    @pytest.mark.parametrize("model", [
+        "claude-opus-4-7",
+        "claude-sonnet-4-6",
+        "claude-haiku-4-5",
+    ])
+    @patch("anthropic.Anthropic")
+    def test_thinking_enabled_for_claude_4(self, mock_anthropic_cls, model):
+        mock_client = MagicMock()
+        mock_anthropic_cls.return_value = mock_client
+        mock_client.messages.create.return_value = self._build_resp(
+            [self._text_block("ok")],
+        )
+
+        provider = AnthropicProvider(api_key="k", model=model)
+        provider.chat([{"role": "user", "content": "hi"}])
+
+        kwargs = mock_client.messages.create.call_args.kwargs
+        thinking = kwargs.get("thinking")
+        assert thinking is not None, f"thinking missing for {model}"
+        assert thinking.get("type") == "enabled"
+        assert thinking.get("budget_tokens") == 1024
+
+    # 3: thinking NOT sent for legacy models (B1 guard — date stamps with 4 in them)
+    @pytest.mark.parametrize("model", [
+        "claude-3-haiku-20240307",     # date contains "4" but not "-4-"
+        "claude-3-5-sonnet-20241022",
+        "claude-3-opus-20240229",
+        "claude-3-5-haiku-20241022",
+    ])
+    @patch("anthropic.Anthropic")
+    def test_thinking_NOT_sent_for_legacy_models(self, mock_anthropic_cls, model):
+        mock_client = MagicMock()
+        mock_anthropic_cls.return_value = mock_client
+        mock_client.messages.create.return_value = self._build_resp(
+            [self._text_block("ok")],
+        )
+
+        provider = AnthropicProvider(api_key="k", model=model)
+        provider.chat([{"role": "user", "content": "hi"}])
+
+        kwargs = mock_client.messages.create.call_args.kwargs
+        assert "thinking" not in kwargs, (
+            f"REGRESSION: thinking sent to legacy model {model} — "
+            "B1 detection bug has returned"
+        )
+
+    # 4: thinking block must NOT leak into content
+    @patch("anthropic.Anthropic")
+    def test_thinking_block_filtered_from_content(self, mock_anthropic_cls):
+        mock_client = MagicMock()
+        mock_anthropic_cls.return_value = mock_client
+        mock_client.messages.create.return_value = self._build_resp([
+            self._thinking_block("internal reasoning here"),
+            self._text_block("final answer"),
+        ])
+
+        provider = AnthropicProvider(api_key="k", model="claude-haiku-4-5")
+        result = provider.chat([{"role": "user", "content": "hi"}])
+        assert result.content == "final answer"
+        assert "internal reasoning" not in result.content
+
+    # 5: redacted_thinking block must also NOT leak (I4 guard)
+    @patch("anthropic.Anthropic")
+    def test_redacted_thinking_block_filtered(self, mock_anthropic_cls):
+        mock_client = MagicMock()
+        mock_anthropic_cls.return_value = mock_client
+        mock_client.messages.create.return_value = self._build_resp([
+            self._redacted_thinking_block("encrypted-blob"),
+            self._text_block("real response"),
+        ])
+
+        provider = AnthropicProvider(api_key="k", model="claude-haiku-4-5")
+        result = provider.chat([{"role": "user", "content": "hi"}])
+        assert result.content == "real response"
+        assert "encrypted-blob" not in result.content
+
+    # 6: cached_prompt_tokens parsed when usage exposes cache_read_input_tokens
+    @patch("anthropic.Anthropic")
+    def test_cached_prompt_tokens_parsed(self, mock_anthropic_cls):
+        from types import SimpleNamespace
+        mock_client = MagicMock()
+        mock_anthropic_cls.return_value = mock_client
+        usage = SimpleNamespace(
+            input_tokens=10, output_tokens=5,
+            cache_read_input_tokens=500,
+            cache_creation_input_tokens=0,
+        )
+        mock_client.messages.create.return_value = self._build_resp(
+            [self._text_block("ok")], usage=usage,
+        )
+
+        provider = AnthropicProvider(api_key="k", model="claude-haiku-4-5")
+        result = provider.chat([{"role": "user", "content": "hi"}])
+        assert result.cached_prompt_tokens == 500
+
+    # 7: cache fields absent → None (B2 guard — must not become 0 or MagicMock)
+    @patch("anthropic.Anthropic")
+    def test_cache_fields_absent_returns_none(self, mock_anthropic_cls):
+        from types import SimpleNamespace
+        mock_client = MagicMock()
+        mock_anthropic_cls.return_value = mock_client
+        # Old SDK: usage object has no cache_* attributes at all
+        usage = SimpleNamespace(input_tokens=10, output_tokens=5)
+        mock_client.messages.create.return_value = self._build_resp(
+            [self._text_block("ok")], usage=usage,
+        )
+
+        provider = AnthropicProvider(api_key="k", model="claude-haiku-4-5")
+        result = provider.chat([{"role": "user", "content": "hi"}])
+        assert result.cached_prompt_tokens is None
+        assert result.reasoning_tokens is None
