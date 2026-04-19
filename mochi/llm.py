@@ -618,6 +618,33 @@ class GeminiProvider(LLMProvider):
     def provider_name(self) -> str:
         return "gemini"
 
+    def _build_thinking_config(self, types):
+        """Return a ThinkingConfig forcing low reasoning, or None if unsupported.
+
+        Symmetric to OpenAI's reasoning_effort="minimal" default — keeps
+        chat-style replies fast and avoids the Gemini 3 default of "high"
+        burning tokens on every turn.
+
+        Model family detection by name (after _normalize_model):
+          'models/gemini-3*'   → ThinkingConfig(thinking_level="low")
+          'models/gemini-2.5*' → ThinkingConfig(thinking_budget=512)
+          everything else      → None (don't send the field at all)
+        """
+        m = self._model.lower()
+        # _model has 'models/' prefix from __init__
+        bare = m.removeprefix("models/")
+        try:
+            if bare.startswith("gemini-3"):
+                return types.ThinkingConfig(thinking_level="low")
+            if bare.startswith("gemini-2.5"):
+                # 512 tokens — cheap floor that still allows minimal reflection.
+                # Pro requires min 128; Flash accepts 0+. 512 is a safe shared default.
+                return types.ThinkingConfig(thinking_budget=512)
+        except (TypeError, AttributeError) as e:
+            # SDK older than expected — silently skip.
+            log.debug("Gemini ThinkingConfig unsupported on this SDK: %s", e)
+        return None
+
     def chat(self, messages: list[dict], tools: list[dict] | None = None,
              temperature: float = 1.0, max_tokens: int = 2048,
              json_mode: bool = False) -> LLMResponse:
@@ -641,6 +668,17 @@ class GeminiProvider(LLMProvider):
             # only set it when no tools requested.
             if not tools:
                 config_kwargs["response_mime_type"] = "application/json"
+
+        # Thinking budget — Gemini 3 defaults to thinking_level="high" if
+        # omitted, which burns tokens on chat-style replies. Force "low"
+        # symmetric to OpenAI's reasoning_effort="minimal" default.
+        # Field name differs by model family:
+        #   gemini-3*  → thinking_level="low"
+        #   gemini-2.5* → thinking_budget=512 (token budget; min 128 for Pro)
+        #   older       → no thinking config (field unsupported)
+        thinking_cfg = self._build_thinking_config(types)
+        if thinking_cfg is not None:
+            config_kwargs["thinking_config"] = thinking_cfg
 
         resp = self._client.models.generate_content(
             model=self._model,

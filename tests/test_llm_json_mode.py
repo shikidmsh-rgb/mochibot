@@ -430,6 +430,50 @@ class TestGeminiJsonMode:
         result = provider.chat([{"role": "user", "content": "hi"}], json_mode=True)
         assert result.content == '{"skills":["weather"]}'
 
+    # ── Thinking config (Gemini 3 thinking_level / 2.5 thinking_budget) ──
+
+    @patch("google.genai.Client")
+    def test_gemini_3_sends_thinking_level_low(self, mock_genai_cls):
+        mock_client = MagicMock()
+        mock_genai_cls.return_value = mock_client
+        mock_client.models.generate_content.return_value = self._make_gemini_response("ok")
+
+        provider = GeminiProvider(api_key="k", model="gemini-3-pro-preview")
+        provider.chat([{"role": "user", "content": "hi"}])
+
+        cfg = mock_client.models.generate_content.call_args.kwargs["config"]
+        tc = getattr(cfg, "thinking_config", None)
+        assert tc is not None
+        # SDK normalizes "low" → ThinkingLevel.LOW enum
+        assert str(getattr(tc, "thinking_level", "")).lower().endswith("low")
+
+    @patch("google.genai.Client")
+    def test_gemini_25_sends_thinking_budget(self, mock_genai_cls):
+        mock_client = MagicMock()
+        mock_genai_cls.return_value = mock_client
+        mock_client.models.generate_content.return_value = self._make_gemini_response("ok")
+
+        provider = GeminiProvider(api_key="k", model="gemini-2.5-flash")
+        provider.chat([{"role": "user", "content": "hi"}])
+
+        cfg = mock_client.models.generate_content.call_args.kwargs["config"]
+        tc = getattr(cfg, "thinking_config", None)
+        assert tc is not None
+        assert getattr(tc, "thinking_budget", None) == 512
+
+    @patch("google.genai.Client")
+    def test_gemini_legacy_no_thinking_config(self, mock_genai_cls):
+        mock_client = MagicMock()
+        mock_genai_cls.return_value = mock_client
+        mock_client.models.generate_content.return_value = self._make_gemini_response("ok")
+
+        provider = GeminiProvider(api_key="k", model="gemini-1.5-flash")
+        provider.chat([{"role": "user", "content": "hi"}])
+
+        cfg = mock_client.models.generate_content.call_args.kwargs["config"]
+        # Legacy models don't get thinking_config at all
+        assert getattr(cfg, "thinking_config", None) is None
+
 
 # ── Anthropic ─────────────────────────────────────────────────────────────
 
