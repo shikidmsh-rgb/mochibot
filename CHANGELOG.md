@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.8.6
+
+### 新功能
+- Heartbeat 支持跨重试表达坚持感
+- 用量追踪：reasoning tokens 和 cached prompt tokens 可在 /cost 查看
+
+### 改进
+- LLM 兼容性增强：Claude 4.x prompt caching + extended thinking，Gemini / OpenAI 兼容层适配 reasoning 模型
+- Heartbeat 架构重构：Think（扫描）与 Chat（语音）职责分离
+- E2E 测试覆盖扩展
+
+### 修复
+- Admin 重启更健壮，支持 Windows 孤儿进程清理
+- 提醒删除改为硬删除，日记仅显示未触发提醒
+- reasoning 模型输出的 JSON 提取更鲁棒
+
 ## v0.8.5
 
 ### Bug Fixes
