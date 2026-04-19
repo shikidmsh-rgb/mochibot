@@ -38,7 +38,7 @@ def split_text(text: str, limit: int) -> list[str]:
     return chunks
 
 
-def split_bubbles(text: str, max_bubbles: int = 4,
+def split_bubbles(text: str, max_bubbles: int = 8,
                   delimiter: str = "|||",
                   min_chars: int = 8) -> list[str]:
     """Split text into chat bubbles for a natural multi-message feel.

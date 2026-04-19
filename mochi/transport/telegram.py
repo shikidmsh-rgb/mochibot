@@ -80,7 +80,7 @@ async def _set_reaction(bot, chat_id: int, message_id: int, emoji: str | None) -
         pass
 
 
-def _split_bubbles(text: str, max_bubbles: int = 4,
+def _split_bubbles(text: str, max_bubbles: int = 8,
                    delimiter: str = "|||",
                    min_chars: int = 8) -> list[str]:
     return _split_bubbles_util(text, max_bubbles, delimiter, min_chars)
