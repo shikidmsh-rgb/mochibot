@@ -44,9 +44,10 @@ _SKIP_ACTIONS = {"sleeping", "observe_only", "silent_pause", "morning_hold",
 
 
 async def dump() -> str:
-    from mochi.config import TIMEZONE_OFFSET_HOURS
+    from mochi.config import TIMEZONE_OFFSET_HOURS, OWNER_USER_ID
     from mochi.prompt_loader import get_prompt
-    from mochi.heartbeat import _build_observation_text
+    from mochi.heartbeat import _build_observation_text, _observe, _effective
+    from mochi.db import get_recent_messages, get_core_memory
     from mochi.model_pool import get_pool
 
     CST = timezone(timedelta(hours=TIMEZONE_OFFSET_HOURS))
@@ -62,7 +63,7 @@ async def dump() -> str:
 
     now = datetime.now(CST)
     out: list[str] = []
-    out.append(f"=== MOCHIBOT THINK PROMPT DUMP \u2014 {now.strftime('%Y-%m-%d %H:%M:%S')} ===")
+    out.append(f"=== MOCHIBOT THINK PROMPT DUMP — {now.strftime('%Y-%m-%d %H:%M:%S')} ===")
 
     if not latest:
         out.append("No recent Think heartbeat round found in heartbeat_log.")
@@ -71,16 +72,31 @@ async def dump() -> str:
         out.append("=== DONE ===")
         return "\n".join(out)
 
-    # Load Think system prompt
-    system_prompt = get_prompt("think_system") or "(think_system prompt not found)"
+    # ── Build system prompt: mirror _think() exactly ──
+    soul = get_prompt("system_chat/soul") or ""
+    think_template = get_prompt("think_system") or "(think_system prompt not found)"
+    system_prompt = think_template.replace("{soul_personality}", soul)
 
-    # Reconstruct observation — we can't get the exact observation from DB
-    # (heartbeat_log doesn't store observations JSON).
-    # Instead, show the current observation as a representative snapshot.
-    from mochi.config import OWNER_USER_ID
-    from mochi.heartbeat import _observe
-    observation = await _observe(OWNER_USER_ID)
+    now_str = now.strftime("%Y-%m-%d %H:%M:%S %z")
+    system_prompt += f"\n\n当前时间：{now_str}"
+
+    user_id = OWNER_USER_ID
+    core_memory = get_core_memory(user_id)
+    if core_memory:
+        system_prompt += f"\n\n## 你对用户的了解\n{core_memory}"
+
+    # ── Build user message: observation + recent conversation ──
+    observation = await _observe(user_id)
     obs_text = _build_observation_text(observation)
+
+    recent_msgs = get_recent_messages(user_id, limit=_effective('THINK_HISTORY_TURNS'))
+    if recent_msgs:
+        conv_lines = []
+        for m in recent_msgs:
+            role = "用户" if m.get("role") == "user" else "你"
+            content = (m.get("content") or "")[:200]
+            conv_lines.append(f"- {role}: {content}")
+        obs_text += "\n\n## 最近对话\n" + "\n".join(conv_lines)
 
     pool = get_pool()
     _, model = pool.get_tier("deep"), pool.get_tier_model("deep")
@@ -95,24 +111,23 @@ async def dump() -> str:
 
     # System prompt
     out.append("=" * 60)
-    out.append("SYSTEM PROMPT (think_system.md, as sent to API)")
+    out.append("SYSTEM PROMPT (as sent to API)")
     out.append("=" * 60)
     out.append(system_prompt)
     out.append("")
 
-    # Observation text
+    # Observation text (user message)
     out.append("=" * 60)
-    out.append("OBSERVATION TEXT (user content sent to Think)")
+    out.append("USER MESSAGE (observation + recent conversation)")
     out.append("=" * 60)
-    out.append("NOTE: This is a LIVE snapshot of current observation,")
-    out.append("not the exact observation from the logged round.")
+    out.append("NOTE: This is a LIVE snapshot, not the exact payload from the logged round.")
     out.append("")
     out.append(obs_text)
     out.append("")
 
-    # Messages payload
+    # Messages payload summary
     out.append("=" * 60)
-    out.append("MESSAGES PAYLOAD (Think call)")
+    out.append("MESSAGES PAYLOAD SUMMARY")
     out.append("=" * 60)
     out.append(f"  [1] system: {len(system_prompt)} chars")
     out.append(f"  [2] user:   {len(obs_text)} chars")
@@ -128,29 +143,16 @@ async def dump() -> str:
     out.append(f"  Time:     {latest.get('created_at', '?')}")
     out.append("")
 
-    # Recent heartbeat activity (last 10 rounds)
-    recent = _get_recent_heartbeat_logs(10)
-    out.append("=" * 60)
-    out.append(f"RECENT HEARTBEAT ACTIVITY (last {len(recent)})")
-    out.append("=" * 60)
-    for r in recent:
-        out.append(
-            f"  [{r.get('id', '?'):>4}] {r.get('state', '?'):>8} "
-            f"| {r.get('action', '?'):<20} "
-            f"| {r.get('created_at', '?')}"
-        )
-    out.append("")
-
     # Token estimates
     system_tokens = _estimate_tokens(system_prompt)
     obs_tokens = _estimate_tokens(obs_text)
     total = system_tokens + obs_tokens
 
     out.append("=" * 60)
-    out.append("TOKEN ESTIMATES (Think call)")
+    out.append("TOKEN ESTIMATES")
     out.append("=" * 60)
     out.append(f"  System prompt:  ~{system_tokens} tokens")
-    out.append(f"  Observation:    ~{obs_tokens} tokens")
+    out.append(f"  User message:   ~{obs_tokens} tokens")
     out.append(f"  Total:          ~{total} tokens")
     out.append("  Note: follow-up rounds (tool results) are larger.")
     out.append("")
@@ -170,6 +172,7 @@ def main():
         Path(args.out).write_text(result, encoding="utf-8")
         print(f"Dumped to {args.out} ({len(result)} chars)")
     else:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
         print(result)
 
 
