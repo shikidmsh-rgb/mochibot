@@ -6,7 +6,7 @@ silent pause), NOT the async heartbeat loop.
 
 import pytest
 from datetime import datetime, timezone, timedelta
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 
 import mochi.heartbeat as hb
 
@@ -193,3 +193,57 @@ class TestCheckSilenceSleep:
             mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
             mock_dt.fromisoformat = datetime.fromisoformat
             assert hb.check_silence_sleep() is None
+
+
+class TestAct:
+    """_act dispatches side_effects + findings under the single schema."""
+
+    @pytest.mark.asyncio
+    async def test_empty_findings_logs_silent_no_dispatch(self):
+        """Empty findings → log think_silent, no chat_proactive call."""
+        with patch("mochi.heartbeat._dispatch_proactive", new=AsyncMock()) as mock_disp, \
+             patch("mochi.heartbeat.log_heartbeat") as mock_log:
+            await hb._act({"thought": "nothing to report", "findings": []}, user_id=1)
+        mock_disp.assert_not_called()
+        assert any("think_silent" in str(c) for c in mock_log.call_args_list)
+
+    @pytest.mark.asyncio
+    async def test_side_effect_executes_with_empty_findings(self):
+        """side_effects run unconditionally, even with empty findings."""
+        mock_diary = MagicMock()
+        with patch("mochi.heartbeat._dispatch_proactive", new=AsyncMock()) as mock_disp, \
+             patch.dict("sys.modules", {"mochi.diary": MagicMock(diary=mock_diary)}):
+            await hb._act({
+                "thought": "log only",
+                "findings": [],
+                "side_effects": [{"type": "update_diary", "content": "test entry"}],
+            }, user_id=1)
+        mock_disp.assert_not_called()
+        mock_diary.append.assert_called_once_with(
+            "test entry", source="think", section="今日日記",
+        )
+
+    @pytest.mark.asyncio
+    async def test_findings_dispatch_to_proactive(self):
+        """Non-empty findings → _dispatch_proactive called with the list."""
+        finding = {"topic": "habit_nudge", "summary": "Medicine 0/2"}
+        with patch("mochi.heartbeat._dispatch_proactive", new=AsyncMock()) as mock_disp:
+            await hb._act({
+                "thought": "Medicine overdue",
+                "findings": [finding],
+                "side_effects": [],
+            }, user_id=1)
+        mock_disp.assert_awaited_once_with([finding], 1)
+
+
+class TestThinkPromptNoSoul:
+    """Verify Think prompt no longer carries soul personality."""
+
+    def test_think_template_has_no_soul_placeholder(self):
+        """think_system.md must not contain {soul_personality} after refactor."""
+        from mochi.prompt_loader import get_prompt
+        template = get_prompt("think_system") or ""
+        assert "{soul_personality}" not in template, (
+            "think_system.md must not inject soul — Think is a scanner, "
+            "expression is delegated to chat_proactive"
+        )

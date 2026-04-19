@@ -655,27 +655,23 @@ def _should_think(observation: dict) -> bool:
 
 
 async def _think(observation: dict, user_id: int) -> dict | None:
-    """Ask LLM to decide what to do based on observation (Think V2).
+    """Ask LLM to scan responsibility zones and output findings.
 
-    Think V2: LLM IS the personality. It reads observation, reasons through
-    responsibility zones, and directly outputs the message the user sees.
-    No intermediate "notify" actions or translation layer.
-
-    Returns result dict or None.
-    Expected V2 format: {"thought": "...", "message": "...|null", "side_effects": [...]}
-    V1 fallback:        {"actions": [...], "thought": "..."}
+    Think is a scanner/triage view — no soul, no message authorship.
+    Reads observation + conversation history + diary + notes, outputs
+    {"thought": "...", "findings": [...], "side_effects": [...]}.
+    Expression is delegated to chat_proactive (which has soul + full context).
     """
     global _last_think_at
     _last_think_at = datetime.now(TZ)
 
-    # ── Build system prompt: soul + think instructions + core memory ──
-    soul = get_prompt("system_chat/soul") or ""
+    # ── Build system prompt: think instructions + time + core memory ──
     think_template = get_prompt("think_system")
     if not think_template:
         log.warning("think_system prompt not found")
         return None
 
-    system_prompt = think_template.replace("{soul_personality}", soul)
+    system_prompt = think_template
 
     now = datetime.now(TZ)
     now_str = now.strftime("%Y-%m-%d %H:%M:%S %z")
@@ -810,128 +806,34 @@ def _build_observation_text(obs: dict) -> str:
 # ═══════════════════════════════════════════════════════════════════════════
 
 async def _act(result: dict, user_id: int) -> None:
-    """Execute the Think decision (V2 + V1 backward compat).
+    """Execute the Think decision.
 
-    V2: result has "message" (str|null) + "side_effects" (array).
-        side_effects execute unconditionally; message goes through rate limiting.
-    V1 (fallback): result has "actions" array with notify/update_diary/etc.
+    Result schema: {"thought": "...", "findings": [...], "side_effects": [...]}
+    - side_effects execute unconditionally (diary/note/skill)
+    - findings (if non-empty) are dispatched to chat_proactive for soul-driven
+      expression. Empty findings = silent tick, no chat call.
     """
-    global _last_proactive_at, _proactive_count_today, _last_proactive_date
-
     thought = result.get("thought", "")
     if thought:
         log.info("Think thought: %s", thought[:200])
 
-    # ── V2 path: "message" or "side_effects" key present ──
-    if "message" in result or "side_effects" in result:
-        # 1. Execute side_effects unconditionally
-        for effect in result.get("side_effects", []):
-            etype = effect.get("type", "")
+    # 1. Execute side_effects unconditionally
+    for effect in result.get("side_effects", []):
+        etype = effect.get("type", "")
 
-            if etype == "update_diary":
-                try:
-                    from mochi.diary import diary
-                    entry = effect.get("content", "")
-                    if entry:
-                        diary.append(entry, source="think", section="今日日記")
-                        log_heartbeat(_state, "update_diary", entry[:100])
-                except Exception as e:
-                    log.warning("Diary update failed: %s", e)
-
-            elif etype == "manage_note":
-                note_action = effect.get("action", "")
-                raw_nid = effect.get("note_id")
-                if note_action == "remove" and raw_nid is not None:
-                    try:
-                        from mochi.skills import skill_for_tool, get_skill
-                        from mochi.skills.base import SkillContext
-                        sname = skill_for_tool("manage_note")
-                        skill = get_skill(sname) if sname else None
-                        if skill:
-                            ctx = SkillContext(
-                                trigger="heartbeat", user_id=user_id,
-                                tool_name="manage_note",
-                                args={"action": "remove", "note_id": int(raw_nid)},
-                            )
-                            sr = await skill.run(ctx)
-                            log_heartbeat(_state, "manage_note",
-                                          f"remove #{raw_nid}: {sr.output[:80]}")
-                        else:
-                            log.warning("manage_note: note skill not found")
-                    except Exception as e:
-                        log.error("manage_note error: %s", e)
-
-            elif etype == "run_skill":
-                skill_name = effect.get("skill", "")
-                skill_args = effect.get("args", {})
-                try:
-                    from mochi.skills import get_skill
-                    from mochi.skills.base import SkillContext
-                    skill = get_skill(skill_name)
-                    if not skill:
-                        log.warning("run_skill: skill %r not found", skill_name)
-                    else:
-                        ctx = SkillContext(
-                            trigger="heartbeat", user_id=user_id, args=skill_args,
-                        )
-                        sr = await skill.run(ctx)
-                        log_heartbeat(_state, f"run_skill:{skill_name}",
-                                      sr.output[:80])
-                except Exception as e:
-                    log.error("run_skill(%s) error: %s", skill_name, e,
-                              exc_info=True)
-
-            else:
-                log.warning("Unknown side_effect type: %s", etype)
-
-        # 2. Send message (with rate limiting)
-        message = result.get("message")
-        if message and isinstance(message, str) and message.strip():
-            await _send_proactive_message(message.strip(), user_id)
-        else:
-            log_heartbeat(_state, "think_silent")
-        return
-
-    # ── V1 fallback: "actions" array ──
-    actions = result.get("actions", [])
-    if not actions and result.get("type"):
-        actions = [result]
-
-    if not actions:
-        log_heartbeat(_state, "nothing")
-        return
-
-    # Separate notify actions from others
-    notify_actions = []
-    for action in actions:
-        action_type = action.get("type", "nothing")
-
-        if action_type == "nothing":
-            log_heartbeat(_state, "nothing")
-
-        elif action_type == "notify":
-            notify_actions.append(action)
-
-        elif action_type == "save_memory":
-            from mochi.db import save_memory_item
-            mem_content = action.get("content", "")
-            if mem_content:
-                save_memory_item(user_id, category="observation", content=mem_content)
-                log_heartbeat(_state, "save_memory", mem_content[:100])
-
-        elif action_type == "update_diary":
+        if etype == "update_diary":
             try:
                 from mochi.diary import diary
-                entry = action.get("content", "")
+                entry = effect.get("content", "")
                 if entry:
                     diary.append(entry, source="think", section="今日日記")
                     log_heartbeat(_state, "update_diary", entry[:100])
             except Exception as e:
                 log.warning("Diary update failed: %s", e)
 
-        elif action_type == "manage_note":
-            note_action = action.get("action", "")
-            raw_nid = action.get("note_id")
+        elif etype == "manage_note":
+            note_action = effect.get("action", "")
+            raw_nid = effect.get("note_id")
             if note_action == "remove" and raw_nid is not None:
                 try:
                     from mochi.skills import skill_for_tool, get_skill
@@ -951,13 +853,10 @@ async def _act(result: dict, user_id: int) -> None:
                         log.warning("manage_note: note skill not found")
                 except Exception as e:
                     log.error("manage_note error: %s", e)
-            else:
-                log.warning("manage_note: invalid action=%r or note_id=%r",
-                            note_action, raw_nid)
 
-        elif action_type == "run_skill":
-            skill_name = action.get("skill", "")
-            skill_args = action.get("args", {})
+        elif etype == "run_skill":
+            skill_name = effect.get("skill", "")
+            skill_args = effect.get("args", {})
             try:
                 from mochi.skills import get_skill
                 from mochi.skills.base import SkillContext
@@ -969,77 +868,30 @@ async def _act(result: dict, user_id: int) -> None:
                         trigger="heartbeat", user_id=user_id, args=skill_args,
                     )
                     sr = await skill.run(ctx)
-                    if sr.success:
-                        for sa in sr.actions:
-                            if sa.get("type") == "message":
-                                notify_actions.append({
-                                    "type": "notify",
-                                    "topic": "skill_result",
-                                    "summary": sa.get("content", "")[:200],
-                                })
-                        log_heartbeat(_state, f"run_skill:{skill_name}",
-                                      sr.output[:80])
-                    else:
-                        log.warning("run_skill(%s) failed: %s",
-                                    skill_name, sr.output[:100])
-                        log_heartbeat(_state, f"run_skill:{skill_name}",
-                                      f"FAIL: {sr.output[:80]}")
+                    log_heartbeat(_state, f"run_skill:{skill_name}",
+                                  sr.output[:80])
             except Exception as e:
                 log.error("run_skill(%s) error: %s", skill_name, e,
                           exc_info=True)
 
         else:
-            log.warning("Unknown action type: %s", action_type)
-            log_heartbeat(_state, "unknown", str(action)[:200])
+            log.warning("Unknown side_effect type: %s", etype)
 
-    # Dispatch notify actions through chat_proactive (V1 path)
-    if not notify_actions:
+    # 2. Dispatch findings to chat_proactive (soul-driven expression)
+    findings = result.get("findings", [])
+    if not findings:
+        log_heartbeat(_state, "think_silent")
         return
 
-    await _dispatch_proactive_v1(notify_actions, user_id)
+    await _dispatch_proactive(findings, user_id)
 
 
-async def _send_proactive_message(message: str, user_id: int) -> None:
-    """Rate-limit and deliver Think V2's direct message."""
-    global _last_proactive_at, _proactive_count_today, _last_proactive_date
+async def _dispatch_proactive(findings: list[dict], user_id: int) -> None:
+    """Rate-limit, generate via chat_proactive (soul演绎), and deliver.
 
-    now = datetime.now(TZ)
-    today = now.strftime("%Y-%m-%d")
-    if today != _last_proactive_date:
-        _proactive_count_today = 0
-        _last_proactive_date = today
-
-    if _proactive_count_today >= _effective('MAX_DAILY_PROACTIVE'):
-        log.info("Daily proactive limit reached (%d)", _effective('MAX_DAILY_PROACTIVE'))
-        log_heartbeat(_state, "rate_limited")
-        return
-
-    if _last_proactive_at:
-        elapsed = (now - _last_proactive_at).total_seconds()
-        cooldown = _effective('PROACTIVE_COOLDOWN_SECONDS')
-        if elapsed < cooldown:
-            log.info("Proactive cooldown active (%ds remaining)", cooldown - elapsed)
-            log_heartbeat(_state, "cooldown")
-            return
-
-    if not _send_callback:
-        log_heartbeat(_state, "notify_skipped", "no send callback")
-        return
-
-    await _send_callback(user_id, message)
-    _last_proactive_at = now
-    _proactive_count_today += 1
-    save_message(user_id, "assistant", message)
-    log_proactive(message, "think_v2")
-    log_heartbeat(_state, "proactive:think_v2", message[:100])
-    log.info("Proactive message sent [think_v2] (%d/%d today)",
-             _proactive_count_today, _effective('MAX_DAILY_PROACTIVE'))
-
-
-async def _dispatch_proactive_v1(notify_actions: list[dict], user_id: int) -> None:
-    """V1 legacy: rate-limit, generate via chat_proactive, and deliver.
-
-    DEPRECATED — kept for V1 fallback and goodnight path.
+    Single delivery funnel for all proactive messages. Findings are passed
+    to chat_proactive which renders them in the bot's voice with full
+    chat-side context (soul + diary + memory + history).
     """
     global _last_proactive_at, _proactive_count_today, _last_proactive_date
 
@@ -1066,12 +918,12 @@ async def _dispatch_proactive_v1(notify_actions: list[dict], user_id: int) -> No
     # Generate message via chat_proactive
     from mochi.ai_client import chat_proactive
 
-    topics = [a.get("topic", "general") for a in notify_actions]
+    topics = [a.get("topic", "general") for a in findings]
     topics_str = ",".join(topics)
 
     try:
         msg = await _llm_with_timeout(
-            chat_proactive(notify_actions, user_id), "chat_proactive")
+            chat_proactive(findings, user_id), "chat_proactive")
     except Exception as e:
         log.error("chat_proactive exception: %s", e, exc_info=True)
         log_heartbeat(_state, "proactive_failed", f"exception: {e}"[:200])
@@ -1090,7 +942,7 @@ async def _dispatch_proactive_v1(notify_actions: list[dict], user_id: int) -> No
                      _effective('MAX_DAILY_PROACTIVE'))
 
             if any("maintenance" in (a.get("summary", "") + a.get("content", "")).lower()
-                   for a in notify_actions):
+                   for a in findings):
                 clear_maintenance_summary()
         else:
             log_heartbeat(_state, "notify_skipped", "no send callback")
@@ -1100,7 +952,7 @@ async def _dispatch_proactive_v1(notify_actions: list[dict], user_id: int) -> No
         log_heartbeat(_state, f"proactive_skip:{topics_str}")
 
     else:
-        log.warning("chat_proactive returned None for %d finding(s)", len(notify_actions))
+        log.warning("chat_proactive returned None for %d finding(s)", len(findings))
         log_heartbeat(_state, "proactive_failed", "returned None")
 
 

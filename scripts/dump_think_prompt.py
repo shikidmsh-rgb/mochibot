@@ -73,9 +73,8 @@ async def dump() -> str:
         return "\n".join(out)
 
     # ── Build system prompt: mirror _think() exactly ──
-    soul = get_prompt("system_chat/soul") or ""
     think_template = get_prompt("think_system") or "(think_system prompt not found)"
-    system_prompt = think_template.replace("{soul_personality}", soul)
+    system_prompt = think_template
 
     now_str = now.strftime("%Y-%m-%d %H:%M:%S %z")
     system_prompt += f"\n\n当前时间：{now_str}"

@@ -144,6 +144,8 @@ class TestChatProactive:
              patch("mochi.ai_client.get_prompt", return_value="Generate a message based on: {findings_text}"), \
              patch("mochi.ai_client.get_core_memory", return_value="User is a morning person"), \
              patch("mochi.ai_client.get_recent_messages", return_value=[]), \
+             patch("mochi.ai_client._retrieve_memories_for_turn", return_value=[]), \
+             patch("mochi.diary.diary.read", return_value=""), \
              patch("mochi.ai_client.log_usage"):
             result = await chat_proactive(
                 [{"topic": "morning", "summary": "First tick of the day"}],
@@ -165,6 +167,8 @@ class TestChatProactive:
              patch("mochi.ai_client.get_prompt", return_value="Generate: {findings_text}"), \
              patch("mochi.ai_client.get_core_memory", return_value=""), \
              patch("mochi.ai_client.get_recent_messages", return_value=[]), \
+             patch("mochi.ai_client._retrieve_memories_for_turn", return_value=[]), \
+             patch("mochi.diary.diary.read", return_value=""), \
              patch("mochi.ai_client.log_usage"):
             result = await chat_proactive(
                 [{"topic": "silence", "summary": "User has been silent"}],
@@ -184,7 +188,9 @@ class TestChatProactive:
         with patch("mochi.ai_client.get_client_for_tier", side_effect=Exception("API down")), \
              patch("mochi.ai_client.get_prompt", return_value="Prompt: {findings_text}"), \
              patch("mochi.ai_client.get_core_memory", return_value=""), \
-             patch("mochi.ai_client.get_recent_messages", return_value=[]):
+             patch("mochi.ai_client.get_recent_messages", return_value=[]), \
+             patch("mochi.ai_client._retrieve_memories_for_turn", return_value=[]), \
+             patch("mochi.diary.diary.read", return_value=""):
             with pytest.raises(Exception, match="API down"):
                 await chat_proactive(
                     [{"topic": "test", "summary": "test"}],
@@ -204,6 +210,8 @@ class TestChatProactive:
              patch("mochi.ai_client.get_prompt", return_value="Prompt: {findings_text}"), \
              patch("mochi.ai_client.get_core_memory", return_value=""), \
              patch("mochi.ai_client.get_recent_messages", return_value=[]), \
+             patch("mochi.ai_client._retrieve_memories_for_turn", return_value=[]), \
+             patch("mochi.diary.diary.read", return_value=""), \
              patch("mochi.ai_client.log_usage"):
             result = await chat_proactive(
                 [{"topic": "test", "summary": "test"}],
@@ -216,12 +224,41 @@ class TestChatProactive:
         """chat_proactive returns None when proactive_chat prompt is missing."""
         with patch("mochi.ai_client.get_core_memory", return_value=""), \
              patch("mochi.ai_client.get_recent_messages", return_value=[]), \
+             patch("mochi.ai_client._retrieve_memories_for_turn", return_value=[]), \
+             patch("mochi.diary.diary.read", return_value=""), \
              patch("mochi.ai_client.get_prompt", return_value=""):
             result = await chat_proactive(
                 [{"topic": "test", "summary": "test"}],
                 user_id=1,
             )
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_full_context_passed_to_system_prompt(self):
+        """chat_proactive passes recall + diary into _build_system_prompt."""
+        mock_client = MagicMock()
+        mock_client.chat.return_value = LLMResponse(
+            content="hi", prompt_tokens=1, completion_tokens=1, total_tokens=2,
+            model="test-model",
+        )
+        recalled = [{"ts": "2026-04-19", "category": "fact", "text": "likes tea"}]
+        with patch("mochi.ai_client.get_client_for_tier", return_value=mock_client), \
+             patch("mochi.ai_client.get_prompt", return_value="P: {findings_text}"), \
+             patch("mochi.ai_client.get_core_memory", return_value="core"), \
+             patch("mochi.ai_client.get_recent_messages", return_value=[]), \
+             patch("mochi.ai_client._retrieve_memories_for_turn", return_value=recalled), \
+             patch("mochi.diary.diary.read", side_effect=lambda s: f"diary:{s}"), \
+             patch("mochi.ai_client._build_system_prompt", return_value="sys") as mock_build, \
+             patch("mochi.ai_client.log_usage"):
+            await chat_proactive(
+                [{"topic": "habit_nudge", "summary": "Medicine 0/2"}],
+                user_id=1,
+            )
+        kwargs = mock_build.call_args.kwargs
+        assert kwargs["core_memory"] == "core"
+        assert kwargs["recalled_memories"] == recalled
+        assert kwargs["diary_status"] == "diary:今日状態"
+        assert kwargs["diary_journal"] == "diary:今日日記"
 
 
 def _make_msg(text="hello"):

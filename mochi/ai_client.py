@@ -843,13 +843,11 @@ async def chat(message: IncomingMessage) -> ChatResult:
 async def chat_proactive(findings: list[dict], user_id: int) -> str | None:
     """Generate a proactive message using the Chat persona.
 
-    DEPRECATED: Think V2 generates messages directly. This function is only
-    used by the V1 fallback path and the goodnight (silence-sleep) path.
-    Will be removed once goodnight is migrated to Think V2.
-
-    Takes structured findings from Think (heartbeat) and passes them through
-    the full Chat model with personality, core memory, and conversation history.
-    The LLM decides how to express the findings — or skip them entirely.
+    Single delivery path for all heartbeat-driven proactive messages.
+    Takes findings from Think (scanner view) and renders them in the bot's
+    voice with FULL chat-side context: soul + user.md + core memory +
+    auto-recalled memories + diary status + diary journal + conversation
+    history. The LLM演绎 the findings — or skips them entirely.
 
     Returns:
         Generated message text, "[SKIP]" sentinel, or None on failure.
@@ -875,12 +873,28 @@ async def chat_proactive(findings: list[dict], user_id: int) -> str | None:
     findings_text = "\n".join(lines)
 
     try:
-        # Build system prompt (personality + core memory + time, no tools)
-        core_memory = get_core_memory(user_id)
-        system_prompt = _build_system_prompt(user_id, core_memory=core_memory)
+        # Synthesize a recall query from finding summaries so memory recall
+        # picks up context relevant to what we're about to talk about.
+        recall_query = " ".join(f.get("summary", "") for f in findings)[:500]
 
-        # Load conversation history (shorter window than regular chat)
-        history = get_recent_messages(user_id, limit=PROACTIVE_CHAT_HISTORY_TURNS)
+        # Parallel fetch: core memory + history + recalled memories + diary
+        from mochi.diary import diary as _diary
+        core_memory, history, recalled_memories = await asyncio.gather(
+            asyncio.to_thread(get_core_memory, user_id),
+            asyncio.to_thread(get_recent_messages, user_id,
+                              PROACTIVE_CHAT_HISTORY_TURNS),
+            asyncio.to_thread(_retrieve_memories_for_turn, recall_query, user_id),
+        )
+        diary_status = await asyncio.to_thread(_diary.read, "今日状態")
+        diary_journal = await asyncio.to_thread(_diary.read, "今日日記")
+
+        # Build full chat-side system prompt (proactive needs diary_status —
+        # unlike user-initiated chat which omits it to avoid parroting)
+        system_prompt = _build_system_prompt(
+            user_id, core_memory=core_memory,
+            recalled_memories=recalled_memories,
+            diary_status=diary_status, diary_journal=diary_journal,
+        )
 
         # Load proactive_chat prompt and inject findings
         instruction = get_prompt("proactive_chat")
