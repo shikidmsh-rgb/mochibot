@@ -1846,6 +1846,15 @@ if HAS_FASTAPI:
         except ImportError:
             return {"ok": True, "errors": [], "count": 0}
 
+    @app.get("/api/models/health", dependencies=[Depends(_verify_token)])
+    async def api_models_health():
+        """Return per-tier model health statistics."""
+        try:
+            from mochi.model_health import get_health
+            return {"ok": True, "tiers": get_health()}
+        except ImportError:
+            return {"ok": True, "tiers": {}}
+
     @app.get("/api/diagnostics/export", dependencies=[Depends(_verify_token)])
     async def api_diagnostics_export():
         """Generate full diagnostic report as downloadable text file."""

@@ -1623,6 +1623,11 @@ async function loadWelcome() {
     html += '<span style="font-size:11px;color:var(--text-soft)">包含系统信息、配置摘要、错误日志（API Key 已脱敏）</span>';
     html += '</div></div>';
 
+    // ── Model Health ──
+    html += '<div class="card"><div class="card-title">模型健康</div>';
+    html += '<div id="model-health-content" style="font-size:13px;color:var(--text-soft)">加载中…</div>';
+    html += '</div>';
+
     el.innerHTML = html;
 
     // Lazy-load error details (don't block initial render)
@@ -1643,6 +1648,41 @@ async function loadWelcome() {
         container.innerHTML = h;
       }).catch(() => {});
     }
+
+    // Lazy-load model health
+    api('GET', '/models/health').then(d => {
+      const container = document.getElementById('model-health-content');
+      if (!container) return;
+      const tiers = d.tiers || {};
+      const tierNames = Object.keys(tiers);
+      if (!tierNames.length) {
+        container.innerHTML = '<span style="color:var(--text-soft)">暂无数据（Bot 启动后开始统计）</span>';
+        return;
+      }
+      let h = '';
+      for (const tier of tierNames) {
+        const t = tiers[tier];
+        const rate = t.success_rate;
+        const color = rate < 0.7 ? 'var(--danger, #e53935)' : rate < 0.9 ? '#e65100' : 'var(--success, #43a047)';
+        const pct = (rate * 100).toFixed(1);
+        h += `<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">`;
+        h += `<span class="badge" style="min-width:48px;text-align:center">${esc(tier)}</span>`;
+        h += `<span style="color:${color};font-weight:600">${pct}%</span>`;
+        h += `<span style="color:var(--text-soft);font-size:12px">(${t.total - t.failures}/${t.total})</span>`;
+        if (t.consecutive_failures > 0) {
+          h += `<span style="color:#e65100;font-size:12px">连续失败 ${t.consecutive_failures} 次</span>`;
+        }
+        h += `</div>`;
+        if (t.last_error) {
+          const ts = t.last_error_time ? new Date(t.last_error_time * 1000).toLocaleTimeString() : '';
+          h += `<div style="font-size:11px;color:var(--text-soft);margin:-2px 0 8px 58px">最近失败: ${esc(t.last_error)}${ts ? ' (' + ts + ')' : ''}</div>`;
+        }
+      }
+      container.innerHTML = h;
+    }).catch(() => {
+      const container = document.getElementById('model-health-content');
+      if (container) container.innerHTML = '<span style="color:var(--text-soft)">无法获取模型健康数据</span>';
+    });
 
     // Restore active QR flow UI after DOM rebuild
     if (_wxQrPollTimer && _wxQrActiveContent) {

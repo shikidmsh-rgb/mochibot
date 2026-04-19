@@ -265,14 +265,20 @@ async def classify_skills_llm(message: str, user_id: int | None = None,
         skills = result.get("skills", [])
         if isinstance(skills, list):
             log.info("Router classified: %s", skills)
+            from mochi.model_health import record_success
+            record_success("lite")
             return skills
         return None
 
     except (json.JSONDecodeError, KeyError) as e:
         log.warning("Router JSON parse failed: %s", e)
+        from mochi.model_health import record_failure
+        record_failure("lite", str(e))
         return None
     except Exception as e:
         log.warning("Router LLM call failed: %s", e)
+        from mochi.model_health import record_failure
+        record_failure("lite", str(e))
         return None
 
 

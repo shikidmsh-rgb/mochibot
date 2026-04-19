@@ -600,6 +600,7 @@ async def chat(message: IncomingMessage) -> ChatResult:
     # ── Skill mode: /skilloff skips router + non-core tools ──
     from mochi.db import get_skill_mode
     skill_mode_off = get_skill_mode() == "off"
+    _health_warning = ""
 
     if skill_mode_off:
         # Minimal path: core skills only, no prerouter
@@ -634,6 +635,10 @@ async def chat(message: IncomingMessage) -> ChatResult:
         always_on = skill_registry.get_always_on_skill_names(
             transport=message.transport)
         all_skill_names = list(dict.fromkeys(always_on + skill_names))
+
+        from mochi.model_health import should_warn_user, get_warning_message
+        if should_warn_user("lite"):
+            _health_warning = get_warning_message("lite")
 
         # Tier from router-selected skills only (always-on are lite,
         # shouldn't downgrade default "chat" tier for pure-chat messages)
@@ -827,6 +832,8 @@ async def chat(message: IncomingMessage) -> ChatResult:
     )
     save_message(user_id, "assistant", reply, tool_history=tool_history_json)
     prewarm_conv_summary_if_needed(user_id)
+    if _health_warning and reply:
+        reply += _health_warning
     return ChatResult(text=reply, stickers=pending_stickers)
 
 
