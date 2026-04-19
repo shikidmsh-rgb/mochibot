@@ -220,7 +220,7 @@ async def classify_skills_llm(message: str, user_id: int | None = None,
     Returns list of skill names, or None on failure.
     """
     try:
-        from mochi.llm import get_client_for_tier
+        from mochi.llm import get_client_for_tier, extract_json
         from mochi.db import log_usage
     except ImportError:
         log.warning("LLM imports failed, router returning None")
@@ -262,7 +262,7 @@ async def classify_skills_llm(message: str, user_id: int | None = None,
             response.total_tokens, model=response.model, purpose="tool_router",
         )
 
-        result = json.loads(response.content)
+        result = json.loads(extract_json(response.content))
         skills = result.get("skills", [])
         if isinstance(skills, list):
             log.info("Router classified: %s", skills)

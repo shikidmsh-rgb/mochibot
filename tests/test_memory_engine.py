@@ -1,16 +1,16 @@
-"""Tests for mochi/memory_engine.py — JSON parsing, extract/dedup/outdated/salience/audit."""
+"""Tests for mochi/memory_engine.py — JSON parsing wrapper + maintenance ops."""
 
 import pytest
 from unittest.mock import patch, MagicMock
 
 
-# ── JSON Parsing ──
+# ── JSON Parsing wrapper (delegates to mochi.llm.extract_json) ──
 
-class TestParseGptJson:
+class TestParseLlmJson:
 
     def _parse(self, raw):
-        from mochi.memory_engine import _parse_gpt_json
-        return _parse_gpt_json(raw)
+        from mochi.memory_engine import _parse_llm_json
+        return _parse_llm_json(raw)
 
     def test_valid_object(self):
         assert self._parse('{"key": "value"}') == {"key": "value"}
@@ -37,12 +37,15 @@ class TestParseGptJson:
         assert self._parse(raw) == {"key": "val"}
 
     def test_array_in_surrounding_text(self):
-        """_parse_gpt_json extracts {} before [] — so inner dict is matched."""
+        """raw_decode finds the outer array as the first complete JSON."""
         raw = 'Extracted: [{"content": "likes tea"}] end'
         result = self._parse(raw)
-        # The parser tries {} pattern first, so it extracts the inner dict
-        assert isinstance(result, dict)
-        assert result["content"] == "likes tea"
+        assert isinstance(result, list)
+        assert result[0]["content"] == "likes tea"
+
+    def test_reasoning_xml_wrapper(self):
+        raw = '<thinking>let me think</thinking>\n{"key": "val"}'
+        assert self._parse(raw) == {"key": "val"}
 
     def test_completely_invalid(self):
         assert self._parse("not json at all") == {}

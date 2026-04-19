@@ -25,7 +25,7 @@ from mochi.config import (
     TZ,
     OWNER_USER_ID,
 )
-from mochi.llm import get_client_for_tier
+from mochi.llm import get_client_for_tier, extract_json
 from mochi.prompt_loader import get_prompt
 from mochi.db import (
     log_heartbeat,
@@ -715,13 +715,16 @@ async def _think(observation: dict, user_id: int) -> dict | None:
 
     # Parse JSON result. Provider layer enforces JSON output natively
     # (response_format / response_mime_type) and strips any markdown fence
-    # for json_mode=True; this except branch is the last-resort safety net.
+    # plus reasoning XML wrappers via extract_json. The extra extract_json
+    # call here is defense-in-depth for third-party gateways that may not
+    # honor response_format.
     try:
-        result = json.loads(response.content)
+        result = json.loads(extract_json(response.content))
         if isinstance(result, dict):
             return result
-    except json.JSONDecodeError:
-        log.warning("Think response was not valid JSON")
+    except (json.JSONDecodeError, TypeError) as e:
+        log.warning("Think response was not valid JSON: %s | raw: %s",
+                    e, (response.content or "")[:500])
     return None
 
 

@@ -16,7 +16,6 @@ Nightly cycle: extract → deduplicate → outdated → salience → audit core 
 
 import json
 import logging
-import re
 from collections import defaultdict
 from datetime import datetime, timedelta
 
@@ -30,7 +29,7 @@ from mochi.config import (
     MEMORY_DEMOTE_MIN_ACCESS,
     TZ,
 )
-from mochi.llm import get_client_for_tier
+from mochi.llm import get_client_for_tier, extract_json
 from mochi.prompt_loader import get_prompt
 from mochi.db import (
     get_core_memory, update_core_memory,
@@ -54,47 +53,22 @@ _RELATIONAL_TOKEN_BUDGET = 700
 # JSON Parsing Helper
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _parse_gpt_json(raw: str) -> dict | list:
-    """Robustly parse JSON from LLM output.
+def _parse_llm_json(raw: str, purpose: str = "memory_op") -> dict | list:
+    """Parse JSON from an LLM response. Returns {} on failure.
 
-    Handles markdown fences, trailing commas, and stray text around JSON.
+    Delegates extraction to mochi.llm.extract_json (handles fences,
+    reasoning XML wrappers, prose, trailing commas). Logs at error
+    level with a 500-char raw snippet so failures surface in the
+    admin diagnostic report's error_buffer ring.
     """
     if not raw:
         return {}
-
-    # Strip markdown code fences
-    cleaned = re.sub(r"^```(?:json)?\s*\n?", "", raw.strip(), flags=re.MULTILINE)
-    cleaned = re.sub(r"\n?```\s*$", "", cleaned.strip(), flags=re.MULTILINE)
-
-    # Try direct parse first
     try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError:
-        pass
-
-    # Remove trailing commas before } or ]
-    no_trailing = re.sub(r",\s*([}\]])", r"\1", cleaned)
-    try:
-        return json.loads(no_trailing)
-    except json.JSONDecodeError:
-        pass
-
-    # Try to extract JSON object or array from surrounding text
-    for pattern in [r"\{[\s\S]*\}", r"\[[\s\S]*\]"]:
-        match = re.search(pattern, cleaned)
-        if match:
-            try:
-                return json.loads(match.group())
-            except json.JSONDecodeError:
-                # Try with trailing comma fix
-                candidate = re.sub(r",\s*([}\]])", r"\1", match.group())
-                try:
-                    return json.loads(candidate)
-                except json.JSONDecodeError:
-                    pass
-
-    log.warning("Failed to parse JSON from LLM output: %s", raw[:200])
-    return {}
+        return json.loads(extract_json(raw))
+    except (json.JSONDecodeError, TypeError) as e:
+        log.error("LLM JSON parse failed (%s): %s | raw: %s",
+                  purpose, e, raw[:500])
+        return {}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -164,7 +138,7 @@ def extract_memories(user_id: int = 0) -> int:
     # Parse extracted memories (expects JSON array)
     count = 0
     relational_items: list[str] = []
-    parsed = _parse_gpt_json(response.content)
+    parsed = _parse_llm_json(response.content, "memory_extract")
     memories = parsed if isinstance(parsed, list) else parsed.get("memories", [])
     for mem in memories:
         if isinstance(mem, dict) and "content" in mem:
@@ -318,7 +292,7 @@ def deduplicate_memories(user_id: int = 0) -> int:
             response.total_tokens, model=response.model, purpose="memory_dedup",
         )
 
-        parsed = _parse_gpt_json(response.content)
+        parsed = _parse_llm_json(response.content, "memory_dedup")
         operations = parsed.get("operations", []) if isinstance(parsed, dict) else parsed
         if isinstance(operations, list):
             for op in operations:
@@ -405,7 +379,7 @@ def remove_outdated_memories(user_id: int = 0) -> dict:
                 response.total_tokens, model=response.model, purpose="memory_outdated",
             )
 
-            parsed = _parse_gpt_json(response.content)
+            parsed = _parse_llm_json(response.content, "memory_outdated")
             operations = parsed.get("operations", []) if isinstance(parsed, dict) else parsed
             if isinstance(operations, list):
                 for op in operations:
@@ -552,7 +526,7 @@ def rebalance_salience(user_id: int = 0) -> dict:
             response.total_tokens, model=response.model, purpose="salience_rebalance",
         )
 
-        parsed = _parse_gpt_json(response.content)
+        parsed = _parse_llm_json(response.content, "salience_rebalance")
         operations = parsed.get("operations", []) if isinstance(parsed, dict) else parsed
         if not isinstance(operations, list):
             operations = []
@@ -744,7 +718,7 @@ def extract_kg(user_id: int = 0) -> dict:
         log.error("KG extraction LLM call failed: %s", e)
         return {}
 
-    parsed = _parse_gpt_json(response.content)
+    parsed = _parse_llm_json(response.content, "kg_extract")
     if not isinstance(parsed, dict):
         return {}
 

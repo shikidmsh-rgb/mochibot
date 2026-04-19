@@ -11,6 +11,7 @@ Usage:
 
 import json
 import logging
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, TypedDict
@@ -71,29 +72,89 @@ class LLMProvider(ABC):
         ...
 
 
-_FENCE_RE = None
+# Anchored fence matcher. The ^...$ anchors are an INVARIANT: they prevent
+# matching fences that appear inside JSON string values (e.g. {"x": "```json"}).
+# Do not relax to a non-anchored search — see TestStripJsonFence + case 20.
+_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*\n?(.*?)\n?\s*```\s*$", re.DOTALL)
+
+# Reasoning-model wrappers some models emit around (or instead of) JSON.
+# Paired non-greedy match: a TRUNCATED tag (no closing) WILL NOT match,
+# which is intentional — better to leave content alone than risk eating
+# real JSON because the closing tag is missing.
+_REASONING_XML_RE = re.compile(
+    r"<(thinking|analysis|reasoning|scratchpad)>.*?</\1>",
+    re.DOTALL | re.IGNORECASE,
+)
+
+# Trailing comma before } or ] — a common LLM JSON defect.
+_TRAILING_COMMA_RE = re.compile(r",\s*([}\]])")
 
 
-def _strip_json_fence(content: str) -> str:
-    """Strip a single markdown code fence wrapping a JSON payload.
+def _try_extract(s: str) -> str | None:
+    """Find the first complete JSON object/array in s using stdlib raw_decode.
 
-    Only invoked when the caller passed json_mode=True. Safe to call when
-    there is no fence — returns content unchanged.
-
-    Handles the dominant failure mode observed across providers (gpt-5.2-chat,
-    Gemini Flash, Haiku): ```json\\n{...}\\n``` or ```\\n{...}\\n```.
+    Returns the JSON substring on success, None if no parseable JSON found.
+    O(n²) worst case — do not call on >100KB inputs (LLM JSON < 10KB in
+    practice). One trailing-comma fixup retry per candidate position.
     """
-    global _FENCE_RE
-    if _FENCE_RE is None:
-        import re
-        _FENCE_RE = re.compile(r"^\s*```(?:json)?\s*\n?(.*?)\n?\s*```\s*$",
-                               re.DOTALL)
+    decoder = json.JSONDecoder()
+    for i, ch in enumerate(s):
+        if ch not in "{[":
+            continue
+        try:
+            _, end = decoder.raw_decode(s[i:])
+            return s[i:i + end]
+        except json.JSONDecodeError:
+            chunk = s[i:]
+            fixed = _TRAILING_COMMA_RE.sub(r"\1", chunk)
+            if fixed != chunk:
+                try:
+                    _, end = decoder.raw_decode(fixed)
+                    return fixed[:end]
+                except json.JSONDecodeError:
+                    pass
+            continue
+    return None
+
+
+def extract_json(content: str) -> str:
+    """Extract the first complete JSON object/array from a string.
+
+    Handles four real-world failure modes from reasoning-era LLMs:
+      1. Markdown fence wrap: ```json\\n{...}\\n```
+      2. Reasoning XML wrap: <thinking>...</thinking>{...}
+      3. Prose before/after: "Sure, here you go: {...}"
+      4. Trailing commas: {"a": 1,}
+
+    Strategy — fence strip → FAST PATH (raw_decode on stripped content) →
+    SLOW PATH (strip reasoning XML, retry). The fast path runs FIRST so
+    that legitimate JSON containing XML-shaped string values (e.g.
+    {"comment": "<analysis>..."}) is never corrupted.
+
+    NEVER raises. On total failure returns the (best-effort stripped)
+    content so the caller's json.loads gives a clear error including
+    the raw input.
+    """
     if not content:
-        return content
-    m = _FENCE_RE.match(content)
-    if m:
-        return m.group(1).strip()
-    return content
+        return ""
+    s = content.strip()
+
+    fence_match = _FENCE_RE.match(s)
+    if fence_match:
+        s = fence_match.group(1).strip()
+
+    result = _try_extract(s)
+    if result is not None:
+        return result
+
+    stripped = _REASONING_XML_RE.sub("", s).strip()
+    if stripped != s:
+        result = _try_extract(stripped)
+        if result is not None:
+            return result
+        s = stripped
+
+    return s
 
 
 def _parse_openai_tool_calls(choice) -> list[ToolCallDict]:
@@ -354,7 +415,7 @@ class OpenAIProvider(_OpenAICompatChat, LLMProvider):
         response = _openai_response(choice, resp.usage, self._model,
                                     _parse_openai_tool_calls(choice))
         if json_mode and response.content:
-            response.content = _strip_json_fence(response.content)
+            response.content = extract_json(response.content)
         return response
 
 
@@ -390,7 +451,7 @@ class AzureOpenAIProvider(_OpenAICompatChat, LLMProvider):
         response = _openai_response(choice, resp.usage, self._deployment,
                                     _parse_openai_tool_calls(choice))
         if json_mode and response.content:
-            response.content = _strip_json_fence(response.content)
+            response.content = extract_json(response.content)
         return response
 
 
@@ -449,7 +510,7 @@ class AnthropicProvider(LLMProvider):
                 })
 
         if json_mode and content:
-            content = _strip_json_fence(content)
+            content = extract_json(content)
 
         return LLMResponse(
             content=content,
@@ -603,7 +664,7 @@ class GeminiProvider(LLMProvider):
                     })
 
         if json_mode and content:
-            content = _strip_json_fence(content)
+            content = extract_json(content)
 
         usage = resp.usage_metadata
         prompt_tokens = getattr(usage, "prompt_token_count", 0) or 0 if usage else 0

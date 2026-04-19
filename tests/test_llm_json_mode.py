@@ -18,7 +18,7 @@ import pytest
 
 from mochi.llm import (
     OpenAIProvider, AzureOpenAIProvider, AnthropicProvider, GeminiProvider,
-    _OpenAICompatChat, _strip_json_fence,
+    _OpenAICompatChat, extract_json,
 )
 
 
@@ -68,31 +68,149 @@ def _reset_caches():
     _OpenAICompatChat._json_mode_caps.clear()
 
 
-# ── _strip_json_fence ─────────────────────────────────────────────────────
+# ── extract_json: fence-anchor invariant + reasoning-era robustness ──────
 
 class TestStripJsonFence:
-    """Verify the framework-layer markdown fence stripper."""
+    """Fence-anchor invariant guardian.
+
+    These tests守护 the ^...$ anchored fence regex inside extract_json:
+    fences must only be stripped when they wrap the WHOLE payload, never
+    fences-as-content inside a JSON string value. Any future change that
+    relaxes the anchor will break these tests + case 20 below.
+    """
 
     @pytest.mark.parametrize("sample", REAL_GPT_FENCE_SAMPLES)
     def test_real_gpt_samples_stripped(self, sample):
-        result = _strip_json_fence(sample)
-        # Result should be parseable JSON (no fence)
+        result = extract_json(sample)
         import json
         json.loads(result)
 
     def test_no_fence_unchanged(self):
-        assert _strip_json_fence('{"a":1}') == '{"a":1}'
+        assert extract_json('{"a":1}') == '{"a":1}'
 
-    def test_plain_text_unchanged(self):
-        assert _strip_json_fence('plain text response') == 'plain text response'
+    def test_plain_text_returns_input(self):
+        # No JSON found — extract_json returns the (stripped) input so that
+        # the caller's json.loads gives a clear error including the raw.
+        assert extract_json('plain text response') == 'plain text response'
 
     def test_empty_unchanged(self):
-        assert _strip_json_fence('') == ''
+        assert extract_json('') == ''
 
     def test_fence_with_surrounding_whitespace(self):
-        result = _strip_json_fence('  \n```json\n{"x":1}\n```  \n')
+        result = extract_json('  \n```json\n{"x":1}\n```  \n')
         import json
         assert json.loads(result) == {"x": 1}
+
+
+class TestExtractJson:
+    """Reasoning-era robustness — covers fence, XML wrappers, prose, edge cases."""
+
+    def _parse(self, raw):
+        import json
+        return json.loads(extract_json(raw))
+
+    # 1-2: pure JSON
+    def test_pure_object(self):
+        assert self._parse('{"a":1}') == {"a": 1}
+
+    def test_pure_array(self):
+        assert self._parse('[1,2,3]') == [1, 2, 3]
+
+    # 3-4: markdown fence
+    def test_fence_with_lang(self):
+        assert self._parse('```json\n{"a":1}\n```') == {"a": 1}
+
+    def test_fence_no_lang(self):
+        assert self._parse('```\n{"a":1}\n```') == {"a": 1}
+
+    # 5-6: thinking XML wrap
+    def test_thinking_before(self):
+        assert self._parse('<thinking>let me think</thinking>\n{"x":1}') == {"x": 1}
+
+    def test_thinking_after(self):
+        assert self._parse('{"x":1}\n<thinking>done</thinking>') == {"x": 1}
+
+    # 7-8: natural-language prose
+    def test_prose_before(self):
+        assert self._parse("Sure, here's the result:\n{\"x\":1}") == {"x": 1}
+
+    def test_prose_after(self):
+        assert self._parse('{"x":1}\nLet me know if you need more.') == {"x": 1}
+
+    # 9: fence wrapping content that contains thinking
+    def test_fence_wrapping_thinking_then_json(self):
+        raw = '```json\n<thinking>...</thinking>\n{"a":1}\n```'
+        assert self._parse(raw) == {"a": 1}
+
+    # 10-11: trailing commas
+    def test_trailing_comma_object(self):
+        assert self._parse('{"a": 1,}') == {"a": 1}
+
+    def test_trailing_comma_array(self):
+        assert self._parse('[1,2,3,]') == [1, 2, 3]
+
+    # 12-13: empty / None
+    def test_empty_string(self):
+        assert extract_json("") == ""
+
+    def test_none_input(self):
+        assert extract_json(None) == ""
+
+    # 14: completely invalid — return original (stripped) for visible error
+    def test_no_json_returns_input(self):
+        assert extract_json("Not a JSON at all") == "Not a JSON at all"
+
+    # 15: nested object
+    def test_nested_object(self):
+        assert self._parse('{"a": {"b": [1,2,3]}}') == {"a": {"b": [1, 2, 3]}}
+
+    # 16: regression — string contains } and {
+    def test_string_value_with_braces(self):
+        result = self._parse('{"msg": "} hi {"}')
+        assert result == {"msg": "} hi {"}
+
+    # 17: first-wins契约 — two adjacent JSON objects
+    def test_first_wins(self):
+        assert self._parse('{"a":1}{"b":2}') == {"a": 1}
+
+    # 18: CRITICAL — XML-shaped content inside string value MUST NOT be eaten
+    def test_xml_inside_string_value_preserved(self):
+        raw = '{"comment": "<analysis>this is great</analysis>"}'
+        result = self._parse(raw)
+        assert result == {"comment": "<analysis>this is great</analysis>"}
+
+    # 19: CRITICAL — truncated/unclosed thinking tag must not eat data
+    def test_truncated_thinking_then_json(self):
+        # Regex finds no </thinking>, leaves content alone; raw_decode then
+        # skips the prose-y prefix and finds the JSON.
+        raw = '<thinking>I was going to think but then\n{"x":1}'
+        assert self._parse(raw) == {"x": 1}
+
+    # 20: CRITICAL — fence literal inside JSON string value preserved
+    # Guards the ^...$ anchor invariant on _FENCE_RE.
+    def test_fence_literal_in_string_value(self):
+        raw = '{"x": "```json"}'
+        assert self._parse(raw) == {"x": "```json"}
+
+    # 21: Unicode
+    def test_unicode_string_value(self):
+        raw = '{"name": "喜欢喝茶 ☕"}'
+        assert self._parse(raw) == {"name": "喜欢喝茶 ☕"}
+
+    # 22: deep nesting
+    def test_deep_nesting(self):
+        raw = '{"a":{"b":{"c":{"d":{"e":1}}}}}'
+        assert self._parse(raw) == {"a": {"b": {"c": {"d": {"e": 1}}}}}
+
+    # Bonus: analysis/reasoning/scratchpad tags also stripped
+    def test_analysis_wrapper(self):
+        assert self._parse('<analysis>x</analysis>{"a":1}') == {"a": 1}
+
+    def test_reasoning_wrapper(self):
+        assert self._parse('<reasoning>x</reasoning>{"a":1}') == {"a": 1}
+
+    def test_scratchpad_wrapper(self):
+        assert self._parse('<scratchpad>x</scratchpad>{"a":1}') == {"a": 1}
 
 
 # ── OpenAI / Azure: response_format, cache, retry ─────────────────────────
