@@ -335,13 +335,14 @@ def _get_process_cmdline(pid: int) -> str | None:
 
 atexit.register(_kill_bot)
 
-# Windows uses SIGBREAK for Ctrl+C in console; Unix uses SIGTERM
-for _sig in (signal.SIGINT, getattr(signal, "SIGBREAK", None)):
-    if _sig is not None:
-        try:
-            signal.signal(_sig, lambda s, f: (_kill_bot(), sys.exit(0)))
-        except (OSError, ValueError):
-            pass  # can't set handler in non-main thread
+# Only handle SIGINT (Ctrl+C). We deliberately do NOT register a SIGBREAK
+# handler: when admin sends CTRL_BREAK_EVENT to a bot subprocess via
+# os.kill, Windows can leak the signal back to the admin console. Catching
+# SIGBREAK here would then kill admin alongside the bot it's restarting.
+try:
+    signal.signal(signal.SIGINT, lambda s, f: (_kill_bot(), sys.exit(0)))
+except (OSError, ValueError):
+    pass  # can't set handler in non-main thread
 
 _PROMPT_META: dict[str, dict[str, str]] = {
     "system_chat/soul.md": {
