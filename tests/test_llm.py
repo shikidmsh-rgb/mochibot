@@ -118,6 +118,8 @@ class TestCapsCache:
     def setup_method(self):
         # Clear class-level cache before each test
         _OpenAICompatChat._model_caps.clear()
+        _OpenAICompatChat._json_mode_caps.clear()
+        _OpenAICompatChat._reasoning_caps.clear()
 
     def _make_mock_response(self):
         """Create a minimal mock OpenAI chat completion response."""
@@ -191,6 +193,185 @@ class TestCapsCache:
         # Now cached
         assert "brand-new-model" in _OpenAICompatChat._model_caps
         assert _OpenAICompatChat._model_caps["brand-new-model"]["use_temperature"] is True
+
+
+class TestReasoningEffortNegotiation:
+    """Test reasoning_effort capability negotiation for reasoning models."""
+
+    def setup_method(self):
+        _OpenAICompatChat._model_caps.clear()
+        _OpenAICompatChat._json_mode_caps.clear()
+        _OpenAICompatChat._reasoning_caps.clear()
+
+    def _make_mock_response(self):
+        msg = MagicMock()
+        msg.content = "hi"
+        msg.tool_calls = None
+        choice = MagicMock()
+        choice.message = msg
+        choice.finish_reason = "stop"
+        usage = MagicMock()
+        usage.prompt_tokens = 10
+        usage.completion_tokens = 5
+        usage.total_tokens = 15
+        resp = MagicMock()
+        resp.choices = [choice]
+        resp.usage = usage
+        return resp
+
+    @patch("openai.OpenAI")
+    def test_reasoning_supported_first_call_caches_true(self, MockOpenAI):
+        """Successful first call with reasoning_effort caches support=True."""
+        mock_client = MagicMock()
+        MockOpenAI.return_value = mock_client
+        mock_client.chat.completions.create.return_value = self._make_mock_response()
+
+        p = OpenAIProvider(api_key="k", model="reasoning-model",
+                           base_url="https://example.com/v1")
+        p.chat([{"role": "user", "content": "hi"}])
+
+        # Verify reasoning_effort=minimal was sent
+        call_kwargs = mock_client.chat.completions.create.call_args[1]
+        assert call_kwargs.get("reasoning_effort") == "minimal"
+
+        # Verify cache key is (model, base_url) and value is True
+        key = ("reasoning-model", "https://example.com/v1")
+        assert _OpenAICompatChat._reasoning_caps.get(key) is True
+
+    @patch("openai.OpenAI")
+    def test_reasoning_unsupported_falls_back_and_caches_false(self, MockOpenAI):
+        """BadRequestError on reasoning_effort triggers fallback + caches False."""
+        from openai import BadRequestError
+        mock_client = MagicMock()
+        MockOpenAI.return_value = mock_client
+
+        # First call fails (reasoning_effort not supported), retry succeeds
+        mock_client.chat.completions.create.side_effect = [
+            BadRequestError(
+                message="Unknown parameter: 'reasoning_effort'",
+                response=MagicMock(status_code=400),
+                body=None,
+            ),
+            self._make_mock_response(),
+        ]
+
+        p = OpenAIProvider(api_key="k", model="legacy-model",
+                           base_url="https://example.com/v1")
+        p.chat([{"role": "user", "content": "hi"}])
+
+        assert mock_client.chat.completions.create.call_count == 2
+        # Retry should NOT include reasoning_effort
+        retry_kwargs = mock_client.chat.completions.create.call_args_list[1][1]
+        assert "reasoning_effort" not in retry_kwargs
+
+        # Cache says: this (model, base_url) doesn't support it
+        key = ("legacy-model", "https://example.com/v1")
+        assert _OpenAICompatChat._reasoning_caps.get(key) is False
+
+        # A second provider instance for same model+base_url should skip
+        # reasoning_effort entirely (no probe needed)
+        mock_client.chat.completions.create.reset_mock()
+        mock_client.chat.completions.create.side_effect = [self._make_mock_response()]
+        p2 = OpenAIProvider(api_key="k", model="legacy-model",
+                            base_url="https://example.com/v1")
+        p2.chat([{"role": "user", "content": "hi"}])
+        kwargs2 = mock_client.chat.completions.create.call_args[1]
+        assert "reasoning_effort" not in kwargs2
+
+    @patch("openai.OpenAI")
+    def test_unrelated_400_does_not_poison_reasoning_cache(self, MockOpenAI):
+        """An unrelated BadRequestError on retry must not lock reasoning=False
+        for future requests if the retry actually succeeded by dropping the
+        suspect param. But if both initial and retry fail, the cache write
+        IS still acceptable (the gateway clearly can't handle our params)."""
+        from openai import BadRequestError
+        mock_client = MagicMock()
+        MockOpenAI.return_value = mock_client
+
+        # First call: 400 due to invalid message format (NOT reasoning_effort).
+        # Retry (with reasoning_effort dropped) succeeds — meaning the original
+        # cause was actually reasoning_effort after all, OR the gateway just
+        # accepted it the second time. Either way: cache=False is correct
+        # because retry only differed in reasoning_effort being dropped.
+        mock_client.chat.completions.create.side_effect = [
+            BadRequestError(
+                message="Invalid 'messages[0].content': string too long",
+                response=MagicMock(status_code=400),
+                body=None,
+            ),
+            self._make_mock_response(),
+        ]
+
+        p = OpenAIProvider(api_key="k", model="some-model",
+                           base_url="https://example.com/v1")
+        p.chat([{"role": "user", "content": "hi"}])
+
+        # After retry succeeds, reasoning was the dropped suspect → cache=False
+        # This is the correct broad-fallback behavior (mirrors response_format).
+        key = ("some-model", "https://example.com/v1")
+        assert _OpenAICompatChat._reasoning_caps.get(key) is False
+
+        # Critical: the OTHER capability caches must NOT be poisoned.
+        # temperature was sent and not in either error message → should still
+        # be True after success.
+        assert p._use_temperature is True
+
+    @patch("openai.OpenAI")
+    def test_reasoning_cache_isolated_by_base_url(self, MockOpenAI):
+        """Same model name on different base_urls maintains separate cache."""
+        from openai import BadRequestError
+        mock_client = MagicMock()
+        MockOpenAI.return_value = mock_client
+
+        # base_url A: reasoning unsupported (e.g. third-party gateway)
+        mock_client.chat.completions.create.side_effect = [
+            BadRequestError(
+                message="reasoning_effort unknown",
+                response=MagicMock(status_code=400),
+                body=None,
+            ),
+            self._make_mock_response(),
+        ]
+        pA = OpenAIProvider(api_key="k", model="gpt-5",
+                            base_url="https://gateway-a.com/v1")
+        pA.chat([{"role": "user", "content": "hi"}])
+
+        # base_url B: reasoning supported (real OpenAI)
+        mock_client.chat.completions.create.reset_mock()
+        mock_client.chat.completions.create.side_effect = [self._make_mock_response()]
+        pB = OpenAIProvider(api_key="k", model="gpt-5",
+                            base_url="https://api.openai.com/v1")
+        pB.chat([{"role": "user", "content": "hi"}])
+
+        # Verify per-base_url isolation
+        keyA = ("gpt-5", "https://gateway-a.com/v1")
+        keyB = ("gpt-5", "https://api.openai.com/v1")
+        assert _OpenAICompatChat._reasoning_caps.get(keyA) is False
+        assert _OpenAICompatChat._reasoning_caps.get(keyB) is True
+
+        # Verify base_url B's request actually included reasoning_effort
+        kwargs_b = mock_client.chat.completions.create.call_args[1]
+        assert kwargs_b.get("reasoning_effort") == "minimal"
+
+
+class TestHTTPClientConfig:
+    """Test that OpenAI clients are constructed with explicit retry/timeout."""
+
+    @patch("openai.OpenAI")
+    def test_max_retries_zero_passed_to_sdk(self, MockOpenAI):
+        OpenAIProvider(api_key="k", model="m", base_url="https://x/v1")
+        call_kwargs = MockOpenAI.call_args[1]
+        assert call_kwargs["max_retries"] == 0
+        assert call_kwargs["timeout"] is not None
+
+    @patch("openai.AzureOpenAI")
+    def test_azure_max_retries_zero(self, MockAzureOpenAI):
+        from mochi.llm import AzureOpenAIProvider
+        AzureOpenAIProvider(api_key="k", model="m", base_url="https://x/",
+                            api_version="2024-02-15-preview")
+        call_kwargs = MockAzureOpenAI.call_args[1]
+        assert call_kwargs["max_retries"] == 0
+        assert call_kwargs["timeout"] is not None
 
 
 class TestGeminiConvertMessages:

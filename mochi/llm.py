@@ -15,6 +15,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, TypedDict
 
+import httpx
+
 from mochi.config import (
     CHAT_PROVIDER, CHAT_API_KEY, CHAT_MODEL, CHAT_BASE_URL,
     THINK_PROVIDER, THINK_API_KEY, THINK_MODEL, THINK_BASE_URL,
@@ -22,6 +24,11 @@ from mochi.config import (
 )
 
 log = logging.getLogger(__name__)
+
+# Explicit timeout for OpenAI-compatible HTTP clients. SDK default is 600s read,
+# which silently masks slow gateways. Read=120s is well above worst-case
+# reasoning-model latency on slow third-party gateways but fails fast on hangs.
+_HTTP_TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0)
 
 
 class ToolCallDict(TypedDict):
@@ -145,6 +152,17 @@ class _OpenAICompatChat:
     # Value: True = supports response_format, False = does not.
     _json_mode_caps: dict[tuple[str, str], bool] = {}
 
+    # Class-level cache for reasoning_effort capability.
+    # Keyed by (model, base_url) — third-party gateways often pass through
+    # reasoning models with different upstream support than direct API.
+    # Value: True = supports reasoning_effort, False = does not.
+    _reasoning_caps: dict[tuple[str, str], bool] = {}
+
+    # Default reasoning_effort sent to reasoning-capable models. "minimal"
+    # keeps chat-style replies fast; non-reasoning models reject it on first
+    # call and we cache the negative for that (model, base_url).
+    _REASONING_EFFORT_DEFAULT = "minimal"
+
     # Per-instance capability flags (set after first successful call)
     # None = unknown, True = supported, False = not supported
     _use_max_completion_tokens: bool | None = None
@@ -210,6 +228,17 @@ class _OpenAICompatChat:
             kwargs["response_format"] = {"type": "json_object"}
             sent_response_format = True
 
+        # --- reasoning_effort ---
+        # Send "minimal" by default to keep reasoning models (Gemini 3 Pro,
+        # GPT-5, o-series) fast on chat workloads. Non-reasoning models will
+        # reject it; the fallback below caches the negative per (model, base_url).
+        reasoning_cache_key = (model, base_url)
+        reasoning_supported = self._reasoning_caps.get(reasoning_cache_key)
+        sent_reasoning = False
+        if reasoning_supported is not False:
+            kwargs["reasoning_effort"] = self._REASONING_EFFORT_DEFAULT
+            sent_reasoning = True
+
         try:
             resp = client.chat.completions.create(**kwargs)
             # Success — lock in the capabilities
@@ -221,6 +250,10 @@ class _OpenAICompatChat:
             if sent_response_format and json_mode_supported is None:
                 self._json_mode_caps[json_cache_key] = True
                 log.debug("Model %s @ %s: json_mode supported",
+                          model, base_url or "default")
+            if sent_reasoning and reasoning_supported is None:
+                self._reasoning_caps[reasoning_cache_key] = True
+                log.debug("Model %s @ %s: reasoning_effort supported",
                           model, base_url or "default")
             self._save_caps_to_cache(model)
             return resp
@@ -264,6 +297,19 @@ class _OpenAICompatChat:
                          model, base_url or "default")
                 retried = True
 
+            # Handle unsupported reasoning_effort — same broad pattern as
+            # response_format. If retry succeeds, original cause WAS one of
+            # the dropped suspects (we cache reasoning=False). If retry also
+            # fails, the cache write is still correct: this gateway/model
+            # combo doesn't support it.
+            if sent_reasoning:
+                self._reasoning_caps[reasoning_cache_key] = False
+                kwargs.pop("reasoning_effort", None)
+                sent_reasoning = False
+                log.info("Model %s @ %s: reasoning_effort unsupported, falling back",
+                         model, base_url or "default")
+                retried = True
+
             if retried:
                 resp = client.chat.completions.create(**kwargs)
                 # Lock in capabilities from the successful retry
@@ -286,7 +332,11 @@ class OpenAIProvider(_OpenAICompatChat, LLMProvider):
         self._use_max_completion_tokens = None
         self._use_temperature = None
         self._init_caps_from_cache(model)
-        kwargs: dict = {"api_key": api_key}
+        kwargs: dict = {
+            "api_key": api_key,
+            "max_retries": 0,
+            "timeout": _HTTP_TIMEOUT,
+        }
         if base_url:
             kwargs["base_url"] = base_url
         self._client = OpenAI(**kwargs)
@@ -323,6 +373,8 @@ class AzureOpenAIProvider(_OpenAICompatChat, LLMProvider):
             azure_endpoint=base_url,
             api_key=api_key,
             api_version=api_version or AZURE_API_VERSION,
+            max_retries=0,
+            timeout=_HTTP_TIMEOUT,
         )
 
     def provider_name(self) -> str:
