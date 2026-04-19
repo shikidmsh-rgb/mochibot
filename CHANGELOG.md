@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.8.4
+
+### New Features
+- Workspace skill —— 日记读写 + 文件编辑，core skill 不可禁用
+- Model Health 监控 —— 模型健康状态追踪 + Admin Portal 可视化面板
+- Bubble 上限提升 —— 最大气泡数从 4 提升到 8
+
+### Improvements
+- Agent prompt 重写 —— 高层能力概览，更清晰的自我认知
+
+### Bug Fixes
+- 修复微信渠道主动消息不发的 bug（`OWNER_USER_ID` 检查改用 `is None`，user_id=0 被误判为 falsy）
+
 ## v0.8.3
 
 ### New Features
