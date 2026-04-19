@@ -41,10 +41,28 @@ from mochi.db import (
 from mochi.runtime_state import (
     get_maintenance_summary,
     clear_maintenance_summary,
-    get_user_status,
 )
 
 log = logging.getLogger(__name__)
+
+
+def _format_silence(silence_hours: float | int | None) -> str:
+    """Format silence_hours into a natural-language Chinese label.
+
+    Returns labels like '刚刚' / '13分钟前' / '2小时前' / '3天前'.
+    Defensive against None / non-numeric / negative values (clock skew).
+    """
+    if not isinstance(silence_hours, (int, float)):
+        return "未知"
+    silence_mins = int(max(0, silence_hours) * 60)
+    if silence_mins < 2:
+        return "刚刚"
+    if silence_mins < 60:
+        return f"{silence_mins}分钟前"
+    hours = silence_mins // 60
+    if hours < 24:
+        return f"{hours}小时前"
+    return f"{hours // 24}天前"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -459,9 +477,6 @@ async def _observe(user_id: int) -> dict:
     # Core memory is injected into system prompt by _think(), not here.
     # Keeping it out of observation avoids duplication.
 
-    # User status
-    observation["user_status"] = get_user_status()
-
     # Maintenance summary (if available)
     maint = get_maintenance_summary()
     if maint:
@@ -680,7 +695,7 @@ async def _think(observation: dict, user_id: int) -> dict | None:
             role = "用户" if m.get("role") == "user" else "你"
             content = (m.get("content") or "")[:200]
             conv_lines.append(f"- {role}: {content}")
-        obs_text += "\n\n## 最近对话\n" + "\n".join(conv_lines)
+        obs_text += "\n\n## 最近的互动记录\n" + "\n".join(conv_lines)
 
     client = get_client_for_tier("deep")
     response = await asyncio.to_thread(
@@ -741,9 +756,8 @@ def _build_observation_text(obs: dict) -> str:
     # Messages
     sections.append(
         f"## 消息\n"
-        f"- 沉默时长: {obs.get('silence_hours', '?')}h\n"
-        f"- 今日消息数: {obs.get('messages_today', 0)}\n"
-        f"- 用户状态: {obs.get('user_status', 'unknown')}"
+        f"- 用户上次开口: {_format_silence(obs.get('silence_hours'))}\n"
+        f"- 今日消息数: {obs.get('messages_today', 0)}"
     )
 
     # Today's sent proactive messages (for repeat avoidance)
