@@ -96,7 +96,7 @@ async def dump() -> str:
             role = "用户" if m.get("role") == "user" else "你"
             content = (m.get("content") or "")[:200]
             conv_lines.append(f"- {role}: {content}")
-        obs_text += "\n\n## 最近对话\n" + "\n".join(conv_lines)
+        obs_text += "\n\n## 最近的互动记录\n" + "\n".join(conv_lines)
 
     pool = get_pool()
     _, model = pool.get_tier("deep"), pool.get_tier_model("deep")
