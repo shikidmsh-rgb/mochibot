@@ -5,7 +5,7 @@ type: tool
 tier: lite
 expose_as_tool: true
 always_on: false
-core: false
+core: true
 writes:
   diary: [journal]
 ---
