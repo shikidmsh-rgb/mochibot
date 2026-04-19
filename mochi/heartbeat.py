@@ -917,6 +917,24 @@ async def _dispatch_proactive(findings: list[dict], user_id: int) -> None:
             log_heartbeat(_state, "cooldown")
             return
 
+    # Annotate each finding with how many times its topic was already
+    # surfaced today. Chat uses this to drive persona-specific behaviour:
+    # 强势人格 escalates tone on repeats; 温和 backs off or [SKIP]s.
+    # Source data: proactive_log topic strings (may be comma-joined when a
+    # past tick had multiple findings; we split before counting).
+    from mochi.db import get_today_proactive_sent
+    sent_today = get_today_proactive_sent()
+    topic_counts: dict[str, int] = {}
+    for entry in sent_today:
+        for t in (entry.get("type") or "").split(","):
+            t = t.strip()
+            if t:
+                topic_counts[t] = topic_counts.get(t, 0) + 1
+    for f in findings:
+        topic = f.get("topic", "")
+        if topic and topic_counts.get(topic, 0) > 0:
+            f["prior_attempts"] = topic_counts[topic]
+
     # Generate message via chat_proactive
     from mochi.ai_client import chat_proactive
 

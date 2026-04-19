@@ -260,6 +260,41 @@ class TestChatProactive:
         assert kwargs["diary_status"] == "diary:今日状態"
         assert kwargs["diary_journal"] == "diary:今日日記"
 
+    @pytest.mark.asyncio
+    async def test_prior_attempts_surfaced_in_prompt(self):
+        """When findings carry prior_attempts, the count appears in the
+        instruction sent to the LLM. Soul decides what to do with it."""
+        mock_client = MagicMock()
+        mock_client.chat.return_value = LLMResponse(
+            content="ok", prompt_tokens=1, completion_tokens=1, total_tokens=2,
+            model="test-model",
+        )
+        captured_messages: dict = {}
+
+        def capture_chat(messages, **_):
+            captured_messages["msgs"] = messages
+            return mock_client.chat.return_value
+
+        mock_client.chat.side_effect = capture_chat
+
+        with patch("mochi.ai_client.get_client_for_tier", return_value=mock_client), \
+             patch("mochi.ai_client.get_prompt", return_value="P: {findings_text}"), \
+             patch("mochi.ai_client.get_core_memory", return_value=""), \
+             patch("mochi.ai_client.get_recent_messages", return_value=[]), \
+             patch("mochi.ai_client._retrieve_memories_for_turn", return_value=[]), \
+             patch("mochi.diary.diary.read", return_value=""), \
+             patch("mochi.ai_client.log_usage"):
+            await chat_proactive(
+                [{"topic": "habit_nudge", "summary": "Medicine 0/2",
+                  "prior_attempts": 2}],
+                user_id=1,
+            )
+
+        instruction = captured_messages["msgs"][-1]["content"]
+        assert "2" in instruction and "已主动说过" in instruction, (
+            f"prior_attempts should surface in instruction; got: {instruction}"
+        )
+
 
 def _make_msg(text="hello"):
     return IncomingMessage(user_id=1, channel_id=100, text=text, transport="telegram")

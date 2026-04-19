@@ -870,9 +870,12 @@ async def chat_proactive(findings: list[dict], user_id: int) -> str | None:
         topic = f.get("topic", "general")
         summary = f.get("summary", "")
         urgency = f.get("urgency", "")
+        prior = f.get("prior_attempts", 0)
         line = f"- [{topic}] {summary}"
         if urgency:
             line += f" (urgency={urgency})"
+        if prior:
+            line += f" (今天此话题已主动说过 {prior} 次)"
         lines.append(line)
     findings_text = "\n".join(lines)
 
