@@ -4,7 +4,7 @@ from datetime import datetime, date as date_type
 
 from mochi.config import TZ
 from mochi.skills.base import Skill, SkillContext, SkillResult
-from mochi.skills.reminder.queries import create_reminder, get_pending_reminders, mark_reminder_fired
+from mochi.skills.reminder.queries import create_reminder, get_pending_reminders, delete_reminder
 from mochi.reminder_timer import notify_new_reminder
 
 
@@ -67,9 +67,11 @@ class ReminderSkill(Skill):
             if not rid:
                 return SkillResult(output="Need reminder_id to delete.", success=False)
             try:
-                mark_reminder_fired(int(rid))
+                deleted = delete_reminder(int(rid))
             except (ValueError, TypeError):
                 return SkillResult(output=f"Invalid reminder_id: {rid}", success=False)
+            if not deleted:
+                return SkillResult(output=f"Reminder #{rid} not found.", success=False)
             notify_new_reminder()
             return SkillResult(output=f"Reminder #{rid} deleted.")
 
@@ -80,13 +82,13 @@ class ReminderSkill(Skill):
     def diary_status(self, user_id: int, today: str, now: datetime) -> list[str] | None:
         from mochi.db import _connect
 
-        # Query all unfired reminders for today (including future times)
+        # Query unfired reminders for today (including future times)
         conn = _connect()
         rows = conn.execute(
             "SELECT message, remind_at, fired FROM reminders "
-            "WHERE user_id = ? AND remind_at >= ? AND remind_at < ? "
+            "WHERE user_id = ? AND fired = 0 AND remind_at >= ? AND remind_at < ? "
             "ORDER BY remind_at",
-            (user_id, today, today + "T99"),  # date prefix range
+            (user_id, today, today + "T99"),
         ).fetchall()
         conn.close()
 

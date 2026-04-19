@@ -103,15 +103,24 @@ class TestReminderDelete:
 
     @pytest.mark.asyncio
     @patch("mochi.skills.reminder.handler.notify_new_reminder")
-    @patch("mochi.skills.reminder.handler.mark_reminder_fired")
-    async def test_delete_success(self, mock_fire, mock_notify):
+    @patch("mochi.skills.reminder.handler.delete_reminder", return_value=True)
+    async def test_delete_success(self, mock_delete, mock_notify):
         skill = ReminderSkill()
         ctx = _make_ctx("delete", reminder_id="5")
         result = await skill.execute(ctx)
         assert result.success is True
         assert "#5" in result.output
-        mock_fire.assert_called_once_with(5)
+        mock_delete.assert_called_once_with(5)
         mock_notify.assert_called_once()
+
+    @pytest.mark.asyncio
+    @patch("mochi.skills.reminder.handler.delete_reminder", return_value=False)
+    async def test_delete_not_found(self, mock_delete):
+        skill = ReminderSkill()
+        ctx = _make_ctx("delete", reminder_id="999")
+        result = await skill.execute(ctx)
+        assert result.success is False
+        assert "not found" in result.output.lower()
 
     @pytest.mark.asyncio
     async def test_delete_missing_id(self):

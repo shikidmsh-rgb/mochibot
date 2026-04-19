@@ -39,6 +39,16 @@ def mark_reminder_fired(reminder_id: int) -> None:
     conn.close()
 
 
+def delete_reminder(reminder_id: int) -> bool:
+    """Hard-delete a reminder. Returns True if a row was removed."""
+    conn = _connect()
+    cur = conn.execute("DELETE FROM reminders WHERE id = ?", (reminder_id,))
+    conn.commit()
+    deleted = cur.rowcount > 0
+    conn.close()
+    return deleted
+
+
 def get_next_pending_reminder() -> dict | None:
     """Return the earliest unfired reminder, or None."""
     conn = _connect()
