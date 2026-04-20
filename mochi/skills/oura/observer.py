@@ -21,6 +21,7 @@ def _get_baselines() -> dict:
     """Calculate 7-day sleep / readiness score baselines. Cached per day."""
     global _baselines_cache, _baselines_cache_date
 
+    # wall-clock 故意：baseline cache key + Oura API 日期均按物理日历日
     today_str = datetime.now(TZ).strftime("%Y-%m-%d")
     if _baselines_cache is not None and _baselines_cache_date == today_str:
         return _baselines_cache
@@ -32,6 +33,7 @@ def _get_baselines() -> dict:
         sleep_scores, readiness_scores = [], []
 
         for i in range(1, 8):
+            # wall-clock 故意：Oura API 按物理日历日
             date_str = (now - timedelta(days=i)).strftime("%Y-%m-%d")
             try:
                 ss = get_daily_sleep_score(date_str)
@@ -90,6 +92,7 @@ class OuraObserver(Observer):
             return {}
 
         raw = summary.get("raw", {})
+        # wall-clock 故意：Oura data_date 比较按物理日历日
         today_str = datetime.now(TZ).strftime("%Y-%m-%d")
         data_date = summary.get("data_date")
         result: dict = {"available": True, "data_date": data_date}

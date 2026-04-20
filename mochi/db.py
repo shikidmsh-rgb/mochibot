@@ -1486,17 +1486,22 @@ def get_awake_tick_count_today() -> int:
 
     Used to detect first tick of the day for morning briefing.
     Excludes passive/sleeping actions so SLEEPING-state ticks don't count.
+    Queries by ISO timestamp window [logical_today MAINTENANCE_HOUR, +24h).
     """
-    from mochi.config import logical_today
+    from mochi.config import logical_today, MAINTENANCE_HOUR
     today = logical_today()
+    start_dt = datetime.strptime(today, "%Y-%m-%d").replace(
+        hour=MAINTENANCE_HOUR, tzinfo=TZ
+    )
+    end_dt = start_dt + timedelta(days=1)
     conn = _connect()
     row = conn.execute(
         "SELECT COUNT(*) as cnt FROM heartbeat_log "
         "WHERE action NOT IN "
         "('sleeping','observe_only','silent_pause',"
         "'maintenance','maintenance_error') "
-        "AND created_at LIKE ?",
-        (f"{today}%",),
+        "AND created_at >= ? AND created_at < ?",
+        (start_dt.isoformat(), end_dt.isoformat()),
     ).fetchone()
     conn.close()
     return row["cnt"] if row else 0
@@ -1522,15 +1527,22 @@ def get_today_proactive_sent() -> list[dict]:
     """Return today's proactive messages (up to 5, newest first).
 
     Uses logical_today() for day boundary consistency with diary/heartbeat.
+    Queries by ISO timestamp window [logical_today 00:00, +24h) — robust against
+    log_proactive writing wall-clock ISO timestamps inside the maintenance window.
     Each entry: {"type": topic, "content": first 80 chars, "time": HH:MM}.
     """
-    from mochi.config import logical_today
+    from mochi.config import logical_today, MAINTENANCE_HOUR
     today = logical_today()
+    # Window start = logical_today's MAINTENANCE_HOUR; end = +24h
+    start_dt = datetime.strptime(today, "%Y-%m-%d").replace(
+        hour=MAINTENANCE_HOUR, tzinfo=TZ
+    )
+    end_dt = start_dt + timedelta(days=1)
     conn = _connect()
     rows = conn.execute(
         "SELECT type, content, created_at FROM proactive_log "
-        "WHERE created_at LIKE ? ORDER BY id DESC LIMIT 5",
-        (f"{today}%",),
+        "WHERE created_at >= ? AND created_at < ? ORDER BY id DESC LIMIT 5",
+        (start_dt.isoformat(), end_dt.isoformat()),
     ).fetchall()
     conn.close()
     result = []
@@ -1591,6 +1603,7 @@ def get_last_user_message_time(user_id: int) -> str | None:
 
 def get_message_count_today(user_id: int) -> int:
     """Count user messages sent today (for conversation pattern observation)."""
+    # wall-clock 故意：物理消息计数，不按 logical_today 滚动
     today = datetime.now(TZ).strftime("%Y-%m-%d")
     conn = _connect()
     row = conn.execute(
@@ -1607,7 +1620,9 @@ def get_daily_message_counts(user_id: int, days: int = 7) -> list[dict]:
     Returns: [{"date": "2026-02-22", "count": 15}, ...] ordered oldest→newest.
     Always returns exactly `days` entries (count=0 for silent days).
     """
+    # wall-clock 故意：activity_pattern observer 给 LLM 的物理对话趋势图
     now = datetime.now(TZ)
+    # wall-clock 故意：物理日历日范围
     start = (now - timedelta(days=days - 1)).strftime("%Y-%m-%d")
     conn = _connect()
     rows = conn.execute(
@@ -1618,10 +1633,10 @@ def get_daily_message_counts(user_id: int, days: int = 7) -> list[dict]:
     ).fetchall()
     conn.close()
 
-    # Build full date range with 0-fills
     counts_map = {r["day"]: r["cnt"] for r in rows}
     result = []
     for i in range(days):
+        # wall-clock 故意：物理日历日 chart key
         d = (now - timedelta(days=days - 1 - i)).strftime("%Y-%m-%d")
         result.append({"date": d, "count": counts_map.get(d, 0)})
     return result

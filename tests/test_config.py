@@ -113,6 +113,23 @@ class TestLogicalDate:
         now = datetime(2025, 7, 1, 1, 0, tzinfo=timezone.utc)
         assert cfg.logical_today(now) == "2025-06-30"
 
+    def test_logical_days_ago_stable_across_rollover(self, monkeypatch):
+        """logical_days_ago(7) at 02:00 and 14:00 of the same logical day must agree."""
+        import mochi.config as cfg
+        monkeypatch.setattr(cfg, "MAINTENANCE_HOUR", 3)
+        # 02:00 on June 15 → logical day = June 14, so 7 days ago = June 7
+        before = datetime(2025, 6, 15, 2, 0, tzinfo=timezone.utc)
+        # 14:00 on June 14 → logical day = June 14, same as above
+        after = datetime(2025, 6, 14, 14, 0, tzinfo=timezone.utc)
+        assert cfg.logical_days_ago(7, before) == cfg.logical_days_ago(7, after) == "2025-06-07"
+
+    def test_logical_days_ago_zero(self, monkeypatch):
+        """logical_days_ago(0) equals logical_today."""
+        import mochi.config as cfg
+        monkeypatch.setattr(cfg, "MAINTENANCE_HOUR", 3)
+        now = datetime(2025, 6, 15, 2, 0, tzinfo=timezone.utc)
+        assert cfg.logical_days_ago(0, now) == cfg.logical_today(now)
+
 
 # ── set_owner_user_id / _persist_owner ──
 

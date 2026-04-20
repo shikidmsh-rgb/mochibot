@@ -9,7 +9,7 @@ import logging
 import sqlite3
 from datetime import datetime, timedelta
 
-from mochi.config import TZ, logical_today
+from mochi.config import TZ, logical_today, logical_days_ago
 from mochi.skills.base import Skill, SkillContext, SkillResult
 from mochi.skills.habit.logic import parse_frequency, get_allowed_days
 from mochi.skills.habit.queries import (
@@ -189,7 +189,8 @@ class HabitSkill(Skill):
             return SkillResult(output="Error: 'habit_id' is required for pause.", success=False)
         until = args.get("until", "")
         if not until:
-            until = (datetime.now(TZ) + timedelta(days=7)).strftime("%Y-%m-%d")
+            now = datetime.now(TZ)
+            until = (datetime.strptime(logical_today(now), "%Y-%m-%d") + timedelta(days=7)).strftime("%Y-%m-%d")
         try:
             datetime.strptime(until, "%Y-%m-%d")
         except ValueError:
@@ -260,7 +261,8 @@ class HabitSkill(Skill):
             return SkillResult(output="No active habits.")
 
         now = datetime.now(TZ)
-        today = now.strftime("%Y-%m-%d")
+        today = logical_today(now)
+        # wall-clock 故意：ISO 周边界在 Mon 00:00，与 maintenance window (0-3) 不冲突
         this_week = now.strftime("%G-W%V")
         weekday = now.weekday()
 
@@ -318,7 +320,7 @@ class HabitSkill(Skill):
             cycle, target = parsed
 
             if cycle == "daily":
-                periods = [(now - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
+                periods = [logical_days_ago(i, now) for i in range(7)]
                 stats = get_habit_stats(h["id"], periods)
                 completed_days = sum(1 for p in periods if stats.get(p, 0) >= target)
                 marks = "".join("✅" if stats.get(p, 0) >= target else "❌" for p in reversed(periods))
@@ -329,6 +331,7 @@ class HabitSkill(Skill):
                     streak_tag = f" 🔥{streak}d streak" if streak > 0 else ""
                 lines.append(f"#{h['id']} {h['name']} — 7d: {marks} ({completed_days}/7){streak_tag}")
             else:
+                # wall-clock 故意：ISO 周边界在 Mon 00:00，与 maintenance window (0-3) 不冲突
                 periods = [(now - timedelta(weeks=i)).strftime("%G-W%V") for i in range(4)]
                 stats = get_habit_stats(h["id"], periods)
                 completed_weeks = sum(1 for p in periods if stats.get(p, 0) >= target)

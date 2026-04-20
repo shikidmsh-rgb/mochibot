@@ -6,7 +6,7 @@ Canonical source for health_log CRUD used by the meal skill.
 from datetime import datetime, timedelta
 
 from mochi.db import _connect
-from mochi.config import TZ
+from mochi.config import TZ, logical_days_ago
 
 
 def save_health_log(user_id: int, date: str, log_type: str, content: str,
@@ -64,7 +64,7 @@ def query_health_log(user_id: int, types: list[str] | None = None,
         sql += " AND date = ?"
         params.append(date)
     else:
-        cutoff = (datetime.now(TZ) - timedelta(days=days)).strftime("%Y-%m-%d")
+        cutoff = logical_days_ago(days)
         sql += " AND date >= ?"
         params.append(cutoff)
 

@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.8.7
+
+### 修复
+- **logical_today / wall-clock 混用 bug**：凌晨 0-3 点（maintenance window）期间，多处代码"写入用 wall-clock、查询用 logical_today"导致数据错位 —— 例如凌晨 1 点说"今天跑了步"打卡进了 X 表但 habit 列表查 Y 表看起来像没打卡，凌晨 2 点的宵夜 meal 在日记里看不见，habit streak / pause 日期算错。本次系统性梳理 17 个文件，统一规则：用户认知的"今天"业务数据（habit / meal / note / proactive 限流 / morning briefing / bedtime tidy）走 `logical_today()`；物理事实（消息计数、Oura API、LLM 系统时间、note archive 文件名月份）保持 wall-clock。
+- Admin Windows 重启更稳定（`c089d4e`）：uvicorn 的 `capture_signals` 不再 re-raise SIGBREAK，避免 bot 重启时把 admin 进程一起带走。
+
+### 改进
+- 新增 `logical_days_ago(n)` helper（`mochi/config.py`），统一所有 logical 日期回推路径，避免散布的 wall-clock 写法重新引入混用 bug。
+- 新增 `tests/test_logical_today_lint.py` —— grep-lint meta 测试，扫描 `mochi/` 下所有 wall-clock `YYYY-MM-DD` 构造，要求每处都标注 `# wall-clock 故意：<原因>` 注释或转换成 logical helper。这是防止后续回归的持久防御。
+- 新增 6 个 maintenance window 一致性回归测试（`tests/test_logical_today_consistency.py`）+ 2 个 helper 单元测试。
+
+### 一次性升级副作用
+- 升级当天，0-3 点窗口内**修复前**的 proactive_log 旧记录（按 wall-clock 写）在新规则下会被 `get_today_proactive_sent` 视为"昨天的"，所以"今日已发主动消息"的统计在升级首日可能略低。这是预期的一次性行为，旧数据不迁移。
+
 ## v0.8.6
 
 ### 新功能

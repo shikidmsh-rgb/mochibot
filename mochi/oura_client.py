@@ -208,10 +208,12 @@ def _cached_get(key: str, endpoint: str, params: dict | None = None) -> dict | N
 
 
 def _today_str() -> str:
+    # wall-clock 故意：Oura API 按物理日历日组织数据
     return datetime.now(TZ).strftime("%Y-%m-%d")
 
 
 def _yesterday_str() -> str:
+    # wall-clock 故意：Oura API 按物理日历日组织数据
     return (datetime.now(TZ) - timedelta(days=1)).strftime("%Y-%m-%d")
 
 

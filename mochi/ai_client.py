@@ -419,6 +419,7 @@ def _build_system_prompt(user_id: int, usage_rules: str = "",
     modules = get_system_chat_modules()
 
     # Current local time (respects TIMEZONE_OFFSET_HOURS)
+    # wall-clock 故意：给 LLM 的"当前时间"是物理事实（含时分秒）
     tz = timezone(timedelta(hours=TIMEZONE_OFFSET_HOURS))
     now = datetime.now(tz)
     now_str = now.strftime("%Y-%m-%d %H:%M:%S %z")
@@ -977,7 +978,8 @@ async def chat_bedtime_tidy(
         TZ,
     )
 
-    local_today = datetime.now(TZ).strftime("%Y-%m-%d")
+    from mochi.config import logical_today
+    local_today = logical_today()
     if _last_bedtime_tidy_date == local_today:
         log.info("bedtime_tidy already ran today (%s), skipping", local_today)
         return None

@@ -67,6 +67,7 @@ class TimeContextObserver(Observer):
 
         # Core time data
         result = {
+            # wall-clock 故意：给 LLM 的"date"是物理事实
             "date": now.strftime("%Y-%m-%d"),
             "weekday": now.strftime("%A"),
             "hour": now.hour,

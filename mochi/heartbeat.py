@@ -24,6 +24,7 @@ from mochi.config import (
     WAKE_EARLIEST_HOUR, SLEEP_AFTER_HOUR, SILENCE_THRESHOLD_HOURS,
     TZ,
     OWNER_USER_ID,
+    logical_today,
 )
 from mochi.llm import get_client_for_tier, extract_json
 from mochi.prompt_loader import get_prompt
@@ -572,7 +573,7 @@ async def _run_maintenance_if_due(user_id: int) -> bool:
         return False
 
     now = datetime.now(TZ)
-    today = now.strftime("%Y-%m-%d")
+    today = logical_today(now)
     if now.hour != _effective('MAINTENANCE_HOUR') or today == _last_maintenance_date:
         return False
 
@@ -899,7 +900,7 @@ async def _dispatch_proactive(findings: list[dict], user_id: int) -> None:
 
     # Rate limiting (before LLM call to save tokens)
     now = datetime.now(TZ)
-    today = now.strftime("%Y-%m-%d")
+    today = logical_today(now)
     if today != _last_proactive_date:
         _proactive_count_today = 0
         _last_proactive_date = today

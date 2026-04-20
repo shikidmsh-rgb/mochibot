@@ -11,7 +11,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from mochi.config import TZ
+from mochi.config import TZ, logical_today
 from mochi.skills.base import Skill, SkillContext, SkillResult
 
 log = logging.getLogger(__name__)
@@ -110,9 +110,10 @@ def archive_notes() -> dict:
         now = datetime.now(TZ)
         archive_dir = _NOTES_PATH.parent / "notes_archive"
         archive_dir.mkdir(parents=True, exist_ok=True)
+        # wall-clock 故意：archive 文件名按月（物理日历月）
         archive_file = archive_dir / f"{now.strftime('%Y-%m')}.md"
 
-        date_str = now.strftime("%Y-%m-%d")
+        date_str = logical_today(now)
         with open(archive_file, "a", encoding="utf-8") as f:
             f.write(f"\n---\n## {date_str}\n\n{content}\n")
 
@@ -157,7 +158,7 @@ class NoteSkill(Skill):
         if not content:
             return "Error: content is required for add."
 
-        today = datetime.now(TZ).strftime("%Y-%m-%d")
+        today = logical_today()
         # Append date tag if not already present
         if not re.search(r"\(\d{4}-\d{2}-\d{2}\)", content):
             content = f"{content} ({today})"
@@ -200,7 +201,7 @@ class NoteSkill(Skill):
             return "Error: notes (list of strings) is required for rewrite."
 
         old_notes = _read_notes()
-        today = datetime.now(TZ).strftime("%Y-%m-%d")
+        today = logical_today()
         new_notes = []
         for n in notes_input:
             n = str(n).strip()

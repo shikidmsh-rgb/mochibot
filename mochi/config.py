@@ -292,6 +292,20 @@ def logical_yesterday(now: datetime | None = None) -> str:
     today = datetime.strptime(logical_today(now), "%Y-%m-%d")
     return (today - timedelta(days=1)).strftime("%Y-%m-%d")
 
+
+def logical_days_ago(n: int, now: datetime | None = None) -> str:
+    """Return the logical day N days before today (after MAINTENANCE_HOUR rollover).
+
+    Use this for any back-walk over logical days (streaks, period lists, cutoffs).
+    Routing back-walks through this helper prevents copy-pasting a wall-clock
+    pattern and re-introducing the maintenance-window misalignment bug.
+    """
+    if now is None:
+        now = datetime.now(TZ)
+    if now.hour < MAINTENANCE_HOUR:
+        now = now - timedelta(days=1)
+    return (now - timedelta(days=n)).strftime("%Y-%m-%d")
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Memory Recall / Vector Search
 # ═══════════════════════════════════════════════════════════════════════════

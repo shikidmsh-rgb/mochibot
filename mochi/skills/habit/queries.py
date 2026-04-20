@@ -7,7 +7,7 @@ Other modules should import from here.
 from datetime import datetime, timedelta
 
 from mochi.db import _connect
-from mochi.config import TZ
+from mochi.config import TZ, logical_today, logical_days_ago, MAINTENANCE_HOUR
 
 
 def add_habit(user_id: int, name: str, frequency: str,
@@ -178,13 +178,16 @@ def get_habit_streak(
     """
     now = datetime.now(TZ)
     if cycle == "daily":
+        # logical 起点：roll back if before MAINTENANCE_HOUR
+        logical_now = now - timedelta(days=1) if now.hour < MAINTENANCE_HOUR else now
         periods = []
         for i in range(1, max_lookback + 1):
-            d = now - timedelta(days=i)
+            d = logical_now - timedelta(days=i)
             if allowed_days is not None and d.weekday() not in allowed_days:
                 continue
             periods.append(d.strftime("%Y-%m-%d"))
     else:
+        # wall-clock 故意：ISO 周边界在 Mon 00:00，与 maintenance window (0-3) 不冲突
         periods = []
         for i in range(1, max_lookback // 7 + 1):
             d = now - timedelta(weeks=i)
