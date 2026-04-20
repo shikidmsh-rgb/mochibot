@@ -136,6 +136,17 @@ def main():
 
     config = uvicorn.Config(app, host=args.bind, port=args.port, log_level="info")
     server = uvicorn.Server(config)
+    # Disable BOTH of uvicorn's signal mechanisms:
+    #   1. install_signal_handlers (legacy path)
+    #   2. capture_signals (new context manager that records signals during
+    #      serve() and re-raises them via signal.raise_signal() on exit)
+    # Without (2), CTRL_BREAK_EVENT leaking from a bot subprocess kills
+    # admin even if its handler is SIG_IGN, because uvicorn captures the
+    # signal and re-raises it after serve returns.
+    import contextlib as _ctx
+    server.install_signal_handlers = lambda: None
+    server.capture_signals = lambda: _ctx.nullcontext()
+
     try:
         asyncio.run(server.serve())
     except OSError as e:

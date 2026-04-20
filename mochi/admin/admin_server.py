@@ -344,6 +344,17 @@ try:
 except (OSError, ValueError):
     pass  # can't set handler in non-main thread
 
+# Explicitly IGNORE SIGBREAK on Windows. Python's default action for
+# SIGBREAK is to terminate the process — so "not registering a handler"
+# is not enough; we have to install SIG_IGN. Without this, every bot
+# restart kills admin because CTRL_BREAK_EVENT we send to the bot's
+# process group leaks back to admin's console.
+if sys.platform == "win32" and hasattr(signal, "SIGBREAK"):
+    try:
+        signal.signal(signal.SIGBREAK, signal.SIG_IGN)
+    except (OSError, ValueError):
+        pass
+
 _PROMPT_META: dict[str, dict[str, str]] = {
     "system_chat/soul.md": {
         "label": "灵魂 Soul",
