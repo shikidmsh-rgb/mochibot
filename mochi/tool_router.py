@@ -310,19 +310,22 @@ REQUEST_TOOLS_DEF = {
     "function": {
         "name": "request_tools",
         "description": (
-            "Request additional tools that were not initially provided. "
-            "Call this when you need a capability that is not in your current tool set."
+            "Request additional tools not loaded this turn. "
+            "ALWAYS call this immediately when you need a skill that wasn't provided — "
+            "do NOT ask the user for permission first, just call it. "
+            "Do NOT use for tools already in your list."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "skills": {
-                    "type": "string",
-                    "description": "Comma-separated skill names to request (e.g. 'web_search,reminder')",
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Skill names to request (e.g. ['skill_management', 'web_search'])",
                 },
                 "reason": {
                     "type": "string",
-                    "description": "Brief reason why you need these tools",
+                    "description": "Brief reason why these tools are needed",
                 },
             },
             "required": ["skills"],
@@ -331,24 +334,48 @@ REQUEST_TOOLS_DEF = {
 }
 
 
-def validate_escalation(args: dict) -> list[str]:
-    """Validate escalation request against registered skills.
+def resolve_escalation(args: dict) -> tuple[list[str], list[str]]:
+    """Resolve escalation request → (approved, unknown).
 
-    Returns list of valid skill names, or empty list if none valid.
+    - Accepts ``skills`` as array (preferred) or comma-string (legacy compat).
+    - Maps tool names → parent skill via TOOL_METADATA (e.g. ``edit_habit`` → ``habit``).
+    - De-dups while preserving order.
+    - Filters out admin-disabled skills (they go to ``unknown``).
     """
+    _ensure_skill_metadata()
     import mochi.skills as registry
 
-    skills_str = args.get("skills", "")
-    requested = [s.strip() for s in skills_str.split(",") if s.strip()]
+    raw = args.get("skills", [])
+    if isinstance(raw, str):
+        requested = [s.strip() for s in raw.split(",") if s.strip()]
+    elif isinstance(raw, list):
+        requested = [str(s).strip() for s in raw if str(s).strip()]
+    else:
+        requested = []
 
-    valid = []
+    disabled = registry._get_disabled_skills()
+
+    approved: list[str] = []
+    unknown: list[str] = []
+    seen: set[str] = set()
+
     for name in requested:
-        if registry.get_skill(name):
-            valid.append(name)
-        else:
-            log.debug("Escalation: unknown skill %s, skipped", name)
+        # Map tool name → parent skill
+        if name in TOOL_METADATA:
+            parent = TOOL_METADATA[name].get("skill", "")
+            if parent:
+                name = parent
 
-    if valid:
-        log.info("Escalation approved: %s (reason: %s)",
-                 valid, args.get("reason", ""))
-    return valid
+        if name in seen:
+            continue
+        seen.add(name)
+
+        if registry.get_skill(name) and name not in disabled:
+            approved.append(name)
+        else:
+            unknown.append(name)
+
+    if approved or unknown:
+        log.info("Escalation resolved: approved=%s unknown=%s (reason: %s)",
+                 approved, unknown, args.get("reason", ""))
+    return approved, unknown

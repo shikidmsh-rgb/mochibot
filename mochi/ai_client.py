@@ -625,7 +625,7 @@ async def chat(message: IncomingMessage) -> ChatResult:
 
     elif TOOL_ROUTER_ENABLED:
         from mochi.tool_router import (
-            classify_skills, resolve_tier, REQUEST_TOOLS_DEF, validate_escalation,
+            classify_skills, resolve_tier, REQUEST_TOOLS_DEF, resolve_escalation,
         )
         # Launch router (with habits hint) + remaining DB fetches concurrently
         skill_names, core_memory, history, recalled_memories, conv_summary = await asyncio.gather(
@@ -762,27 +762,49 @@ async def chat(message: IncomingMessage) -> ChatResult:
         for tc in response.tool_calls:
             # ── Handle tool escalation ──
             if tc["name"] == "request_tools" and TOOL_ROUTER_ENABLED:
-                if escalation_count >= TOOL_ESCALATION_MAX_PER_TURN:
-                    result_text = "Escalation limit reached for this turn."
+                from mochi.tool_router import _SKILL_DESCRIPTIONS, _ensure_skill_metadata
+                approved, unknown = resolve_escalation(tc["arguments"])
+
+                if not approved:
+                    # All-invalid → return full skill catalog so LLM can retry.
+                    # Does NOT consume escalation budget.
+                    _ensure_skill_metadata()
+                    available = {
+                        s: _SKILL_DESCRIPTIONS.get(s, "")
+                        for s in sorted(_SKILL_DESCRIPTIONS)
+                    }
+                    result_text = json.dumps({
+                        "loaded": [],
+                        "unknown": unknown,
+                        "available_skills": available,
+                        "hint": (
+                            "Pick from available_skills (name: description) "
+                            "and call request_tools again with valid skill names."
+                        ),
+                    })
+                elif escalation_count >= TOOL_ESCALATION_MAX_PER_TURN:
+                    result_text = json.dumps({"error": "Escalation limit reached this turn"})
                 else:
-                    new_skills = validate_escalation(tc["arguments"])
-                    if new_skills:
-                        new_tool_defs = filter_tools(
-                            skill_registry.get_tools_by_names(
-                                new_skills, transport=message.transport)
-                        )
-                        # Rebind tools — add new tools not already present
-                        existing_names = {
-                            t.get("function", {}).get("name")
-                            for t in tools
-                        }
-                        for td in new_tool_defs:
-                            if td.get("function", {}).get("name") not in existing_names:
-                                tools.append(td)
-                        escalation_count += 1
-                        result_text = f"Tools added for: {', '.join(new_skills)}. You can now use them."
-                    else:
-                        result_text = "No valid skills found for that request."
+                    new_tool_defs = filter_tools(
+                        skill_registry.get_tools_by_names(
+                            approved, transport=message.transport)
+                    )
+                    existing_names = {
+                        t.get("function", {}).get("name")
+                        for t in tools
+                    }
+                    added: list[str] = []
+                    for td in new_tool_defs:
+                        name = td.get("function", {}).get("name")
+                        if name and name not in existing_names:
+                            tools.append(td)
+                            added.append(name)
+                    escalation_count += 1
+                    result_text = json.dumps({
+                        "loaded": approved,
+                        "tools_added": added,
+                        "unknown": unknown,
+                    })
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc["id"],

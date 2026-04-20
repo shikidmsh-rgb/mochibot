@@ -167,27 +167,79 @@ class TestClassifySkills:
         assert result == []
 
 
-# ── validate_escalation ──
+# ── resolve_escalation ──
 
-class TestValidateEscalation:
+class TestResolveEscalation:
 
+    @patch("mochi.skills._get_disabled_skills", return_value=set())
     @patch("mochi.skills.get_skill")
-    def test_valid_skills(self, mock_get_skill):
+    def test_array_input(self, mock_get_skill, _disabled):
         mock_get_skill.return_value = MagicMock()
-        result = router.validate_escalation({"skills": "reminder,todo", "reason": "need tools"})
-        assert "reminder" in result
-        assert "todo" in result
+        approved, unknown = router.resolve_escalation(
+            {"skills": ["reminder", "todo"], "reason": "need tools"})
+        assert approved == ["reminder", "todo"]
+        assert unknown == []
 
+    @patch("mochi.skills._get_disabled_skills", return_value=set())
     @patch("mochi.skills.get_skill")
-    def test_unknown_filtered(self, mock_get_skill):
-        mock_get_skill.side_effect = lambda name: MagicMock() if name == "todo" else None
-        result = router.validate_escalation({"skills": "todo,nonexistent"})
-        assert result == ["todo"]
+    def test_string_input_compat(self, mock_get_skill, _disabled):
+        mock_get_skill.return_value = MagicMock()
+        approved, unknown = router.resolve_escalation(
+            {"skills": "reminder,todo"})
+        assert approved == ["reminder", "todo"]
+        assert unknown == []
 
+    @patch("mochi.skills._get_disabled_skills", return_value=set())
     @patch("mochi.skills.get_skill")
-    def test_empty_string(self, mock_get_skill):
-        result = router.validate_escalation({"skills": ""})
-        assert result == []
+    def test_unknown_to_unknown(self, mock_get_skill, _disabled):
+        mock_get_skill.side_effect = lambda n: MagicMock() if n == "todo" else None
+        approved, unknown = router.resolve_escalation(
+            {"skills": ["todo", "nonexistent"]})
+        assert approved == ["todo"]
+        assert unknown == ["nonexistent"]
+
+    @patch("mochi.skills._get_disabled_skills", return_value=set())
+    def test_tool_name_resolved_to_skill(self, _disabled):
+        # manage_reminder is a tool name in TOOL_METADATA → maps to skill "reminder"
+        with patch("mochi.skills.get_skill") as mock_get_skill:
+            mock_get_skill.return_value = MagicMock()
+            approved, unknown = router.resolve_escalation(
+                {"skills": ["manage_reminder"]})
+        assert approved == ["reminder"]
+        assert unknown == []
+
+    @patch("mochi.skills._get_disabled_skills", return_value={"habit"})
+    @patch("mochi.skills.get_skill")
+    def test_disabled_skill_to_unknown(self, mock_get_skill, _disabled):
+        mock_get_skill.return_value = MagicMock()
+        approved, unknown = router.resolve_escalation({"skills": ["habit"]})
+        assert approved == []
+        assert unknown == ["habit"]
+
+    @patch("mochi.skills._get_disabled_skills", return_value=set())
+    @patch("mochi.skills.get_skill")
+    def test_dedup(self, mock_get_skill, _disabled):
+        mock_get_skill.return_value = MagicMock()
+        # "reminder" appears twice; "manage_reminder" maps to "reminder" too
+        approved, unknown = router.resolve_escalation(
+            {"skills": ["reminder", "reminder", "manage_reminder"]})
+        assert approved == ["reminder"]
+        assert unknown == []
+
+    def test_empty_array(self):
+        approved, unknown = router.resolve_escalation({"skills": []})
+        assert approved == []
+        assert unknown == []
+
+    def test_empty_string(self):
+        approved, unknown = router.resolve_escalation({"skills": ""})
+        assert approved == []
+        assert unknown == []
+
+    def test_missing_skills_key(self):
+        approved, unknown = router.resolve_escalation({})
+        assert approved == []
+        assert unknown == []
 
 
 # ── _build_habit_hint ──

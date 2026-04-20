@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.8.8
+
+### 修复
+- **`request_tools` escalation 闭环修复**：当 LLM 调 `request_tools` 申请技能但填错名字时，旧实现只回 `"No valid skills found."`，LLM 拿不到任何线索就放弃 → 装作"系统封锁了/我没工具"。现在失败时返回完整的 `available_skills` 清单（name → description）+ hint，LLM 可以立即重试选对名字。同时：
+  - `skills` 参数从 comma-string 改为 array（更结构化）
+  - 工具名（如 `edit_habit`）自动映射到父技能（`habit`），避免 LLM 填错
+  - 失败的 escalation 不再消耗 `TOOL_ESCALATION_MAX_PER_TURN` 预算（之前会，导致填错两次就废）
+  - 已禁用的技能不会被批准
+  - description 改为强制语气："ALWAYS call this immediately when you need a skill that wasn't provided"
+
+### 改进
+- `TOOL_ESCALATION_MAX_PER_TURN` 默认值 2 → 4（对齐上游 mochi）。失败已不消耗预算，4 次成功上限给单轮多步任务足够空间。
+
 ## v0.8.7
 
 ### 修复

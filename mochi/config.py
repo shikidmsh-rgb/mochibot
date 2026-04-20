@@ -386,7 +386,7 @@ TOOL_ROUTER_MAX_TOKENS = _env_int("TOOL_ROUTER_MAX_TOKENS", 300)
 # ═══════════════════════════════════════════════════════════════════════════
 
 TOOL_ESCALATION_ENABLED = _env_bool("TOOL_ESCALATION_ENABLED", True)
-TOOL_ESCALATION_MAX_PER_TURN = _env_int("TOOL_ESCALATION_MAX_PER_TURN", 2)
+TOOL_ESCALATION_MAX_PER_TURN = _env_int("TOOL_ESCALATION_MAX_PER_TURN", 4)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Tool Governance
