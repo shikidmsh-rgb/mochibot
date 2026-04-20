@@ -1,6 +1,6 @@
 ---
 name: todo
-description: "一次性待办 — 需要被追踪催促直到完成，但做完就结束不会再来的事（如买猫粮、约牙医、查资料）。"
+description: "一次性待办 — 需要被追踪催促直到完成，但做完就结束不会再来的事（如买猫粮、约牙医、查资料）。用户回报完成某事且不属于活跃习惯时也走这里。"
 type: tool
 expose_as_tool: true
 diary_status_order: 20
