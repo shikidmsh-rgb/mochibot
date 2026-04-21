@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.8.13
+- 优化 agent.md / 记忆与便签工具描述，提升 LLM 工具调用准确率（E2E 10/10）
+
 ## v0.8.12
 - 新增 tool group 机制（core/extended），memory 工具改为每轮注入，扩展工具按需 request_tools
 - 重写 agent.md / memory / note skill prompt，明确四种存储边界
