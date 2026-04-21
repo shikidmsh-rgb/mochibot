@@ -1,22 +1,8 @@
 # Changelog
 
-## v0.8.14
-- 优化 reminder/todo/habit/meal/weather/checkup 等 skill 的 tool description，加判断标准+具体例子（E2E 9/10）
-
-## v0.8.13
-- 优化 agent.md / 记忆与便签工具描述，提升 LLM 工具调用准确率（E2E 10/10）
-
-## v0.8.12
-- 新增 tool group 机制（core/extended），memory 工具改为每轮注入，扩展工具按需 request_tools
-- 重写 agent.md / memory / note skill prompt，明确四种存储边界
-
-## v0.8.11
-- 修复跨长时间间隔后 LLM 时间感知错乱（晚安后第二天回复仍续说晚安）
-
 ## v0.8.10
-- Anthropic Claude 4.x 强制 thinking 移除，修复 heartbeat / router / 提醒文案 400 报错
-- 时区配置 admin portal 改完即时生效（最长 60 秒），无需重启
-- 升级页面版本号显示修复 + 更新完成后自动重启
+- 时区 bug 优化
+- 记忆系统优化，不再经常忘记记录
 
 ## v0.8.9
 - Todo skill 路由改进
