@@ -871,6 +871,18 @@ class Skill(ABC):
         """
         return None
 
+    def think_hints(self) -> list[str] | None:
+        """Return hints to inject into the Think observation.
+
+        Override in subclasses to provide skill-specific guidance for the
+        heartbeat Think step.  Hints are collected from all enabled skills
+        and shown in the observation so the LLM knows what to watch for.
+
+        Returns:
+            List of hint strings, or None to opt out.
+        """
+        return None
+
 
 # ---------------------------------------------------------------------------
 # v3: Metadata-only scanner — reads SKILL.md files without importing handlers

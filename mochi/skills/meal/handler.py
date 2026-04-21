@@ -343,3 +343,6 @@ class MealSkill(Skill):
             lines.append(f"- 累計: {day_total_cal}kcal")
 
         return lines if lines else None
+
+    def think_hints(self) -> list[str] | None:
+        return ["饮食栏出现 ⏳ 未记录时，提醒用户记录饮食"]

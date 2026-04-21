@@ -506,6 +506,11 @@ async def _observe(user_id: int) -> dict:
     for section in skill_registry.get_prompt_sections(compact=True):
         observation["notes"] = section
 
+    # Skill think hints
+    think_hints = skill_registry.collect_think_hints()
+    if think_hints:
+        observation["think_hints"] = think_hints
+
     # First tick of the day (for Think morning awareness)
     from mochi.db import get_awake_tick_count_today
     observation["is_first_tick_today"] = get_awake_tick_count_today() == 0
@@ -790,6 +795,14 @@ def _build_observation_text(obs: dict) -> str:
     notes = obs.get("notes", "")
     if notes:
         sections.append(notes)
+
+    # Skill think hints
+    hints = obs.get("think_hints", [])
+    if hints:
+        lines = ["## 注意事项"]
+        for h in hints:
+            lines.append(f"- {h}")
+        sections.append("\n".join(lines))
 
     # Time — absolute last for maximum recency bias
     time_lines = (

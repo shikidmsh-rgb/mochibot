@@ -195,6 +195,26 @@ def collect_diary_status(user_id: int, today: str, now: datetime) -> list[str]:
     return all_lines
 
 
+def collect_think_hints() -> list[str]:
+    """Collect think hints from all enabled skills."""
+    if not _skills:
+        return []
+    disabled = _get_disabled_skills()
+    hints: list[str] = []
+    for skill in _skills.values():
+        if skill.name in disabled:
+            continue
+        if getattr(skill, "_config_missing", None):
+            continue
+        try:
+            h = skill.think_hints()
+            if h:
+                hints.extend(h)
+        except Exception:
+            log.exception("think_hints failed for skill %s", skill.name)
+    return hints
+
+
 def get_tools(transport: str = "") -> list[dict]:
     """Get all exposed tool definitions (for LLM tools array).
 

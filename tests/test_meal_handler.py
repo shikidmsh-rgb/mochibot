@@ -216,14 +216,14 @@ class TestMealDiaryStatus:
         """11:00 — past breakfast hour, show ⏳."""
         skill = MealSkill()
         result = skill.diary_status(user_id=1, today="2026-04-15", now=self._now(11))
-        assert result == ["- 早餐 ⏳"]
+        assert result == ["- 早餐 ⏳ 已过10:00 未记录"]
 
     @patch("mochi.skills.meal.handler.query_health_log", return_value=[])
     def test_no_records_after_all_hours(self, mock_q):
         """20:00 — all three meals pending."""
         skill = MealSkill()
         result = skill.diary_status(user_id=1, today="2026-04-15", now=self._now(20))
-        assert result == ["- 早餐 ⏳", "- 午餐 ⏳", "- 晚餐 ⏳"]
+        assert result == ["- 早餐 ⏳ 已过10:00 未记录", "- 午餐 ⏳ 已过14:00 未记录", "- 晚餐 ⏳ 已过19:00 未记录"]
 
     @patch("mochi.skills.meal.handler.query_health_log")
     def test_breakfast_logged_lunch_pending(self, mock_q):
@@ -235,7 +235,7 @@ class TestMealDiaryStatus:
         result = skill.diary_status(user_id=1, today="2026-04-15", now=self._now(15))
         assert len(result) == 3  # breakfast ✅ + lunch ⏳ + total
         assert "早餐" in result[0] and "✅" in result[0]
-        assert result[1] == "- 午餐 ⏳"
+        assert result[1] == "- 午餐 ⏳ 已过14:00 未记录"
         assert "累計" in result[2]
 
     @patch("mochi.skills.meal.handler.query_health_log")
@@ -262,7 +262,7 @@ class TestMealDiaryStatus:
         skill = MealSkill()
         result = skill.diary_status(user_id=1, today="2026-04-15", now=self._now(20))
         labels = " ".join(result)
-        assert "早餐 ⏳" in labels
+        assert "早餐 ⏳ 已过10:00 未记录" in labels
         assert "午餐" in labels and "✅" in labels
         assert "晚餐 ⏳" in labels
         assert "零食" in labels and "Cookie" in labels
