@@ -886,6 +886,11 @@ if HAS_FASTAPI:
         if rc != 0:
             return {"ok": False, "error": f"拉取代码失败：{pull_out}", "pre_hash": pre_hash}
 
+        # Clean stale __pycache__ so restart loads new bytecode, not cached old .pyc
+        import shutil
+        for pycache in (_PROJECT_ROOT / "mochi").rglob("__pycache__"):
+            shutil.rmtree(pycache, ignore_errors=True)
+
         # Install dependencies
         pip_result = subprocess.run(
             [sys.executable, "-m", "pip", "install", "-r", "requirements.txt", "-q"],

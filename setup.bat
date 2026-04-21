@@ -60,6 +60,9 @@ if %errorlevel% neq 0 (
 )
 echo  [OK] Dependencies installed.
 
+REM Clean stale __pycache__ (avoid loading old .pyc after code update)
+for /d /r mochi %%d in (__pycache__) do @if exist "%%d" rd /s /q "%%d"
+
 REM Launch
 echo.
 echo  ------------------------------------------
