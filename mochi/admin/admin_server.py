@@ -919,7 +919,11 @@ if HAS_FASTAPI:
         if _EMBEDDED_MODE:
             loop.call_later(3, request_restart)
         else:
-            loop.call_later(3, lambda: os._exit(ADMIN_RESTART_EXIT_CODE))
+            def _restart_now():
+                _kill_bot()
+                _kill_orphaned_bots()
+                os._exit(ADMIN_RESTART_EXIT_CODE)
+            loop.call_later(3, _restart_now)
 
         return {
             "ok": True,
