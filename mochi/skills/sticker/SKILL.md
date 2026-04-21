@@ -6,8 +6,6 @@ expose_as_tool: true
 always_on: true
 tier: lite
 exclude_transports: [wechat]
-sub_skills:
-  sticker_manage: "贴纸管理 — 从贴纸库删除贴纸"
 ---
 
 ## Tools
@@ -19,7 +17,7 @@ sub_skills:
 |-----------|------|----------|-------------|
 | mood | string | yes | 情绪或语义标签，用中文：酷、自信、得意、生气、愤怒、不爽、崩溃、头晕、伤心、大哭、委屈、难过、困倦、疲惫、想睡觉。无精确匹配时随机发送。 |
 
-### delete_last_sticker (L0, skill: sticker_manage)
+### delete_last_sticker (L0, extended)
 删除最近发送的贴纸。用户表示不喜欢刚发的贴纸时调用（如"这个表情包不好看，删掉"、"删掉这个贴纸"、"这个表情不好"）。
 
 无需参数。

@@ -47,6 +47,11 @@ log = logging.getLogger(__name__)
 _MAX_RELATIONAL_PER_CYCLE = 3
 # Stop auto-appending when core memory exceeds this token count (leave room for manual edits)
 _RELATIONAL_TOKEN_BUDGET = 700
+# Local dedup threshold for relational auto-append. Stricter than global
+# (_CORE_MEMORY_DEDUP_RATIO = 0.85) because chat now writes core memory in
+# real-time via update_core_memory; extract should only replace lines that
+# are nearly identical, never substitute its own version for chat's wording.
+_RELATIONAL_DEDUP_RATIO = 0.95
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -214,10 +219,16 @@ def _append_relational_to_core(user_id: int, items: list[str]) -> None:
             if ratio > best_ratio:
                 best_ratio, best_idx = ratio, i
 
-        if best_ratio >= _CORE_MEMORY_DEDUP_RATIO and best_idx >= 0:
-            # Similar line found — replace if new content is longer
+        if best_ratio >= _RELATIONAL_DEDUP_RATIO and best_idx >= 0:
+            # Near-identical line found — replace if new content is longer.
+            # Strict 0.95 threshold protects chat-written lines from being
+            # silently overwritten by extract's wording variants.
             old_text = core_lines[best_idx].lstrip("- ").strip()
             if len(content) > len(old_text):
+                log.info(
+                    "Core memory enrichment: replacing %r with %r (ratio=%.3f)",
+                    old_text, content, best_ratio,
+                )
                 core_lines[best_idx] = f"- {content}"
                 replaced = True
         else:

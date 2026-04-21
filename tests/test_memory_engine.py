@@ -538,24 +538,47 @@ class TestAppendRelationalToCore:
 
     @patch("mochi.memory_engine.update_core_memory")
     @patch("mochi.memory_engine.get_core_memory")
-    def test_dedup_near_duplicate_skipped(self, mock_get_core, mock_update):
-        """Near-duplicate (shorter) items should be silently skipped."""
-        mock_get_core.return_value = "- 用户是女生，有只叫小白的英短金渐层和一只叫豆豆的狗"
+    def test_dedup_near_identical_skipped(self, mock_get_core, mock_update):
+        """Near-identical items (≥0.95 similarity) with no new info → skip."""
+        mock_get_core.return_value = "- 用户养了一只叫小白的英短金渐层"
         from mochi.memory_engine import _append_relational_to_core
-        _append_relational_to_core(1, ["用户有只叫小白的英短金渐层和一只叫豆豆的狗"])
+        # Identical wording → ratio 1.0, same length → no replace, no append
+        _append_relational_to_core(1, ["用户养了一只叫小白的英短金渐层"])
         mock_update.assert_not_called()
 
     @patch("mochi.memory_engine.update_core_memory")
     @patch("mochi.memory_engine.get_core_memory")
-    def test_dedup_near_duplicate_replaced_by_longer(self, mock_get_core, mock_update):
-        """Near-duplicate with more info should replace the old line."""
-        mock_get_core.return_value = "- 用户有只叫小白的英短金渐层和一只叫豆豆的狗"
+    def test_dedup_near_identical_replaced_by_longer(self, mock_get_core, mock_update):
+        """Near-identical (≥0.95) with more info should replace the old line."""
+        mock_get_core.return_value = "- 用户养了一只叫小白的英短金渐层"
         from mochi.memory_engine import _append_relational_to_core
-        _append_relational_to_core(1, ["用户有只叫小白的英短金渐层（5岁，感冒）和一只叫豆豆的狗"])
+        _append_relational_to_core(1, ["用户养了一只叫小白的英短金渐层猫。"])
         mock_update.assert_called_once()
         updated = mock_update.call_args[0][1]
-        assert "5岁" in updated
+        assert "猫" in updated
         assert updated.count("小白") == 1  # only one line, not two
+
+    @patch("mochi.memory_engine.update_core_memory")
+    @patch("mochi.memory_engine.get_core_memory")
+    def test_chat_written_line_not_replaced_by_extract_variant(
+        self, mock_get_core, mock_update
+    ):
+        """Below the 0.95 local threshold, extract appends a new line rather
+        than replacing chat-written wording. Protects chat from extract drift.
+        """
+        # Chat wrote this exact wording earlier
+        mock_get_core.return_value = "- 用户的妈妈叫李芳"
+        from mochi.memory_engine import _append_relational_to_core
+        # Extract sees a related but differently-worded fact (~0.7 ratio)
+        _append_relational_to_core(1, ["妈妈是李芳"])
+        mock_update.assert_called_once()
+        updated = mock_update.call_args[0][1]
+        # Chat's original line must be preserved verbatim
+        assert "用户的妈妈叫李芳" in updated, (
+            f"chat-written line lost: {updated!r}"
+        )
+        # New line is appended alongside, not substituted
+        assert "妈妈是李芳" in updated
 
     @patch("mochi.memory_engine.update_core_memory")
     @patch("mochi.memory_engine.get_core_memory")

@@ -104,6 +104,11 @@ sense:
 - `L2` — 外部写入（有副作用），暂保留
 - `L3` — 事务性操作（支付/订单），暂保留
 
+**工具组**（可选追加 `, extended`）：
+- 默认 `core`：随 skill 一起注入（受 router / always_on 控制）
+- `extended`：**不会自动注入**，必须由 LLM 调 `request_tools(skills=["..."])` 显式申请。用于"不常用 + 破坏性"的工具，避免每轮浪费 token。
+- 标注示例：`### delete_memory (L1, extended)`、`### tool_name (L0, extended, skill: parent)`
+
 ### Usage Rules 区段
 
 添加 `## Usage Rules` 区段，内容会注入到 LLM system prompt 中，指导 LLM 何时/如何使用此工具：

@@ -1,6 +1,6 @@
 ---
 name: note
-description: "便签/备忘 — 记一下、留个笔记、稍后提醒、条件型观察（写入 notes.md）"
+description: "Heartbeat 工作便签 — agent 写给下次心跳的自己看的待办、条件型交代、临时关注"
 type: tool
 tier: lite
 expose_as_tool: true
@@ -10,17 +10,14 @@ core: true
 
 # Note Skill
 
-便签纸。写在这里的内容，heartbeat 每次巡逻（~20min）都会看到。
-适合：口头交代（"遛狗后再做"）、条件型观察（"压力高时提醒我"）、软提醒、临时备忘、长期规则。
+agent 的便签条。每次 heartbeat 自动读到，用来跨周期保留"下次心跳要记得做什么"。
 
-**不适合**：精确时间提醒（用 reminder）、定期打卡（用 habit）。
+不适合：精确时间提醒（用 reminder）、定期打卡（用 habit）、关于用户的长期事实（用 memory）。
 
 ## Tools
 
 ### manage_note (L0)
-备忘条。写在这里的东西 heartbeat 每次巡逻都会看到，帮助记住该怎么陪伴用户——状态、心情、偏好、需要关注的事。写了 note = 系统会持续留意、主动关心、随时提醒。
-
-举例：用户说"下午心情不好"→ 记下来，巡逻时多关心；用户说"明天有考试别烦我"→ 记下来，明天调整互动方式。
+写给下次 heartbeat 自己看的工作便签：条件型交代（"等他下班了帮我问 X"）、临时关注（"今天别提 Y"）、heartbeat 周期性提醒钩子（"下次心跳问问 Shiki 开会怎么样"）。事情过去就 remove。
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -31,6 +28,4 @@ core: true
 
 ## Usage Rules
 
-- 判断标准：**下次巡逻时系统需要记得这件事来更好地陪伴用户吗？** 需要就记
-- **条件型交代**（"遛狗后再做XX"）→ note（不是定时器）
-- **修改已有 habit/todo 的执行条件** → 用 note，不要创建 reminder
+- 判断标准：**下次 heartbeat 醒来时，自己需要记得这件事吗？** 需要就记

@@ -216,13 +216,19 @@ def get_tools(transport: str = "") -> list[dict]:
 
 
 def get_tools_by_names(skill_names: list[str],
-                       transport: str = "") -> list[dict]:
+                       transport: str = "",
+                       core_only: bool = True) -> list[dict]:
     """Get tool definitions for tools belonging to named skills.
 
     Ignores expose_as_tool — if you ask by name, you get it.
     This is intentional: expose_as_tool controls the *default* full injection
     (get_tools), but pre-router already classified the message and decided
     these skills are needed, so we honour the request.
+
+    When ``core_only=True`` (default), tools marked ``extended`` in SKILL.md
+    are filtered out. Extended tools must be explicitly requested via
+    ``request_tools`` escalation. Pass ``core_only=False`` from escalation
+    rebuild paths or when explicit tool name lists are provided.
 
     Invalid names are silently skipped (logged at debug level).
     Skips skills with missing required config or transport exclusion.
@@ -237,7 +243,10 @@ def get_tools_by_names(skill_names: list[str],
             continue
         if transport and transport in skill.exclude_transports:
             continue
-        tools.extend(skill.get_tools())
+        for tool in skill.get_tools():
+            if core_only and tool.get("_group", "core") == "extended":
+                continue
+            tools.append(tool)
     return tools
 
 
@@ -359,10 +368,18 @@ def get_prompt_sections(compact: bool = False) -> list[str]:
 def get_usage_rules_for_tools(tool_names: list[str]) -> str:
     """Collect usage rules from skills owning the given tools.
 
+    For each skill represented in ``tool_names``, also lists any extended
+    tools belonging to that skill that are NOT currently loaded — so the LLM
+    knows what's reachable via ``request_tools``.
+
     Returns a concatenated string of all unique usage rules, or "".
     """
+    from mochi.tool_router import TOOL_METADATA, _ensure_skill_metadata
+    _ensure_skill_metadata()
+
     seen_skills: set[str] = set()
     rules_parts: list[str] = []
+    tool_set = set(tool_names)
 
     for tn in tool_names:
         sn = _tool_map.get(tn)
@@ -370,8 +387,22 @@ def get_usage_rules_for_tools(tool_names: list[str]) -> str:
             continue
         seen_skills.add(sn)
         skill = _skills.get(sn)
-        if skill and skill.usage_rules:
-            rules_parts.append(f"### {skill.name}\n{skill.usage_rules}")
+        if not skill or not skill.usage_rules:
+            continue
+        block = f"### {skill.name}\n{skill.usage_rules}"
+
+        extended_not_loaded = sorted(
+            tname for tname, tmeta in TOOL_METADATA.items()
+            if tmeta.get("skill") == skill.name
+            and tmeta.get("group") == "extended"
+            and tname not in tool_set
+        )
+        if extended_not_loaded:
+            block += (
+                f"\n(可通过 request_tools 申请的扩展工具: "
+                f"{', '.join(extended_not_loaded)})"
+            )
+        rules_parts.append(block)
 
     return "\n\n".join(rules_parts) if rules_parts else ""
 

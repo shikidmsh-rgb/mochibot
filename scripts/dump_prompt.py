@@ -98,7 +98,7 @@ async def dump() -> str:
         all_skill_names = list(dict.fromkeys(always_on + skill_names))
         if skill_names:
             tier = resolve_tier(llm_skills=set(skill_names))
-        tools = skill_registry.get_tools_by_names(all_skill_names)
+        tools = skill_registry.get_tools_by_names(all_skill_names, core_only=True)
     else:
         tools = skill_registry.get_tools()
 

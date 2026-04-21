@@ -69,9 +69,32 @@ def _ensure_skill_metadata():
 
 
 def get_tool_meta(tool_name: str) -> dict:
-    """Get metadata for a tool. Unknown tools default to L0/unknown."""
+    """Get metadata for a tool. Unknown tools default to L0/unknown/core."""
     _ensure_skill_metadata()
-    return TOOL_METADATA.get(tool_name, {"skill": "unknown", "risk_level": "L0"})
+    return TOOL_METADATA.get(
+        tool_name,
+        {"skill": "unknown", "risk_level": "L0", "group": "core"},
+    )
+
+
+def get_tools_for_skills(skills: set[str], *, core_only: bool = True) -> list[str]:
+    """Return tool names belonging to specified skills (filtered by group).
+
+    When ``core_only=True`` (default), tools marked ``extended`` in SKILL.md are
+    excluded — they can only be loaded later via ``request_tools`` escalation.
+    Pass ``core_only=False`` from escalation rebuild paths.
+    """
+    _ensure_skill_metadata()
+    if not skills:
+        return []
+    result = []
+    for name, meta in TOOL_METADATA.items():
+        if meta.get("skill") not in skills:
+            continue
+        if core_only and meta.get("group", "core") == "extended":
+            continue
+        result.append(name)
+    return result
 
 
 # ────────────────────────────────────────────────────────────────────────

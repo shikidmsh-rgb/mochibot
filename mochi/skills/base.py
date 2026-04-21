@@ -71,6 +71,7 @@ class ToolMeta:
     name: str
     skill: str          # logical skill this tool belongs to
     risk_level: str     # L0, L1, L2, L3
+    group: str = "core"  # "core" (loaded with skill) or "extended" (on-demand via request_tools)
 
 
 @dataclass
@@ -444,15 +445,18 @@ def _parse_config_schema(content: str) -> list[dict]:
     return schema
 
 
-def _extract_tool_annotations(heading: str) -> tuple[str, str, str]:
-    """Extract risk level and skill override from a tool heading.
+def _extract_tool_annotations(heading: str) -> tuple[str, str, str, str]:
+    """Extract risk level, skill override, group, and tool name from a heading.
 
-    "tool_name (L0)"              → ("L0", "", "tool_name")
-    "tool_name (L1, skill: foo)"  → ("L1", "foo", "tool_name")
-    "tool_name"                   → ("L0", "", "tool_name")
+    "tool_name (L0)"                       → ("L0", "", "core",     "tool_name")
+    "tool_name (L1, skill: foo)"           → ("L1", "foo", "core",  "tool_name")
+    "tool_name (L0, extended)"             → ("L0", "", "extended", "tool_name")
+    "tool_name (L1, extended, skill: foo)" → ("L1", "foo", "extended", "tool_name")
+    "tool_name"                            → ("L0", "", "core",     "tool_name")
     """
     risk_level = "L0"
     skill_override = ""
+    group = "core"
     paren_match = re.match(r"^(\S+)\s*\(([^)]+)\)", heading)
     if paren_match:
         tool_name = paren_match.group(1)
@@ -463,9 +467,11 @@ def _extract_tool_annotations(heading: str) -> tuple[str, str, str]:
                 risk_level = part
             elif part.startswith("skill:"):
                 skill_override = part.split(":", 1)[1].strip()
+            elif part == "extended":
+                group = "extended"
     else:
         tool_name = heading.split()[0] if heading else ""
-    return risk_level, skill_override, tool_name
+    return risk_level, skill_override, group, tool_name
 
 
 def _parse_tools_v1(content: str) -> list[dict]:
@@ -476,7 +482,7 @@ def _parse_tools_v1(content: str) -> list[dict]:
         lines = block.strip().split("\n")
         heading = lines[0].strip()
         # Strip annotations: "tool_name (L0)" → "tool_name"
-        risk_level, skill_override, tool_name = _extract_tool_annotations(heading)
+        risk_level, skill_override, group, tool_name = _extract_tool_annotations(heading)
 
         desc = ""
         desc_match = re.search(r"Description[:\s]*(.+?)(?:\n##|\n###|\Z)",
@@ -488,6 +494,7 @@ def _parse_tools_v1(content: str) -> list[dict]:
         tool_def = _build_tool_schema(tool_name, desc, params, required_params)
         tool_def["_risk_level"] = risk_level
         tool_def["_skill_override"] = skill_override
+        tool_def["_group"] = group
         tools.append(tool_def)
     return tools
 
@@ -506,7 +513,7 @@ def _parse_tools_v2(content: str) -> list[dict]:
         lines = block.strip().split("\n")
         heading = lines[0].strip()
         # Strip annotations: "send_sticker (L0)" → "send_sticker"
-        risk_level, skill_override, tool_name = _extract_tool_annotations(heading)
+        risk_level, skill_override, group, tool_name = _extract_tool_annotations(heading)
 
         if not tool_name:
             continue
@@ -523,6 +530,7 @@ def _parse_tools_v2(content: str) -> list[dict]:
         tool_def = _build_tool_schema(tool_name, desc, params, required_params)
         tool_def["_risk_level"] = risk_level
         tool_def["_skill_override"] = skill_override
+        tool_def["_group"] = group
         tools.append(tool_def)
     return tools
 
@@ -917,10 +925,12 @@ def scan_skill_metadata(skills_dir: str | None = None) -> list[SkillMeta]:
                 continue
             risk = tool_def.get("_risk_level", "L0")
             override = tool_def.get("_skill_override", "")
+            group = tool_def.get("_group", "core")
             tools.append(ToolMeta(
                 name=tool_name,
                 skill=override or name,
                 risk_level=risk,
+                group=group,
             ))
 
         # Merge requires_config and requires_env
@@ -1023,8 +1033,9 @@ def build_tool_metadata(metas: list[SkillMeta]) -> dict[str, dict]:
             result[tool.name] = {
                 "skill": tool.skill,
                 "risk_level": tool.risk_level,
+                "group": tool.group,
             }
-    result["request_tools"] = {"skill": "_virtual", "risk_level": "L0"}
+    result["request_tools"] = {"skill": "_virtual", "risk_level": "L0", "group": "core"}
     return result
 
 

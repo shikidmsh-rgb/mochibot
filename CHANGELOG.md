@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.8.12
+- 新增 tool group 机制（core/extended），memory 工具改为每轮注入，扩展工具按需 request_tools
+- 重写 agent.md / memory / note skill prompt，明确四种存储边界
+
 ## v0.8.11
 - 修复跨长时间间隔后 LLM 时间感知错乱（晚安后第二天回复仍续说晚安）
 
