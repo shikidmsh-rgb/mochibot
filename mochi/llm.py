@@ -473,12 +473,6 @@ class AzureOpenAIProvider(_OpenAICompatChat, LLMProvider):
         return response
 
 
-# Detection for Claude 4.x family (Opus 4.7, Sonnet 4.6, Haiku 4.5, ...).
-# Anchored on the literal "-4-" token after a family keyword so legacy
-# IDs like claude-3-haiku-20240307 (date contains 4) do NOT match.
-_CLAUDE_4_RE = re.compile(r"claude-(opus|sonnet|haiku)-4-")
-
-
 class AnthropicProvider(LLMProvider):
     """Anthropic Claude API provider."""
 
@@ -489,27 +483,6 @@ class AnthropicProvider(LLMProvider):
 
     def provider_name(self) -> str:
         return "anthropic"
-
-    def _build_thinking_param(self) -> dict | None:
-        """Return thinking kwarg for Claude 4.x models, or None for older.
-
-        Symmetric to OpenAI reasoning_effort='minimal' default and Gemini
-        thinking_level='low': enable with the minimum allowed budget so
-        chat-style replies stay fast, while still unlocking the Claude 4
-        reasoning quality the user is paying for.
-
-        Detection — anchored regex `claude-(family)-4-` requires the literal
-        "-4-" token. This rejects legacy IDs whose date suffix happens to
-        contain a 4 (e.g. claude-3-haiku-20240307).
-        """
-        if _CLAUDE_4_RE.search(self._model.lower()):
-            # TODO(review P0-2): budget=1024 is Anthropic's minimum. Sufficient
-            # for chat-style replies, may underweight nightly tasks (dedup/KG
-            # extract) that genuinely need deep reasoning. Plumb tier-aware
-            # budget when a user reports quality issues.
-            # See .claude/reviews/llm-adapter-review-2026-04-19.md
-            return {"type": "enabled", "budget_tokens": 1024}
-        return None
 
     def chat(self, messages: list[dict], tools: list[dict] | None = None,
              temperature: float = 1.0, max_tokens: int = 2048,
@@ -547,10 +520,6 @@ class AnthropicProvider(LLMProvider):
         if tools:
             # Convert OpenAI tool format to Anthropic format
             kwargs["tools"] = self._convert_tools(tools)
-
-        thinking = self._build_thinking_param()
-        if thinking is not None:
-            kwargs["thinking"] = thinking
 
         resp = self._client.messages.create(**kwargs)
 

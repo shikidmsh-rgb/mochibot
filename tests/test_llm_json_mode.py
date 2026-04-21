@@ -714,38 +714,17 @@ class TestAnthropicCachingAndThinking:
         assert first["text"] == "You are Mochi."
         assert first.get("cache_control") == {"type": "ephemeral"}
 
-    # 2: thinking enabled for Claude 4.x
+    # 2: thinking is never sent (forced thinking removed in v0.8.10 to avoid
+    # max_tokens / temperature constraints from Anthropic's extended-thinking API)
     @pytest.mark.parametrize("model", [
         "claude-opus-4-7",
         "claude-sonnet-4-6",
         "claude-haiku-4-5",
-    ])
-    @patch("anthropic.Anthropic")
-    def test_thinking_enabled_for_claude_4(self, mock_anthropic_cls, model):
-        mock_client = MagicMock()
-        mock_anthropic_cls.return_value = mock_client
-        mock_client.messages.create.return_value = self._build_resp(
-            [self._text_block("ok")],
-        )
-
-        provider = AnthropicProvider(api_key="k", model=model)
-        provider.chat([{"role": "user", "content": "hi"}])
-
-        kwargs = mock_client.messages.create.call_args.kwargs
-        thinking = kwargs.get("thinking")
-        assert thinking is not None, f"thinking missing for {model}"
-        assert thinking.get("type") == "enabled"
-        assert thinking.get("budget_tokens") == 1024
-
-    # 3: thinking NOT sent for legacy models (B1 guard — date stamps with 4 in them)
-    @pytest.mark.parametrize("model", [
-        "claude-3-haiku-20240307",     # date contains "4" but not "-4-"
+        "claude-3-haiku-20240307",
         "claude-3-5-sonnet-20241022",
-        "claude-3-opus-20240229",
-        "claude-3-5-haiku-20241022",
     ])
     @patch("anthropic.Anthropic")
-    def test_thinking_NOT_sent_for_legacy_models(self, mock_anthropic_cls, model):
+    def test_thinking_never_sent(self, mock_anthropic_cls, model):
         mock_client = MagicMock()
         mock_anthropic_cls.return_value = mock_client
         mock_client.messages.create.return_value = self._build_resp(
@@ -757,8 +736,7 @@ class TestAnthropicCachingAndThinking:
 
         kwargs = mock_client.messages.create.call_args.kwargs
         assert "thinking" not in kwargs, (
-            f"REGRESSION: thinking sent to legacy model {model} — "
-            "B1 detection bug has returned"
+            f"thinking kwarg leaked for {model} — forced thinking should be removed"
         )
 
     # 4: thinking block must NOT leak into content
