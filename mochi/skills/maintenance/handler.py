@@ -152,8 +152,8 @@ class MaintenanceSkill(Skill):
     """Nightly memory hygiene automation."""
 
     async def execute(self, context: SkillContext) -> SkillResult:
-        from mochi.config import MAINTENANCE_ENABLED
-        if not MAINTENANCE_ENABLED:
+        from mochi.admin.admin_db import get_system_config
+        if not get_system_config("MAINTENANCE_ENABLED"):
             return SkillResult(output="Maintenance disabled.", success=True)
 
         results = await run_maintenance(context.user_id)

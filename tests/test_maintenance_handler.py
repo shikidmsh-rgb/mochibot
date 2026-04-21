@@ -138,8 +138,12 @@ class TestMaintenanceSkillExecute:
 
     @pytest.mark.asyncio
     async def test_disabled(self, monkeypatch):
-        import mochi.config as cfg
-        monkeypatch.setattr(cfg, "MAINTENANCE_ENABLED", False)
+        from mochi.admin.admin_db import get_system_config as _orig
+        def _fake(key):
+            if key == "MAINTENANCE_ENABLED":
+                return False
+            return _orig(key)
+        monkeypatch.setattr("mochi.admin.admin_db.get_system_config", _fake)
         skill = MaintenanceSkill()
         result = await skill.execute(_make_ctx())
         assert result.success is True

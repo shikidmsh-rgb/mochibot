@@ -336,3 +336,54 @@ class TestClearSystemOverride:
         clear_system_override("MAINTENANCE_HOUR")
         overrides = get_system_overrides()
         assert "MAINTENANCE_HOUR" not in overrides
+
+
+# ── Static analysis: no direct config imports for DB-managed keys ──
+
+import re
+from pathlib import Path
+
+
+class TestNoStaticImportOfDbManagedKeys:
+    """Prevent regressions where DB-managed config keys are read from env.
+
+    Any key in SYSTEM_DEFAULTS should be read via get_system_config(), not
+    imported from mochi.config. Catches 'from mochi.config import KEY' and
+    'config.KEY' patterns outside of allowed files.
+    """
+
+    _ALLOWED_FILES = {
+        "config.py",        # declares the env fallback values
+        "admin_db.py",      # manages SYSTEM_DEFAULTS itself
+        "admin_env.py",     # syncs env ↔ DB
+        "admin_server.py",  # admin API reads defaults
+    }
+
+    def _scan(self):
+        mochi_dir = Path(__file__).resolve().parent.parent / "mochi"
+        keys = set(SYSTEM_DEFAULTS.keys())
+        violations = []
+        for py in mochi_dir.rglob("*.py"):
+            if py.name in self._ALLOWED_FILES:
+                continue
+            text = py.read_text(encoding="utf-8")
+            for line_no, line in enumerate(text.splitlines(), 1):
+                for key in keys:
+                    if re.search(
+                        rf'\bfrom\s+mochi\.config\s+import\b.*\b{key}\b', line
+                    ) or re.search(
+                        rf'\bconfig\.{key}\b', line
+                    ):
+                        rel = py.relative_to(mochi_dir.parent)
+                        violations.append(f"{rel}:{line_no}  {line.strip()}  [key={key}]")
+        return violations
+
+    def test_no_static_import_of_system_defaults_keys(self):
+        violations = self._scan()
+        if violations:
+            msg = (
+                "DB-managed config keys must use get_system_config(), "
+                "not static import from mochi.config:\n"
+                + "\n".join(f"  {v}" for v in violations)
+            )
+            pytest.fail(msg)

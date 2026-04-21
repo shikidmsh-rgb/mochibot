@@ -299,8 +299,8 @@ def _format_history_timestamp(created_at) -> str:
     """
     if not created_at:
         return ""
-    from mochi.config import TIMEZONE_OFFSET_HOURS
-    tz = timezone(timedelta(hours=TIMEZONE_OFFSET_HOURS))
+    from mochi.config import TZ
+    tz = TZ
     try:
         dt = datetime.fromisoformat(str(created_at))
         if dt.tzinfo is None:
@@ -444,14 +444,12 @@ def _build_system_prompt(user_id: int, usage_rules: str = "",
         diary_status: Today's status panel (habits/todos/reminders progress).
         diary_journal: Today's journal entries.
     """
-    from mochi.config import TIMEZONE_OFFSET_HOURS
 
     modules = get_system_chat_modules()
 
-    # Current local time (respects TIMEZONE_OFFSET_HOURS)
-    # wall-clock 故意：给 LLM 的"当前时间"是物理事实（含时分秒）
-    tz = timezone(timedelta(hours=TIMEZONE_OFFSET_HOURS))
-    now = datetime.now(tz)
+    # Current local time (dynamic TZ from admin portal)
+    from mochi.config import TZ
+    now = datetime.now(TZ)
     now_str = now.strftime("%Y-%m-%d %H:%M:%S %z")
 
     parts = []

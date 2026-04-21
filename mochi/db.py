@@ -1488,10 +1488,11 @@ def get_awake_tick_count_today() -> int:
     Excludes passive/sleeping actions so SLEEPING-state ticks don't count.
     Queries by ISO timestamp window [logical_today MAINTENANCE_HOUR, +24h).
     """
-    from mochi.config import logical_today, MAINTENANCE_HOUR
+    from mochi.config import logical_today
+    from mochi.admin.admin_db import get_system_config
     today = logical_today()
     start_dt = datetime.strptime(today, "%Y-%m-%d").replace(
-        hour=MAINTENANCE_HOUR, tzinfo=TZ
+        hour=get_system_config("MAINTENANCE_HOUR"), tzinfo=TZ
     )
     end_dt = start_dt + timedelta(days=1)
     conn = _connect()
@@ -1531,11 +1532,12 @@ def get_today_proactive_sent() -> list[dict]:
     log_proactive writing wall-clock ISO timestamps inside the maintenance window.
     Each entry: {"type": topic, "content": first 80 chars, "time": HH:MM}.
     """
-    from mochi.config import logical_today, MAINTENANCE_HOUR
+    from mochi.config import logical_today
+    from mochi.admin.admin_db import get_system_config
     today = logical_today()
     # Window start = logical_today's MAINTENANCE_HOUR; end = +24h
     start_dt = datetime.strptime(today, "%Y-%m-%d").replace(
-        hour=MAINTENANCE_HOUR, tzinfo=TZ
+        hour=get_system_config("MAINTENANCE_HOUR"), tzinfo=TZ
     )
     end_dt = start_dt + timedelta(days=1)
     conn = _connect()

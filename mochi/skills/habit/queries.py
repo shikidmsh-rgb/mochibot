@@ -7,7 +7,7 @@ Other modules should import from here.
 from datetime import datetime, timedelta
 
 from mochi.db import _connect
-from mochi.config import TZ, logical_today, logical_days_ago, MAINTENANCE_HOUR
+from mochi.config import TZ, logical_today, logical_days_ago
 
 
 def add_habit(user_id: int, name: str, frequency: str,
@@ -179,7 +179,8 @@ def get_habit_streak(
     now = datetime.now(TZ)
     if cycle == "daily":
         # logical 起点：roll back if before MAINTENANCE_HOUR
-        logical_now = now - timedelta(days=1) if now.hour < MAINTENANCE_HOUR else now
+        from mochi.admin.admin_db import get_system_config
+        logical_now = now - timedelta(days=1) if now.hour < get_system_config("MAINTENANCE_HOUR") else now
         periods = []
         for i in range(1, max_lookback + 1):
             d = logical_now - timedelta(days=i)

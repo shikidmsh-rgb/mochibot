@@ -73,50 +73,56 @@ class TestEnvHelpers:
 class TestLogicalDate:
     """Test logical_today / logical_yesterday with MAINTENANCE_HOUR rollover."""
 
+    def _patch_mh(self, monkeypatch, hour):
+        monkeypatch.setattr(
+            "mochi.admin.admin_db.get_system_config",
+            lambda key: hour if key == "MAINTENANCE_HOUR" else None,
+        )
+
     def test_logical_today_before_maintenance(self, monkeypatch):
         """Before MAINTENANCE_HOUR, logical today = yesterday's calendar date."""
         import mochi.config as cfg
-        monkeypatch.setattr(cfg, "MAINTENANCE_HOUR", 3)
+        self._patch_mh(monkeypatch, 3)
         now = datetime(2025, 6, 15, 2, 0, tzinfo=timezone.utc)
         assert cfg.logical_today(now) == "2025-06-14"
 
     def test_logical_today_after_maintenance(self, monkeypatch):
         """After MAINTENANCE_HOUR, logical today = today's calendar date."""
         import mochi.config as cfg
-        monkeypatch.setattr(cfg, "MAINTENANCE_HOUR", 3)
+        self._patch_mh(monkeypatch, 3)
         now = datetime(2025, 6, 15, 10, 0, tzinfo=timezone.utc)
         assert cfg.logical_today(now) == "2025-06-15"
 
     def test_logical_today_at_maintenance(self, monkeypatch):
         """At exactly MAINTENANCE_HOUR, logical today = today's calendar date."""
         import mochi.config as cfg
-        monkeypatch.setattr(cfg, "MAINTENANCE_HOUR", 3)
+        self._patch_mh(monkeypatch, 3)
         now = datetime(2025, 6, 15, 3, 0, tzinfo=timezone.utc)
         assert cfg.logical_today(now) == "2025-06-15"
 
     def test_logical_yesterday_normal(self, monkeypatch):
         import mochi.config as cfg
-        monkeypatch.setattr(cfg, "MAINTENANCE_HOUR", 3)
+        self._patch_mh(monkeypatch, 3)
         now = datetime(2025, 6, 15, 10, 0, tzinfo=timezone.utc)
         assert cfg.logical_yesterday(now) == "2025-06-14"
 
     def test_logical_yesterday_before_maintenance(self, monkeypatch):
         """Before MAINTENANCE_HOUR, logical yesterday = two calendar days back."""
         import mochi.config as cfg
-        monkeypatch.setattr(cfg, "MAINTENANCE_HOUR", 3)
+        self._patch_mh(monkeypatch, 3)
         now = datetime(2025, 6, 15, 2, 0, tzinfo=timezone.utc)
         assert cfg.logical_yesterday(now) == "2025-06-13"
 
     def test_logical_today_month_boundary(self, monkeypatch):
         import mochi.config as cfg
-        monkeypatch.setattr(cfg, "MAINTENANCE_HOUR", 3)
+        self._patch_mh(monkeypatch, 3)
         now = datetime(2025, 7, 1, 1, 0, tzinfo=timezone.utc)
         assert cfg.logical_today(now) == "2025-06-30"
 
     def test_logical_days_ago_stable_across_rollover(self, monkeypatch):
         """logical_days_ago(7) at 02:00 and 14:00 of the same logical day must agree."""
         import mochi.config as cfg
-        monkeypatch.setattr(cfg, "MAINTENANCE_HOUR", 3)
+        self._patch_mh(monkeypatch, 3)
         # 02:00 on June 15 → logical day = June 14, so 7 days ago = June 7
         before = datetime(2025, 6, 15, 2, 0, tzinfo=timezone.utc)
         # 14:00 on June 14 → logical day = June 14, same as above
@@ -126,7 +132,7 @@ class TestLogicalDate:
     def test_logical_days_ago_zero(self, monkeypatch):
         """logical_days_ago(0) equals logical_today."""
         import mochi.config as cfg
-        monkeypatch.setattr(cfg, "MAINTENANCE_HOUR", 3)
+        self._patch_mh(monkeypatch, 3)
         now = datetime(2025, 6, 15, 2, 0, tzinfo=timezone.utc)
         assert cfg.logical_days_ago(0, now) == cfg.logical_today(now)
 

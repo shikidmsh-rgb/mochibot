@@ -305,6 +305,17 @@ class _TZProxy(tzinfo):
 TZ = _TZProxy()
 
 
+def _effective_maintenance_hour() -> int:
+    try:
+        from mochi.admin.admin_db import get_system_config
+        v = get_system_config("MAINTENANCE_HOUR")
+        if v is None:
+            return MAINTENANCE_HOUR
+        return int(v)
+    except Exception:
+        return MAINTENANCE_HOUR
+
+
 def logical_today(now: datetime | None = None) -> str:
     """Return today's date as YYYY-MM-DD, rolling over at MAINTENANCE_HOUR.
 
@@ -313,7 +324,7 @@ def logical_today(now: datetime | None = None) -> str:
     """
     if now is None:
         now = datetime.now(TZ)
-    if now.hour < MAINTENANCE_HOUR:
+    if now.hour < _effective_maintenance_hour():
         now = now - timedelta(days=1)
     return now.strftime("%Y-%m-%d")
 
@@ -335,7 +346,7 @@ def logical_days_ago(n: int, now: datetime | None = None) -> str:
     """
     if now is None:
         now = datetime.now(TZ)
-    if now.hour < MAINTENANCE_HOUR:
+    if now.hour < _effective_maintenance_hour():
         now = now - timedelta(days=1)
     return (now - timedelta(days=n)).strftime("%Y-%m-%d")
 

@@ -14,7 +14,6 @@ from mochi.config import (
     TZ,
     DIARY_STATUS_MAX_LINES,
     DIARY_ENTRY_MAX_LINES,
-    MAINTENANCE_HOUR,
     OWNER_USER_ID,
 )
 
@@ -31,8 +30,9 @@ _WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
 
 def _diary_date() -> datetime:
     """Effective date in TZ (rolls over at maintenance hour, not midnight)."""
+    from mochi.admin.admin_db import get_system_config
     now = datetime.now(TZ)
-    if now.hour < MAINTENANCE_HOUR:
+    if now.hour < get_system_config("MAINTENANCE_HOUR"):
         now = now - timedelta(days=1)
     return now
 
