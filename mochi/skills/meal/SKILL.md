@@ -18,7 +18,7 @@ Tool-only mode: `log_meal` (record meals with nutrition estimation) + `query_mea
 ## Tools
 
 ### log_meal (L1)
-记录一餐饮食，由 LLM 估算营养成分。根据用户描述或食物照片估算热量和宏量营养素，然后调用此工具。不需要确认。
+用户提到吃了什么或发食物照片时调用，由你估算热量和宏量营养素。如："午饭吃了麻辣烫"、附食物图片。
 
 **记录后**：务必告知用户营养明细——总热量 + 每个食物的热量、蛋白质、碳水、脂肪。这是这个功能的核心价值。示例回复："记下了～早餐284kcal，蛋白2个(34kcal, 蛋白质7g) + 豆豆1个(250kcal, 碳水24g 脂肪16g)"
 
@@ -34,7 +34,7 @@ Tool-only mode: `log_meal` (record meals with nutrition estimation) + `query_mea
 | date | string | | YYYY-MM-DD，默认今天 |
 
 ### query_meals (L0)
-查询饮食历史，含每日宏量营养素汇总。
+用户询问最近吃了什么、热量摄入、营养趋势时调用。如："今天吃了多少卡"、"这周吃得健康吗"。
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|

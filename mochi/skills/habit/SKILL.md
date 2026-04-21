@@ -18,7 +18,7 @@ writes:
 ## Tools
 
 ### query_habit (L0)
-查询习惯进度和统计。
+用户问习惯进度或历史统计时调用。如："今天打卡了哪些"、"我这个月跑步几次了"。
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -26,7 +26,7 @@ writes:
 | habit_id | integer | no | 习惯 ID（仅 stats 需要） |
 
 ### checkin_habit (L1)
-打卡或撤销打卡。
+用户汇报做了一件需要长期坚持的事时调用。如："喝了今天第三杯水"、"刚跑完步"。
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -36,7 +36,7 @@ writes:
 | count | integer | no | 打卡次数（默认 1） |
 
 ### edit_habit (L1)
-新建、删除、暂停、恢复或修改习惯。
+用户想开始追踪一个长期习惯，或调整已有习惯时调用。如："以后帮我记每天喝水"、"暂停跑步打卡一周"。
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|

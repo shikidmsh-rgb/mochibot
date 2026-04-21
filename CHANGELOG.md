@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.8.14
+- 优化 reminder/todo/habit/meal/weather/checkup 等 skill 的 tool description，加判断标准+具体例子（E2E 9/10）
+
 ## v0.8.13
 - 优化 agent.md / 记忆与便签工具描述，提升 LLM 工具调用准确率（E2E 10/10）
 
