@@ -498,17 +498,19 @@ class TestExpandHistoryTimestamp:
         # conftest sets TIMEZONE_OFFSET_HOURS=0 (UTC), so no shift
         assert result[0]["content"] == "[04-22 14:30] hello"
 
-    def test_assistant_plain_gets_prefix(self):
+    def test_assistant_plain_no_prefix(self):
+        """Assistant messages stay clean — no timestamp prefix, to avoid
+        the LLM few-shot-learning to echo `[MM-DD HH:MM]` in its own replies."""
         history = [
             {"role": "assistant", "content": "hi there",
              "created_at": "2026-04-21T09:05:12+00:00"},
         ]
         result = _expand_history(history)
-        assert result[0]["content"] == "[04-21 09:05] hi there"
+        assert result[0]["content"] == "hi there"
 
     def test_tool_history_branch_safe(self):
         """tool_calls assistant must keep content=None; tool result keeps 'OK';
-        only the final text assistant gets the prefix."""
+        the final text assistant stays clean (no prefix on assistant role)."""
         history = [
             {
                 "role": "assistant",
@@ -525,9 +527,9 @@ class TestExpandHistoryTimestamp:
         # 2. tool result: stays "OK" (synthetic, no prefix)
         assert result[1]["role"] == "tool"
         assert result[1]["content"] == "OK"
-        # 3. final text assistant: prefixed
+        # 3. final text assistant: not prefixed (assistant role never gets prefix)
         assert result[2]["role"] == "assistant"
-        assert result[2]["content"] == "[04-22 10:00] Done."
+        assert result[2]["content"] == "Done."
 
     def test_missing_created_at_no_prefix(self):
         """No created_at → content unchanged, no exception."""

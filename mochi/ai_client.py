@@ -321,9 +321,10 @@ def _expand_history(history: list[dict]) -> list[dict]:
       2. tool result messages (one per tool, content="OK")
       3. assistant message with original reply text
 
-    Real user/assistant content gets a `[MM-DD HH:MM] ` timestamp prefix to
-    anchor the LLM's time awareness across long conversation gaps. Synthetic
-    tool_call/tool_result messages are not prefixed.
+    Only user messages get a `[MM-DD HH:MM] ` timestamp prefix to anchor the
+    LLM's time awareness across long conversation gaps. Assistant messages are
+    left clean so the model does not few-shot-learn to echo timestamps in its
+    own replies. Synthetic tool_call/tool_result messages are not prefixed.
     """
     messages: list[dict] = []
     for msg_idx, msg in enumerate(history):
@@ -332,8 +333,8 @@ def _expand_history(history: list[dict]) -> list[dict]:
         tool_history_raw = msg.get("tool_history")
         ts_prefix = _format_history_timestamp(msg.get("created_at"))
 
-        def _prefixed(text):
-            if isinstance(text, str) and text and ts_prefix:
+        def _prefixed(text, msg_role):
+            if msg_role == "user" and isinstance(text, str) and text and ts_prefix:
                 return ts_prefix + text
             return text
 
@@ -371,12 +372,12 @@ def _expand_history(history: list[dict]) -> list[dict]:
                         "content": "OK",
                     })
 
-                # 3. Assistant message with original reply text (prefixed)
-                messages.append({"role": "assistant", "content": _prefixed(content)})
+                # 3. Assistant message with original reply text (not prefixed)
+                messages.append({"role": "assistant", "content": _prefixed(content, role)})
             else:
-                messages.append({"role": role, "content": _prefixed(content)})
+                messages.append({"role": role, "content": _prefixed(content, role)})
         else:
-            messages.append({"role": role, "content": _prefixed(content)})
+            messages.append({"role": role, "content": _prefixed(content, role)})
     return messages
 
 
