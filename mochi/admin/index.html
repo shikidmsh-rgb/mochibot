@@ -357,7 +357,12 @@ async function api(method, path, body) {
   if (authToken) opts.headers['Authorization'] = 'Bearer ' + authToken;
   if (body) opts.body = JSON.stringify(body);
   const r = await fetch('/api' + path, opts);
-  if (!r.ok) { const t = await r.text(); throw new Error(r.status + ': ' + t); }
+  if (!r.ok) {
+    let msg = r.status + ': 未知错误';
+    try { const j = await r.json(); msg = j.detail || j.error || JSON.stringify(j); }
+    catch { try { msg = await r.text() || msg; } catch {} }
+    const err = new Error(msg); err.status = r.status; throw err;
+  }
   return r.json();
 }
 function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
@@ -549,6 +554,7 @@ async function checkSystemUpdate(btn) {
   btn.disabled = true;
   const container = document.getElementById('update-status');
   container.innerHTML = '';
+  let countdown = false;
   try {
     const r = await api('POST', '/system/update-check');
     if (!r.ok) {
@@ -577,16 +583,32 @@ async function checkSystemUpdate(btn) {
     h += `</div>`;
     container.innerHTML = h;
   } catch(e) {
+    if (e.status === 429) {
+      let sec = 60;
+      const m = e.message.match(/(\d+)\s*秒/);
+      if (m) sec = parseInt(m[1]);
+      countdown = true;
+      container.innerHTML = '';
+      const tick = () => {
+        if (sec <= 0) { checkSystemUpdate(btn); return; }
+        btn.textContent = `请稍候 (${sec}s)`;
+        sec--;
+        setTimeout(tick, 1000);
+      };
+      tick();
+      return;
+    }
     container.innerHTML = `<div style="font-size:12px;color:var(--danger)">检查失败：${esc(e.message)}</div>`;
   } finally {
-    btn.textContent = orig;
-    btn.disabled = false;
+    if (!countdown) { btn.textContent = orig; btn.disabled = false; }
   }
 }
 
 async function applySystemUpdate(btn) {
-  btn.textContent = '更新中...';
   btn.disabled = true;
+  let dots = 0;
+  btn.textContent = '更新中...';
+  const anim = setInterval(() => { dots = (dots + 1) % 3; btn.textContent = '更新中' + '.'.repeat(dots + 1); }, 400);
   const container = document.getElementById('update-status');
   try {
     const r = await api('POST', '/system/update-apply');
@@ -630,6 +652,7 @@ async function applySystemUpdate(btn) {
     container.innerHTML = `<div style="font-size:12px;color:var(--danger);margin-top:8px">更新失败：${esc(e.message)}</div>`;
     showToast('更新失败');
   } finally {
+    clearInterval(anim);
     btn.disabled = false;
   }
 }
@@ -2999,7 +3022,12 @@ async function migUpload() {
 
   try {
     const r = await fetch('/api/migration/upload', {method:'POST', headers, body:formData});
-    if (!r.ok) { const t = await r.text(); throw new Error(r.status + ': ' + t); }
+    if (!r.ok) {
+      let msg = r.status + ': 未知错误';
+      try { const j = await r.json(); msg = j.detail || j.error || JSON.stringify(j); }
+      catch { try { msg = await r.text() || msg; } catch {} }
+      const err = new Error(msg); err.status = r.status; throw err;
+    }
     const data = await r.json();
     if (!data.ok) throw new Error(data.error || '上传失败');
     _migSession = data.session_id;
