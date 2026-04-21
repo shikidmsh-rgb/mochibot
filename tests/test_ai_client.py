@@ -486,6 +486,95 @@ class TestExpandHistory:
         assert len(result) == 2
 
 
+class TestExpandHistoryTimestamp:
+    """Timestamp prefix injection in _expand_history (time-awareness fix)."""
+
+    def test_user_message_gets_prefix(self):
+        history = [
+            {"role": "user", "content": "hello",
+             "created_at": "2026-04-22T14:30:00+00:00"},
+        ]
+        result = _expand_history(history)
+        # conftest sets TIMEZONE_OFFSET_HOURS=0 (UTC), so no shift
+        assert result[0]["content"] == "[04-22 14:30] hello"
+
+    def test_assistant_plain_gets_prefix(self):
+        history = [
+            {"role": "assistant", "content": "hi there",
+             "created_at": "2026-04-21T09:05:12+00:00"},
+        ]
+        result = _expand_history(history)
+        assert result[0]["content"] == "[04-21 09:05] hi there"
+
+    def test_tool_history_branch_safe(self):
+        """tool_calls assistant must keep content=None; tool result keeps 'OK';
+        only the final text assistant gets the prefix."""
+        history = [
+            {
+                "role": "assistant",
+                "content": "Done.",
+                "tool_history": '[{"name": "x"}]',
+                "created_at": "2026-04-22T10:00:00+00:00",
+            },
+        ]
+        result = _expand_history(history)
+        assert len(result) == 3
+        # 1. tool_calls assistant: content stays None (no crash, no prefix)
+        assert result[0]["role"] == "assistant"
+        assert result[0]["content"] is None
+        # 2. tool result: stays "OK" (synthetic, no prefix)
+        assert result[1]["role"] == "tool"
+        assert result[1]["content"] == "OK"
+        # 3. final text assistant: prefixed
+        assert result[2]["role"] == "assistant"
+        assert result[2]["content"] == "[04-22 10:00] Done."
+
+    def test_missing_created_at_no_prefix(self):
+        """No created_at → content unchanged, no exception."""
+        history = [
+            {"role": "user", "content": "hello"},
+        ]
+        result = _expand_history(history)
+        assert result[0]["content"] == "hello"
+
+    def test_invalid_created_at_no_prefix(self):
+        history = [
+            {"role": "user", "content": "hello", "created_at": "not-a-date"},
+        ]
+        result = _expand_history(history)
+        assert result[0]["content"] == "hello"
+
+    def test_naive_datetime_assumed_local(self):
+        """ISO without tz uses TIMEZONE_OFFSET_HOURS (matches mochi pattern)."""
+        history = [
+            {"role": "user", "content": "hello",
+             "created_at": "2026-04-22T14:30:00"},
+        ]
+        result = _expand_history(history)
+        # No tz conversion needed — timestamp is interpreted as local
+        assert result[0]["content"] == "[04-22 14:30] hello"
+
+    def test_empty_content_no_prefix(self):
+        """Empty string content stays empty (don't prefix nothing)."""
+        history = [
+            {"role": "user", "content": "",
+             "created_at": "2026-04-22T14:30:00+08:00"},
+        ]
+        result = _expand_history(history)
+        assert result[0]["content"] == ""
+
+
+class TestSystemPromptIncludesHistoryTimestampNote:
+    """Regression guard: the suppression block must remain in system prompt."""
+
+    def test_history_timestamp_prompt_present(self):
+        from mochi.ai_client import _build_system_prompt
+        sp = _build_system_prompt(user_id=None)
+        assert "历史消息时间戳说明" in sp
+        # Sanity: the ❌/✅ example is what makes the suppression work
+        assert "[MM-DD HH:MM]" in sp
+
+
 class TestBedtimeTidyToolResolution:
     """Bedtime tidy must resolve tools correctly and invoke them."""
 
@@ -588,21 +677,54 @@ class TestBedtimeTidyToolResolution:
 class TestAlwaysOnSkills:
     """Always-on skills must be injected regardless of router classification."""
 
-    def test_always_on_skill_names_include_sticker_and_note(self):
-        """get_always_on_skill_names() returns sticker and note."""
+    def test_always_on_skill_names_include_sticker_note_memory(self):
+        """get_always_on_skill_names() returns sticker, note, memory."""
         import mochi.skills as skill_registry
         names = skill_registry.get_always_on_skill_names()
         assert "sticker" in names, f"sticker not in always-on: {names}"
         assert "note" in names, f"note not in always-on: {names}"
+        assert "memory" in names, f"memory not in always-on: {names}"
 
     def test_always_on_resolves_to_valid_tools(self):
         """Always-on skill names resolve to actual tool definitions."""
         import mochi.skills as skill_registry
         names = skill_registry.get_always_on_skill_names()
-        tools = skill_registry.get_tools_by_names(names)
+        tools = skill_registry.get_tools_by_names(names, core_only=True)
         tool_names = [t["function"]["name"] for t in tools]
         assert "send_sticker" in tool_names, f"send_sticker missing: {tool_names}"
         assert "manage_note" in tool_names, f"manage_note missing: {tool_names}"
+        assert "save_memory" in tool_names, f"save_memory missing: {tool_names}"
+        assert "update_core_memory" in tool_names, f"update_core_memory missing: {tool_names}"
+
+    def test_always_on_excludes_extended_tools(self):
+        """Extended tools are NOT injected with always-on skills."""
+        import mochi.skills as skill_registry
+        names = skill_registry.get_always_on_skill_names()
+        tools = skill_registry.get_tools_by_names(names, core_only=True)
+        tool_names = [t["function"]["name"] for t in tools]
+        # sticker's delete_last_sticker is extended
+        assert "delete_last_sticker" not in tool_names, (
+            f"delete_last_sticker should be extended, not always-on: {tool_names}"
+        )
+        # memory's 6 management tools are extended
+        for extended_tool in ["recall_memory", "list_memories", "delete_memory",
+                              "memory_stats", "view_core_memory", "memory_trash_bin"]:
+            assert extended_tool not in tool_names, (
+                f"{extended_tool} should be extended, not always-on: {tool_names}"
+            )
+
+    def test_extended_tools_loaded_via_escalation(self):
+        """core_only=False (escalation path) returns full tool set."""
+        import mochi.skills as skill_registry
+        full_tools = skill_registry.get_tools_by_names(["memory"], core_only=False)
+        full_names = [t["function"]["name"] for t in full_tools]
+        # All 8 memory tools should appear in escalation path
+        for tool in ["save_memory", "update_core_memory", "recall_memory",
+                     "list_memories", "delete_memory", "memory_stats",
+                     "view_core_memory", "memory_trash_bin"]:
+            assert tool in full_names, (
+                f"{tool} missing from escalation full set: {full_names}"
+            )
 
     def test_always_on_respects_transport_exclusion(self):
         """sticker is excluded on wechat transport."""
@@ -615,10 +737,10 @@ class TestAlwaysOnSkills:
         """Merging always-on + router skills deduplicates correctly."""
         import mochi.skills as skill_registry
         always_on = skill_registry.get_always_on_skill_names()
-        router_skills = ["sticker", "memory"]  # sticker appears in both
+        router_skills = ["sticker", "memory"]  # both already always-on
         merged = list(dict.fromkeys(always_on + router_skills))
         assert merged.count("sticker") == 1, f"sticker duplicated: {merged}"
-        tools = skill_registry.get_tools_by_names(merged)
+        tools = skill_registry.get_tools_by_names(merged, core_only=True)
         tool_names = [t["function"]["name"] for t in tools]
         sticker_count = tool_names.count("send_sticker")
         assert sticker_count == 1, f"send_sticker duplicated in tools: {tool_names}"

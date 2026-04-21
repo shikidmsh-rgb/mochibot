@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.8.11
+- 修复跨长时间间隔后 LLM 时间感知错乱（晚安后第二天回复仍续说晚安）
+
 ## v0.8.10
 - Anthropic Claude 4.x 强制 thinking 移除，修复 heartbeat / router / 提醒文案 400 报错
 - 时区配置 admin portal 改完即时生效（最长 60 秒），无需重启

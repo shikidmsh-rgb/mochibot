@@ -292,6 +292,26 @@ async def _generate_summary(
         return None
 
 
+def _format_history_timestamp(created_at) -> str:
+    """Format a message timestamp as `[MM-DD HH:MM] ` for history prefix.
+
+    Returns empty string on missing/invalid input — caller leaves content as-is.
+    """
+    if not created_at:
+        return ""
+    from mochi.config import TIMEZONE_OFFSET_HOURS
+    tz = timezone(timedelta(hours=TIMEZONE_OFFSET_HOURS))
+    try:
+        dt = datetime.fromisoformat(str(created_at))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=tz)
+        else:
+            dt = dt.astimezone(tz)
+        return f"[{dt.strftime('%m-%d %H:%M')}] "
+    except (ValueError, TypeError):
+        return ""
+
+
 def _expand_history(history: list[dict]) -> list[dict]:
     """Expand conversation history into API-native messages.
 
@@ -300,12 +320,22 @@ def _expand_history(history: list[dict]) -> list[dict]:
       1. assistant message with tool_calls (content=None)
       2. tool result messages (one per tool, content="OK")
       3. assistant message with original reply text
+
+    Real user/assistant content gets a `[MM-DD HH:MM] ` timestamp prefix to
+    anchor the LLM's time awareness across long conversation gaps. Synthetic
+    tool_call/tool_result messages are not prefixed.
     """
     messages: list[dict] = []
     for msg_idx, msg in enumerate(history):
         role = msg.get("role")
         content = msg.get("content")
         tool_history_raw = msg.get("tool_history")
+        ts_prefix = _format_history_timestamp(msg.get("created_at"))
+
+        def _prefixed(text):
+            if isinstance(text, str) and text and ts_prefix:
+                return ts_prefix + text
+            return text
 
         if role == "assistant" and tool_history_raw:
             try:
@@ -314,7 +344,7 @@ def _expand_history(history: list[dict]) -> list[dict]:
                 tool_history = []
 
             if tool_history:
-                # 1. Assistant message with tool_calls
+                # 1. Assistant message with tool_calls (content=None — no prefix)
                 tool_calls = []
                 for t_idx, th in enumerate(tool_history):
                     call_id = f"hist_{msg_idx}_{t_idx}"
@@ -332,7 +362,7 @@ def _expand_history(history: list[dict]) -> list[dict]:
                     "tool_calls": tool_calls,
                 })
 
-                # 2. Tool result messages
+                # 2. Tool result messages (synthetic "OK" — no prefix)
                 for t_idx, th in enumerate(tool_history):
                     call_id = f"hist_{msg_idx}_{t_idx}"
                     messages.append({
@@ -341,12 +371,12 @@ def _expand_history(history: list[dict]) -> list[dict]:
                         "content": "OK",
                     })
 
-                # 3. Assistant message with original reply text
-                messages.append({"role": "assistant", "content": content})
+                # 3. Assistant message with original reply text (prefixed)
+                messages.append({"role": "assistant", "content": _prefixed(content)})
             else:
-                messages.append({"role": role, "content": content})
+                messages.append({"role": role, "content": _prefixed(content)})
         else:
-            messages.append({"role": role, "content": content})
+            messages.append({"role": role, "content": _prefixed(content)})
     return messages
 
 
@@ -487,6 +517,12 @@ def _build_system_prompt(user_id: int, usage_rules: str = "",
         if bubble_inst:
             parts.append(bubble_inst)
 
+    # History timestamp format note (always-on — explains [MM-DD HH:MM] prefix
+    # in conversation history and prevents the LLM from echoing it back)
+    hist_ts_inst = get_prompt("system_chat/_history_timestamp")
+    if hist_ts_inst:
+        parts.append(hist_ts_inst)
+
     # Conversation summary (older turns beyond history window)
     if conv_summary:
         parts.append(f"## 本次对话早期内容（摘要）\n{conv_summary}")
@@ -613,7 +649,7 @@ async def chat(message: IncomingMessage) -> ChatResult:
         core_names = skill_registry.get_core_skill_names(
             transport=message.transport)
         tools = skill_registry.get_tools_by_names(
-            core_names, transport=message.transport)
+            core_names, transport=message.transport, core_only=True)
 
         core_memory, history, recalled_memories, conv_summary = await asyncio.gather(
             asyncio.to_thread(get_core_memory, user_id),
@@ -653,7 +689,7 @@ async def chat(message: IncomingMessage) -> ChatResult:
 
         # Tools from merged list
         tools = skill_registry.get_tools_by_names(
-            all_skill_names, transport=message.transport)
+            all_skill_names, transport=message.transport, core_only=True)
         tool_names_list = [
             t["function"]["name"] for t in tools if "function" in t
         ]
@@ -787,7 +823,8 @@ async def chat(message: IncomingMessage) -> ChatResult:
                 else:
                     new_tool_defs = filter_tools(
                         skill_registry.get_tools_by_names(
-                            approved, transport=message.transport)
+                            approved, transport=message.transport,
+                            core_only=False)
                     )
                     existing_names = {
                         t.get("function", {}).get("name")
@@ -1037,8 +1074,9 @@ async def chat_bedtime_tidy(
         messages.extend(_expand_history(history))
         messages.append({"role": "user", "content": instruction})
 
-        # Resolve tools from skill registry
-        tools = skill_registry.get_tools_by_names(BEDTIME_TIDY_TOOLS)
+        # Resolve tools from skill registry — bedtime tidy explicitly opts into
+        # configured skills, so include extended tools too.
+        tools = skill_registry.get_tools_by_names(BEDTIME_TIDY_TOOLS, core_only=False)
         tool_name_list = [t["function"]["name"] for t in tools] if tools else []
         log.info("chat_bedtime_tidy: findings=%d, history=%d, tools=%s",
                  len(findings), len(history), tool_name_list)
