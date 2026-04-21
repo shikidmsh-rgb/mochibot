@@ -604,17 +604,47 @@ async function applySystemUpdate(btn) {
     }
     let h = `<div style="font-size:13px;color:var(--success);display:flex;align-items:center;gap:6px;margin-top:8px">${statusIcon('ok')} ${esc(r.message)}</div>`;
     h += `<div style="font-size:11px;color:var(--text-soft);margin-top:4px">新版本：v${esc(r.new_version)}</div>`;
-    h += `<div style="margin-top:10px;display:flex;gap:8px">`;
-    h += `<button class="btn btn-primary btn-sm" onclick="restartAfterUpdate()">重启 Bot + Admin</button>`;
-    h += `</div>`;
-    container.innerHTML = h;
-    showToast('✅ 更新完成，请重启生效');
+    if (r.restarting) {
+      h += `<div id="restart-countdown" style="margin-top:10px;font-size:12px;color:var(--text-soft)">3 秒后自动重启…</div>`;
+      container.innerHTML = h;
+      showToast('✅ 更新完成，正在重启');
+      let n = 3;
+      const tick = setInterval(() => {
+        n -= 1;
+        const el = document.getElementById('restart-countdown');
+        if (el) el.textContent = n > 0 ? `${n} 秒后自动重启…` : '正在重启，页面将自动刷新…';
+        if (n <= 0) {
+          clearInterval(tick);
+          // Wait for the server to actually exit, then poll until it's back.
+          setTimeout(waitForServerBack, 1500);
+        }
+      }, 1000);
+    } else {
+      h += `<div style="margin-top:10px;display:flex;gap:8px">`;
+      h += `<button class="btn btn-primary btn-sm" onclick="restartAfterUpdate()">重启 Bot + Admin</button>`;
+      h += `</div>`;
+      container.innerHTML = h;
+      showToast('✅ 更新完成，请重启生效');
+    }
   } catch(e) {
     container.innerHTML = `<div style="font-size:12px;color:var(--danger);margin-top:8px">更新失败：${esc(e.message)}</div>`;
     showToast('更新失败');
   } finally {
     btn.disabled = false;
   }
+}
+
+async function waitForServerBack() {
+  for (let i = 0; i < 30; i++) {
+    try {
+      const r = await fetch('/api/status', { cache: 'no-store' });
+      if (r.ok) { location.reload(); return; }
+    } catch (_) { /* server still down */ }
+    await new Promise(res => setTimeout(res, 1000));
+  }
+  // Give up gracefully — user can refresh manually.
+  const el = document.getElementById('restart-countdown');
+  if (el) el.textContent = '重启耗时较长，请手动刷新页面。';
 }
 
 async function restartAfterUpdate() {
@@ -2519,7 +2549,7 @@ async function loadBasic() {
     html += '<p style="font-size:13px;color:var(--text-soft);margin-bottom:16px">💡 维护相关配置立即生效，其他配置重启后生效</p>';
 
     const basicLabels = {
-      TIMEZONE_OFFSET_HOURS:          ['时区偏移（小时）',    'UTC 偏移量，如 +8 = 北京时间'],
+      TIMEZONE_OFFSET_HOURS:          ['时区偏移（小时）',    'UTC 偏移量，如 +8 = 北京、-5 = 芝加哥。修改后请检查现有提醒是否仍按预期时间触发'],
       AI_CHAT_MAX_COMPLETION_TOKENS:  ['对话最大 tokens',     '单次对话回复的 token 上限'],
       MAINTENANCE_HOUR:               ['维护时间（时）',      '每天几点执行维护任务（清理、优化）'],
       MAINTENANCE_ENABLED:            ['启用维护',            '是否启用每日自动维护'],

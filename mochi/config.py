@@ -262,14 +262,47 @@ HEARTBEAT_LOG_TRIM_DAYS = _env_int("HEARTBEAT_LOG_TRIM_DAYS", 7)
 HEARTBEAT_LOG_DELETE_DAYS = _env_int("HEARTBEAT_LOG_DELETE_DAYS", 30)
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Timezone (default UTC, override for your locale in .env)
+# Timezone (default UTC, override for your locale in .env or admin portal)
 # ═══════════════════════════════════════════════════════════════════════════
 
-TIMEZONE_OFFSET_HOURS = _env_int("TIMEZONE_OFFSET_HOURS", 8)
+TIMEZONE_OFFSET_HOURS = _env_int("TIMEZONE_OFFSET_HOURS", 8)  # seed/fallback only
 
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, tzinfo
 
-TZ = timezone(timedelta(hours=TIMEZONE_OFFSET_HOURS))
+
+class _TZProxy(tzinfo):
+    """Dynamic timezone that re-reads admin DB on each call.
+
+    Caller-side semantics are unchanged: `datetime.now(TZ)` and
+    `dt.replace(tzinfo=TZ)` work as before. The actual offset is resolved
+    per-call via admin_db.get_system_config (60s cache), so changes from
+    the admin portal take effect within ~60s without restart.
+    """
+
+    def _hours(self) -> int:
+        try:
+            from mochi.admin.admin_db import get_system_config  # lazy: avoid circular import
+            v = get_system_config("TIMEZONE_OFFSET_HOURS")
+            if v is None:
+                return TIMEZONE_OFFSET_HOURS
+            return int(v)
+        except Exception:
+            return TIMEZONE_OFFSET_HOURS
+
+    def utcoffset(self, dt):
+        return timedelta(hours=self._hours())
+
+    def dst(self, dt):
+        return timedelta(0)
+
+    def tzname(self, dt):
+        return f"UTC{self._hours():+d}"
+
+    def __repr__(self) -> str:
+        return f"_TZProxy({self._hours():+d})"
+
+
+TZ = _TZProxy()
 
 
 def logical_today(now: datetime | None = None) -> str:
