@@ -325,7 +325,7 @@ class MealSkill(Skill):
                     item_names += "..."
                 lines.append(f"- {label}: {item_names} ~{cal}kcal ✅")
             elif now.hour >= reminder_hours[mt]:
-                lines.append(f"- {label} ⏳")
+                lines.append(f"- {label} ⏳ 已过{reminder_hours[mt]}:00 未记录")
 
         # Snacks: show only if logged (no pending state)
         for m in snacks:
