@@ -62,12 +62,8 @@ _GRACEFUL_TIMEOUT = 10   # seconds to wait for bot to exit after signal
 
 
 def _get_app_version() -> str:
-    """Return the application version from mochi.__init__."""
-    try:
-        from mochi import __version__
-        return __version__
-    except Exception:
-        return "unknown"
+    from mochi._version import read_version
+    return read_version()
 
 
 def _graceful_terminate_proc(proc: subprocess.Popen, timeout: int = _GRACEFUL_TIMEOUT):
@@ -915,9 +911,20 @@ if HAS_FASTAPI:
             if m:
                 new_version = m.group(1)
 
+        # Schedule restart so the new version actually takes effect.
+        # Without this, the running process keeps the old mochi/__init__.py
+        # cached in sys.modules and the UI shows stale version forever.
+        from mochi.shutdown import ADMIN_RESTART_EXIT_CODE, request_restart
+        loop = asyncio.get_event_loop()
+        if _EMBEDDED_MODE:
+            loop.call_later(3, request_restart)
+        else:
+            loop.call_later(3, lambda: os._exit(ADMIN_RESTART_EXIT_CODE))
+
         return {
             "ok": True,
-            "message": "更新完成！点击下方按钮重启生效。",
+            "message": "更新完成！3 秒后自动重启……",
+            "restarting": True,
             "pre_hash": pre_hash,
             "new_version": new_version,
             "pull_output": pull_out[:500],

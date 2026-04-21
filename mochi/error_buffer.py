@@ -110,8 +110,8 @@ def get_diagnostic_report() -> str:
     lines.append("=" * 50)
     lines.append(f"Generated: {now}")
     try:
-        from mochi import __version__
-        lines.append(f"Version: {__version__}")
+        from mochi._version import read_version
+        lines.append(f"Version: {read_version()}")
     except Exception:
         lines.append("Version: unknown")
     lines.append("")
