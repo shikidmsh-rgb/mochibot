@@ -1001,7 +1001,10 @@ async def heartbeat_loop() -> None:
             now = datetime.now(TZ)
             hour = now.hour
 
-            # ── 1. Fallback wake check (MUST be before SLEEPING continue) ──
+            # ── 1. Nightly maintenance (runs in ANY state, including SLEEPING) ──
+            await _llm_with_timeout(_run_maintenance_if_due(user_id), "maintenance")
+
+            # ── 2. Fallback wake check (MUST be before SLEEPING continue) ──
             if _state == SLEEPING:
                 fallback_hour = _effective('FALLBACK_WAKE_HOUR')
                 if fallback_hour <= hour < SLEEP_AFTER_HOUR:
@@ -1011,7 +1014,7 @@ async def heartbeat_loop() -> None:
                     await asyncio.sleep(interval)
                     continue
 
-            # ── 2. Silence sleep check (AWAKE path) ──
+            # ── 3. Silence sleep check (AWAKE path) ──
             sleep_action = check_silence_sleep()
             if sleep_action:
                 hint = sleep_action["context_hint"]
@@ -1040,7 +1043,7 @@ async def heartbeat_loop() -> None:
                 await asyncio.sleep(interval)
                 continue
 
-            # ── 3. Silent pause check ──
+            # ── 4. Silent pause check ──
             _check_silence_pause()
             if _silent_pause:
                 log.debug("Silent pause active — tick suppressed")
@@ -1048,13 +1051,7 @@ async def heartbeat_loop() -> None:
                 await asyncio.sleep(interval)
                 continue
 
-            # ── 4. Morning hold: suppress proactive but still observe/maintain ──
-            # (We continue the loop so maintenance can still run,
-            #  but skip Think/proactive actions)
-
-            # Nightly maintenance (runs once per day at MAINTENANCE_HOUR)
-            await _llm_with_timeout(_run_maintenance_if_due(user_id), "maintenance")
-
+            # ── 5. Morning hold: suppress proactive but still observe/maintain ──
             # Observe (cheap: no LLM)
             observation = await _observe(user_id)
 
