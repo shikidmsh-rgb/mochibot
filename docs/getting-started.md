@@ -1,44 +1,35 @@
 # 新手上路：本地部署 MochiBot
 
-这篇手册假设你从来没用过命令行。跟着做，大约 10 分钟就能让 bot 跑起来。
+跟着做，大约 10 分钟就能让 bot 跑起来。
 
 ---
 
 ## 目录
 
 1. [你需要准备什么](#1-你需要准备什么)
-2. [开始](#2-开始)
-3. [管理后台配置](#3-管理后台配置)
-4. [Skill 开关](#4-skill-开关)
-5. [注意事项](#5-注意事项)
-6. [更新 MochiBot](#6-更新-mochibot)
-7. [常见问题](#7-常见问题)
+2. [下载 MochiBot](#2-下载-mochibot)
+3. [运行安装](#3-运行安装)
+4. [管理后台配置](#4-管理后台配置)
+5. [Skill 开关](#5-skill-开关)
+6. [注意事项](#6-注意事项)
+7. [更新 MochiBot](#7-更新-mochibot)
+8. [常见问题](#8-常见问题)
 
 ---
 
 ## 1. 你需要准备什么
 
-开始之前，确认你有这些：
+### Python
 
-- **一台联网的电脑**（Windows、macOS、Linux 都行）
-- **Python 3.11+** — 没装的话去 [python.org/downloads](https://www.python.org/downloads/) 下载。**Windows 用户安装时记得勾选 "Add Python to PATH"**
-- **Git** — 没装的话：Windows 去 [git-scm.com](https://git-scm.com/downloads/win) 下载；macOS 打开终端输入 `git` 会自动提示安装；Linux 用包管理器装（`sudo apt install git`）
+MochiBot 需要 Python 3.11 或更高版本。没装的话去 [python.org/downloads](https://www.python.org/downloads/) 下载。
 
-> 后面的安装脚本会自动检查 Python 版本、创建虚拟环境、安装所有依赖——你只需要确保 Python 和 Git 装好了就行。
+**Windows 用户安装时记得勾选 "Add Python to PATH"**——这个很重要，不勾的话后面会报错。
 
 ### 一个 LLM API Key
 
-API key 就是你调用 AI 模型的"通行证"。MochiBot 本身不包含 AI 模型，需要你提供一个。
+MochiBot 本身不包含 AI 模型，需要你提供一个 API key（调用 AI 的"通行证"）。去你选的 AI 平台注册获取即可，比如 OpenAI、DeepSeek、Anthropic 等。
 
-推荐的提供商（选一个就行）：
-
-| 提供商 | 特点 | 获取 API Key |
-|--------|------|-------------|
-| **OpenAI** | GPT-4o，最主流 | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) |
-| **DeepSeek** | 便宜好用，中文优秀 | [platform.deepseek.com/api_keys](https://platform.deepseek.com/api_keys) |
-| **Anthropic** | Claude 系列 | [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys) |
-
-> 这些服务按用量收费。日常使用一个月大概几块到几十块人民币，取决于你聊多少。
+> 这些服务按用量收费，日常使用一个月大概几块到几十块人民币。
 
 ### 消息平台（二选一）
 
@@ -59,48 +50,25 @@ MochiBot 需要一个消息平台来跟你聊天。**Telegram 或微信，选一
 
 ---
 
-## 2. 开始
+## 2. 下载 MochiBot
 
-### 第一步：打开终端
+1. 打开 MochiBot 的 GitHub 页面：[github.com/shikidmsh-rgb/mochibot](https://github.com/shikidmsh-rgb/mochibot)
+2. 点击页面上**绿色的 "Code" 按钮**
+3. 在弹出的菜单里点 **"Download ZIP"**
+4. 下载完成后，**解压 ZIP 文件**到你想放的位置（比如桌面或文档文件夹）
 
-- **Windows**：按 `Win` 键，搜索 `cmd` 或 `终端`，点击打开
-- **macOS**：按 `Cmd + 空格`，搜索 `Terminal`，回车打开
-- **Linux**：按 `Ctrl + Alt + T`
+解压后你会得到一个 `mochibot-main` 文件夹，里面就是全部代码。
 
-你会看到一个黑色（或白色）的窗口，里面有个光标在闪——这就是终端。后面的命令都在这里输入。
+---
 
-### 第二步：下载 MochiBot
+## 3. 运行安装
 
-在终端里输入（按回车执行）：
+打开刚才解压的文件夹，找到 `setup.bat`（Windows）或 `setup.sh`（macOS/Linux），**双击运行**。
 
-```bash
-git clone https://github.com/shikidmsh-rgb/mochibot.git
-```
-
-等它下载完，再输入：
-
-```bash
-cd mochibot
-```
-
-### 第三步：运行安装脚本
-
-**Windows：**
-
-```bash
-setup.bat
-```
-
-或者直接在文件管理器里双击 `setup.bat`。
-
-**macOS / Linux：**
-
-```bash
-bash setup.sh
-```
+> macOS/Linux 如果双击没反应，右键文件 → 在终端中打开，然后输入 `bash setup.sh` 回车。
 
 脚本会自动：
-- 创建独立的 Python 环境（不会影响你电脑上的其他 Python 程序）
+- 创建独立的 Python 环境（不会影响你电脑上的其他程序）
 - 安装所有依赖
 - 打开管理后台
 
@@ -118,9 +86,9 @@ bash setup.sh
 
 ---
 
-## 3. 管理后台配置
+## 4. 管理后台配置
 
-管理后台打开后，你会看到一个设置引导页面（「设置向导」），它会一步步带你完成配置——**照着页面上的提示走就行**。
+管理后台打开后，你会看到一个设置引导页面（「设置向导」），**照着页面上的提示走就行**。
 
 这里补充几个页面上没有详细说的点：
 
@@ -138,7 +106,7 @@ bash setup.sh
 
 ---
 
-## 4. Skill 开关
+## 5. Skill 开关
 
 ### 什么是 Skill？
 
@@ -167,167 +135,55 @@ Skill 就是 bot 的"能力模块"。每个 Skill 负责一件事，可以独立
 
 ---
 
-## 5. 注意事项
+## 6. 注意事项
 
 **电脑关了 = bot 离线**
-MochiBot 运行在你的电脑上。电脑关机、合盖、断网，bot 就不会回消息，也不会主动找你。想让 bot 24 小时在线，需要部署到服务器上——见 [README 的部署章节](../README.md#部署)。
+MochiBot 运行在你的电脑上。电脑关机、合盖、断网，bot 就不会回消息。想让 bot 24 小时在线，需要部署到服务器上——见 [README 的部署章节](../README.md#部署)。
 
-**数据在 `data/` 文件夹里**
-所有聊天记录、记忆、习惯数据都存在项目的 `data/` 目录下。想备份？复制这个文件夹就行。
+**数据都在 `data/` 文件夹里**
+聊天记录、记忆、习惯数据都在这。想备份？复制这个文件夹就行。
 
-**保管好你的数据**
-`.env` 文件里有你的 API key 和 bot token，`data/` 目录的数据库里也存了一份。不要把这两样分享给别人，也不要提交到 Git。
+**保管好你的配置**
+`.env` 文件里有你的 API key 和 bot token。不要分享给别人。
 
-**启动方式**
-| 场景 | 操作 |
-|------|------|
-| 第一次设置（还没配好） | 运行 `setup.bat` / `bash setup.sh`，在管理后台填配置后点「启动 Bot」 |
-| 日常启动（已配好） | 同上——重新运行 `setup.bat` / `bash setup.sh` 即可，admin 会自动拉起已配置的 bot |
-| 更新到新版本 | 双击 `update.bat`（Windows），见 [第 6 节](#6-更新-mochibot) |
-
-> 关闭 bot：直接关掉 `setup.bat` 的黑窗口（或在窗口里按 Ctrl+C）。
+**日常启动**
+每次想用 bot，双击 `setup.bat`（Windows）或运行 `setup.sh`（macOS/Linux）就行。关闭 bot：直接关掉窗口。
 
 ---
 
-## 6. 更新 MochiBot
+## 7. 更新 MochiBot
 
-MochiBot 会不定期发布新版本（修 bug、加功能）。更新很简单，你的数据不会丢。
+MochiBot 会不定期发布新版本。你的数据（聊天记录、配置、API key）不会被更新覆盖。
 
-### 你的数据是安全的
+**更新方法：** 先关掉正在运行的 bot，然后双击 `update.bat`（在 mochibot 文件夹里，和 setup.bat 挨着）。脚本会自动拉取最新代码、安装新依赖、启动 bot。
 
-以下内容 **不会** 被更新覆盖——它们都不在 Git 管理范围内：
-
-| 内容 | 位置 | 说明 |
-|------|------|------|
-| 数据库（聊天记录、记忆、习惯等） | `data/` | 所有用户数据 |
-| 自定义 prompt | `data/prompts/` | 你在管理后台改过的人设等 |
-| 配置文件 | `.env` | 你的 API key、token 等 |
-| Python 环境 | `.venv/` | 依赖包 |
-
-所以放心更新，不会影响你的任何数据和配置。
-
-### 更新步骤
-
-#### Windows 用户：双击 `update.bat`
-
-1. **先关掉 MochiBot**——把 `setup.bat` 的黑窗口关掉
-2. **双击 `update.bat`**（在 mochibot 文件夹里，和 setup.bat 挨着）
-3. 等脚本跑完，会自动开新窗口启动 bot
-
-脚本会自动完成：拉最新代码 → 装新依赖 → 启动 bot。
-如果中途出错，会**清晰报错并停下**，按提示操作即可。
-
-> **如果 `update.bat` 报"端口 8080 被占用"**——bot 还在跑。回到 `setup.bat` 的窗口，按 Ctrl+C 或直接关掉，再重新双击 update.bat。
-
-#### macOS / Linux 用户：命令行更新
-
-打开终端，进入 mochibot 文件夹：
-
-```bash
-cd mochibot
-source .venv/bin/activate
-git pull
-pip install -r requirements.txt
-```
-
-然后重新跑 `bash setup.sh` 启动 bot。
-
-#### 检查新配置项（更新脚本会自动提醒）
-
-新版本可能会新增配置项。`update.bat` 检测到 `.env.example` 有变更时会自动提示你。
-
-如果你是手动更新（macOS / Linux 或不用脚本），可以这样对比：
-
-```bash
-git diff HEAD@{1} HEAD -- .env.example
-```
-
-如果有新增的变量，把需要的补进你的 `.env` 文件就行。不确定要不要加？大部分新配置都有默认值，不加也能正常运行。
-
-> 数据库结构变更会在 bot 启动时自动完成，不需要你手动操作。
-
-### 遇到冲突怎么办？
-
-如果你手动改过 `mochibot` 文件夹里的代码文件（不是 `.env` 或 `data/`），`git pull`（包括 `update.bat`）可能会报错，类似：
-
-```
-error: Your local changes to the following files would be overwritten by merge
-```
-
-**解决方法**——把你的改动暂存起来，更新完再恢复。在 mochibot 文件夹里打开终端（Windows 可以在文件管理器地址栏输入 `cmd` 回车），运行：
-
-```bash
-git stash                    # 暂存你的改动
-git pull                     # 拉取最新代码
-git stash pop                # 恢复你的改动
-```
-
-如果 `git stash pop` 也报冲突（你改的地方和新版本改的地方重叠了），Git 会在文件里标记冲突位置。如果你看不懂这些标记，最简单的办法是放弃你的改动，用新版本的代码：
-
-```bash
-git checkout .               # 放弃本地改动，用新版本
-```
-
-然后再双击 `update.bat`（或 macOS/Linux 重新跑 setup）。
-
-> **提示**：一般不建议直接修改代码文件。需要自定义的内容（人设、配置）都可以通过管理后台或 `.env` 搞定。
+> 如果你是通过 Download ZIP 安装的（没有用 Git），update.bat 会提示你需要先安装 Git。按提示去 [git-scm.com](https://git-scm.com/downloads/win) 下载安装即可，之后 update.bat 就能正常工作了。
 
 ---
 
-## 7. 常见问题
+## 8. 常见问题
 
 ### 运行脚本报错 "Python not found"
 
-Python 没装，或者没加到系统路径里。
-
-- Windows：重新安装 Python，**一定勾选"Add Python to PATH"**
-- macOS/Linux：试试 `python3 --version`，有些系统命令是 `python3` 不是 `python`
+Python 没装，或者没加到系统路径里。重新安装 Python，**一定勾选 "Add Python to PATH"**。
 
 ### 管理后台打不开
 
-1. 确认终端里没有报错，脚本正常在运行
+1. 确认脚本窗口还在运行、没有报错
 2. 浏览器里输入 `http://127.0.0.1:8080`（不是 https）
-3. 端口被其他程序占了？在 `.env` 里加一行 `ADMIN_PORT=9090`，换个端口
+3. 端口被占了？在 `.env` 里加一行 `ADMIN_PORT=9090` 换个端口
 
 ### Bot 不回消息
 
 按顺序检查：
-
-1. **终端里有报错吗？** 看看有没有红色错误信息
-2. **API key 对吗？** 去管理后台确认 key 没有多余的空格
-3. **模型名对吗？** 比如是 `gpt-4o` 不是 `gpt4o`
-4. **Telegram token 对吗？** 重新从 BotFather 复制一次
-5. **API 余额够吗？** 去对应平台看看是不是欠费了
+1. 脚本窗口里有没有红色错误信息？
+2. 去管理后台确认 API key 没有多余的空格
+3. 确认模型名写对了（比如是 `gpt-4o` 不是 `gpt4o`）
+4. API 余额够吗？去对应平台看看
 
 ### Bot 不主动找我
 
-这是正常的。MochiBot 的"主动找你"靠**心跳**机制——后台每 20 分钟检查一次你的习惯、待办、提醒，觉得有必要才会找你。
-
-- 刚启动？等一会儿，第一次心跳需要最多 20 分钟
-- 检查管理后台的「心跳」状态是不是正常运行中
-- bot 也有"作息"——默认晚上 11 点到早上 7 点不会主动打扰你
-
-### 想换模型 / 换 API key
-
-直接在管理后台改就行，改完 bot 会自动使用新的配置。大部分配置改完不需要重启。
-
-### 怎么重置所有数据？
-
-删掉 `data/` 文件夹，然后重启 bot。所有聊天记录、记忆、习惯数据都会清空，回到全新状态。
-
-### 怎么更新 MochiBot？
-
-见上方 [第 6 节：更新 MochiBot](#6-更新-mochibot)。
-
-### 装了但 `pip install` 报错
-
-可能是网络问题。试试：
-
-```bash
-pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
-```
-
-这会用清华镜像源下载，国内会快很多。
+这是正常的。MochiBot 的心跳机制每 20 分钟检查一次，觉得有必要才会找你。刚启动的话等一会儿就好。另外 bot 默认晚上 11 点到早上 7 点不会主动打扰你。
 
 ---
 
