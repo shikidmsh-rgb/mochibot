@@ -25,5 +25,5 @@ sqlite-vec>=0.1.6
 # Optional: Google Gemini provider
 # google-genai>=1.0.0
 
-# Optional: WeChat transport (iLink API)
-# aiohttp>=3.9
+# WeChat transport (iLink API) — required by current bootstrap even if Telegram-only
+aiohttp>=3.9

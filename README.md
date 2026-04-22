@@ -108,6 +108,7 @@
 | `/admin` | 获取管理后台链接（带 token，可在手机浏览器打开） |
 | `/skilloff` | 切换到闲聊模式——关闭非核心 skill 和 prerouter，省 token |
 | `/skillon` | 恢复完整模式——重新启用所有 skill |
+| `/reset` | 重置对话上下文——后续聊天 LLM 看不到之前的 history（DB 保留，长期记忆不影响） |
 | `/restart` | 重启 Bot 进程 |
 
 ---
@@ -188,30 +189,47 @@ docker compose up -d         # 后台运行
 
 ```bash
 git clone https://github.com/shikidmsh-rgb/mochibot.git && cd mochibot
-python3 -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env        # 填写必要配置
-python scripts/start.py
 ```
 
-`scripts/start.py` 会在 bot 请求重启时（如通过管理后台的重启按钮）自动重新启动进程。如果直接运行 `python -m mochi.main`，重启按钮将不会生效。
+- **Windows**：双击 `setup.bat`
+- **macOS / Linux**：`bash setup.sh`
+
+脚本会自动创建 `.venv`、安装依赖，然后启动管理后台。
 
 #### 更新
 
+**Windows 用户**（推荐）：双击项目目录里的 `update.bat`，按提示操作即可。
+脚本会自动：拉最新代码 → 装新依赖 → 启动 bot。
+
+**macOS / Linux 用户**：
+
 ```bash
-cd mochibot                                  # 进入项目目录
-source venv/bin/activate                     # 激活虚拟环境（Windows：venv\Scripts\activate）
-git pull                                     # 拉取最新代码
-pip install -r requirements.txt              # 安装可能新增的依赖
+cd mochibot
+source .venv/bin/activate
+git pull
+pip install -r requirements.txt
 ```
 
-然后重启 bot（重新运行 `python scripts/start.py`，或在管理后台点重启按钮）。
+然后重新跑 `bash setup.sh` 启动 bot。
 
-> **数据不会丢**：你的 `.env`、`data/`（数据库、聊天记录）、`data/prompts/`（自定义 prompt）、`venv/` 都在 `.gitignore` 里，`git pull` 不会碰它们。数据库结构变更会在启动时自动完成，无需手动操作。
+<details>
+<summary>Windows 用户偏好命令行？</summary>
 
-> 如果 `git pull` 报冲突（你手动改过代码文件），先 `git stash` 暂存改动，再 `git pull`，之后 `git stash pop` 尝试恢复。详见 [新手上路手册 > 更新](docs/getting-started.md#更新-mochibot)。
+```cmd
+cd mochibot
+.venv\Scripts\activate
+git pull
+pip install -r requirements.txt
+```
 
-> 更新后建议对比 `.env.example` 看看有没有新增的配置项——如果有，把新项补进你的 `.env`。
+然后重新双击 `setup.bat`。
+</details>
+
+> **数据不会丢**：`.env`、`data/`（数据库、聊天记录）、`data/prompts/`（自定义 prompt）、`.venv/` 都在 `.gitignore` 里，更新不会碰它们。数据库结构变更会在启动时自动完成。
+
+> 更新后建议对比 `.env.example` 看看有没有新增的配置项——如果有，把新项补进你的 `.env`。（`update.bat` 检测到 `.env.example` 变更时会自动提醒。）
+
+> 如果 `git pull` 报冲突（你手动改过代码文件），先 `git stash` 暂存改动，再 `git pull`，之后 `git stash pop` 尝试恢复。详见 [新手上路手册 > 更新](docs/getting-started.md#6-更新-mochibot)。
 
 ### 无 Docker 部署（systemd）
 
