@@ -347,6 +347,20 @@ class WeixinTransport(Transport):
             request_restart(OWNER_USER_ID or 0, weixin_id=from_user)
             return
 
+        # System command: /reset (owner only) — clear conversation context
+        if text.strip() == "/reset":
+            if from_user != self._owner_weixin_id:
+                return
+            from mochi.db import set_context_reset
+            set_context_reset(OWNER_USER_ID or 0)
+            try:
+                await self._weixin_send_message(
+                    from_user, "已重置对话上下文，bot 不会记得之前聊了什么。",
+                    context_token)
+            except Exception as e:
+                log.warning("WeChat: failed to send reset ack: %s", e)
+            return
+
         # System command: /help
         if text.strip() == "/help":
             help_text = (
@@ -361,6 +375,7 @@ class WeixinTransport(Transport):
                 "/admin — 管理后台\n"
                 "/skilloff — 闲聊模式（省 token）\n"
                 "/skillon — 恢复完整模式\n"
+                "/reset — 重置对话上下文（不影响长期记忆）\n"
                 "/restart — 重启 Bot"
             )
             try:

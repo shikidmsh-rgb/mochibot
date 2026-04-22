@@ -19,7 +19,7 @@ from mochi.llm import get_client_for_tier, LLMResponse
 from mochi.prompt_loader import get_prompt, get_system_chat_modules
 from mochi.db import (
     save_message, get_recent_messages, get_core_memory, log_usage,
-    recall_memory, get_cached_summary, save_cached_summary,
+    recall_memory, get_cached_summary, save_cached_summary, get_context_reset,
 )
 from mochi.skills.habit.queries import list_habits
 import mochi.skills as skill_registry
@@ -31,6 +31,11 @@ STICKER_RE = re.compile(r"\[STICKER:([^\]]+)\]")
 
 # Tools excluded from tool_history annotation — not meaningful skill executions
 _TOOL_HISTORY_EXCLUDE = frozenset({"request_tools", "send_sticker"})
+
+
+def _get_history(user_id: int, limit: int) -> list[dict]:
+    """Load recent messages respecting the per-user context reset boundary."""
+    return get_recent_messages(user_id, limit=limit, since=get_context_reset(user_id))
 
 # ── Auto-recall state (per-user cooldown) ──
 _user_last_recall: dict[int, float] = {}   # user_id → timestamp
@@ -156,7 +161,7 @@ def prewarm_conv_summary_if_needed(user_id: int) -> None:
     )
 
     lookahead = (MAX_HISTORY_TURNS + CONV_SUMMARY_LOOKAHEAD_MSGS) * 2  # turns → messages
-    full = get_recent_messages(user_id, limit=lookahead)
+    full = _get_history(user_id, limit=lookahead)
     current_bucket = (len(full) // CONV_SUMMARY_BUCKET_SIZE) * CONV_SUMMARY_BUCKET_SIZE
     next_bucket = ((len(full) + 2) // CONV_SUMMARY_BUCKET_SIZE) * CONV_SUMMARY_BUCKET_SIZE
 
@@ -214,7 +219,7 @@ async def _get_conv_summary(user_id: int) -> str | None:
     )
 
     lookahead = (MAX_HISTORY_TURNS + CONV_SUMMARY_LOOKAHEAD_MSGS) * 2  # turns → messages
-    full = get_recent_messages(user_id, limit=lookahead)
+    full = _get_history(user_id, limit=lookahead)
     recent_msg_count = MAX_HISTORY_TURNS * 2
 
     if len(full) <= recent_msg_count:
@@ -652,7 +657,7 @@ async def chat(message: IncomingMessage) -> ChatResult:
 
         core_memory, history, recalled_memories, conv_summary = await asyncio.gather(
             asyncio.to_thread(get_core_memory, user_id),
-            asyncio.to_thread(get_recent_messages, user_id, 20),
+            asyncio.to_thread(_get_history, user_id, 20),
             asyncio.to_thread(_retrieve_memories_for_turn, text, user_id),
             _safe_conv_summary(),
         )
@@ -667,7 +672,7 @@ async def chat(message: IncomingMessage) -> ChatResult:
             classify_skills(text, user_id=user_id, habits=habits,
                             transport=message.transport),
             asyncio.to_thread(get_core_memory, user_id),
-            asyncio.to_thread(get_recent_messages, user_id, 20),
+            asyncio.to_thread(_get_history, user_id, 20),
             asyncio.to_thread(_retrieve_memories_for_turn, text, user_id),
             _safe_conv_summary(),
         )
@@ -702,7 +707,7 @@ async def chat(message: IncomingMessage) -> ChatResult:
         # Parallel DB fetches even when router is off
         core_memory, history, recalled_memories, conv_summary = await asyncio.gather(
             asyncio.to_thread(get_core_memory, user_id),
-            asyncio.to_thread(get_recent_messages, user_id, 20),
+            asyncio.to_thread(_get_history, user_id, 20),
             asyncio.to_thread(_retrieve_memories_for_turn, text, user_id),
             _safe_conv_summary(),
         )
@@ -947,7 +952,7 @@ async def chat_proactive(findings: list[dict], user_id: int) -> str | None:
         from mochi.diary import diary as _diary
         core_memory, history, recalled_memories = await asyncio.gather(
             asyncio.to_thread(get_core_memory, user_id),
-            asyncio.to_thread(get_recent_messages, user_id,
+            asyncio.to_thread(_get_history, user_id,
                               PROACTIVE_CHAT_HISTORY_TURNS),
             asyncio.to_thread(_retrieve_memories_for_turn, recall_query, user_id),
         )
@@ -1059,7 +1064,7 @@ async def chat_bedtime_tidy(
             system_prompt += f"\n\n{section}\n"
 
         # Load history for context awareness
-        history = get_recent_messages(user_id, limit=PROACTIVE_CHAT_HISTORY_TURNS)
+        history = _get_history(user_id, limit=PROACTIVE_CHAT_HISTORY_TURNS)
 
         # Load bedtime tidy instruction and inject findings
         instruction = get_prompt("bedtime_tidy")

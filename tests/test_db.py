@@ -543,3 +543,68 @@ class TestTextSimilarity:
         """Punctuation differences should not affect similarity."""
         from mochi.db import text_similarity
         assert text_similarity("hello, world!", "hello world") == 1.0
+
+
+class TestContextReset:
+    """Tests for the /reset command's DB layer (set/get_context_reset + since filter)."""
+
+    def test_get_context_reset_returns_none_for_new_user(self):
+        from mochi.db import get_context_reset
+        assert get_context_reset(999) is None
+
+    def test_set_then_get_context_reset(self):
+        from mochi.db import set_context_reset, get_context_reset
+        ts = set_context_reset(1)
+        assert get_context_reset(1) == ts
+
+    def test_set_context_reset_overwrites(self):
+        import time
+        from mochi.db import set_context_reset, get_context_reset
+        ts1 = set_context_reset(1)
+        time.sleep(0.01)
+        ts2 = set_context_reset(1)
+        assert ts2 > ts1
+        assert get_context_reset(1) == ts2
+
+    def test_set_context_reset_per_user(self):
+        from mochi.db import set_context_reset, get_context_reset
+        ts1 = set_context_reset(1)
+        ts2 = set_context_reset(2)
+        assert get_context_reset(1) == ts1
+        assert get_context_reset(2) == ts2
+
+    def test_get_recent_messages_since_filter(self):
+        import time
+        from datetime import datetime
+        from mochi.config import TZ
+        save_message(1, "user", "msg1")
+        time.sleep(0.02)
+        boundary = datetime.now(TZ).isoformat()
+        time.sleep(0.02)
+        save_message(1, "user", "msg2")
+        save_message(1, "user", "msg3")
+
+        msgs = get_recent_messages(1, since=boundary)
+        contents = [m["content"] for m in msgs]
+        assert contents == ["msg2", "msg3"]
+
+    def test_get_recent_messages_no_since_unchanged(self):
+        save_message(1, "user", "msg1")
+        save_message(1, "user", "msg2")
+        msgs = get_recent_messages(1)
+        assert [m["content"] for m in msgs] == ["msg1", "msg2"]
+
+    def test_get_recent_messages_since_none_unchanged(self):
+        """Explicit since=None should behave identically to no argument."""
+        save_message(1, "user", "msg1")
+        save_message(1, "user", "msg2")
+        msgs = get_recent_messages(1, since=None)
+        assert [m["content"] for m in msgs] == ["msg1", "msg2"]
+
+    def test_get_recent_messages_since_future_returns_empty(self):
+        from datetime import datetime, timedelta
+        from mochi.config import TZ
+        save_message(1, "user", "msg1")
+        future = (datetime.now(TZ) + timedelta(hours=1)).isoformat()
+        assert get_recent_messages(1, since=future) == []
+

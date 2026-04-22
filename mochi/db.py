@@ -292,6 +292,12 @@ def init_db() -> None:
             created_at TEXT    NOT NULL,
             PRIMARY KEY (user_id, bucket)
         );
+
+        -- Per-user context reset boundary (set by /reset command)
+        CREATE TABLE IF NOT EXISTS conversation_reset (
+            user_id   INTEGER PRIMARY KEY,
+            reset_at  TEXT    NOT NULL
+        );
     """)
 
     # ── Migrations (safe column additions for existing databases) ──────
@@ -693,14 +699,51 @@ def save_message(user_id: int, role: str, content: str, tool_history: str | None
     conn.close()
 
 
-def get_recent_messages(user_id: int, limit: int = 20) -> list[dict]:
+def get_recent_messages(user_id: int, limit: int = 20, since: str | None = None) -> list[dict]:
     conn = _connect()
-    rows = conn.execute(
-        "SELECT role, content, created_at, tool_history FROM messages WHERE user_id = ? ORDER BY id DESC LIMIT ?",
-        (user_id, limit),
-    ).fetchall()
+    if since:
+        rows = conn.execute(
+            "SELECT role, content, created_at, tool_history FROM messages"
+            " WHERE user_id = ? AND created_at > ? ORDER BY id DESC LIMIT ?",
+            (user_id, since, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT role, content, created_at, tool_history FROM messages WHERE user_id = ? ORDER BY id DESC LIMIT ?",
+            (user_id, limit),
+        ).fetchall()
     conn.close()
     return [dict(r) for r in reversed(rows)]
+
+
+def set_context_reset(user_id: int) -> str:
+    """Record a reset boundary for *user_id* at the current time.
+
+    Subsequent ``get_recent_messages`` calls passing ``since=get_context_reset(user_id)``
+    will only return messages created after this timestamp. Original messages
+    are preserved in the DB.
+    """
+    now = datetime.now(TZ).isoformat()
+    conn = _connect()
+    conn.execute(
+        "INSERT INTO conversation_reset (user_id, reset_at) VALUES (?, ?)"
+        " ON CONFLICT(user_id) DO UPDATE SET reset_at = ?",
+        (user_id, now, now),
+    )
+    conn.commit()
+    conn.close()
+    return now
+
+
+def get_context_reset(user_id: int) -> str | None:
+    """Return the ISO timestamp of the most recent reset boundary, or None."""
+    conn = _connect()
+    row = conn.execute(
+        "SELECT reset_at FROM conversation_reset WHERE user_id = ?",
+        (user_id,),
+    ).fetchone()
+    conn.close()
+    return row["reset_at"] if row else None
 
 
 def get_unprocessed_conversations(user_id: int) -> list[dict]:

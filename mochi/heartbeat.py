@@ -35,6 +35,7 @@ from mochi.db import (
     get_last_user_message_time,
     get_message_count_today,
     get_recent_messages,
+    get_context_reset,
     save_message,
     log_usage,
     log_proactive,
@@ -690,7 +691,8 @@ async def _think(observation: dict, user_id: int) -> dict | None:
     # ── Build user message: observation + recent conversation ──
     obs_text = _build_observation_text(observation)
 
-    recent = get_recent_messages(user_id, limit=_effective('THINK_HISTORY_TURNS'))
+    recent = get_recent_messages(user_id, limit=_effective('THINK_HISTORY_TURNS'),
+                                 since=get_context_reset(user_id))
     if recent:
         conv_lines = []
         for m in recent:

@@ -52,13 +52,14 @@ class RecentConversationObserver(Observer):
 
     async def observe(self) -> dict:
         from mochi.config import OWNER_USER_ID
-        from mochi.db import get_recent_messages
+        from mochi.db import get_recent_messages, get_context_reset
 
         user_id = OWNER_USER_ID
         if user_id is None:
             return {}
 
-        messages = get_recent_messages(user_id, limit=MSG_LIMIT)
+        messages = get_recent_messages(user_id, limit=MSG_LIMIT,
+                                       since=get_context_reset(user_id))
         if not messages:
             return {}
 

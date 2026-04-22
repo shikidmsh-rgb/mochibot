@@ -132,6 +132,7 @@ class TelegramTransport(Transport):
         self._app.add_handler(CommandHandler("admin", self._cmd_admin))
         self._app.add_handler(CommandHandler("skilloff", self._cmd_skilloff))
         self._app.add_handler(CommandHandler("skillon", self._cmd_skillon))
+        self._app.add_handler(CommandHandler("reset", self._cmd_reset))
         self._app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message)
         )
@@ -194,6 +195,7 @@ class TelegramTransport(Transport):
             "/admin — 管理后台\n"
             "/skilloff — 闲聊模式（省 token）\n"
             "/skillon — 恢复完整模式\n"
+            "/reset — 重置对话上下文（不影响长期记忆）\n"
             "/restart — 重启 Bot"
         )
 
@@ -238,6 +240,13 @@ class TelegramTransport(Transport):
             return
         set_skill_mode("on")
         await update.message.reply_text("已恢复完整模式 ✦ 所有功能重新上线~")
+
+    async def _cmd_reset(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not _is_owner(update.effective_user.id):
+            return
+        from mochi.db import set_context_reset
+        set_context_reset(update.effective_user.id)
+        await update.message.reply_text("已重置对话上下文，bot 不会记得之前聊了什么。")
 
     async def _cmd_heartbeat(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not _is_owner(update.effective_user.id):
