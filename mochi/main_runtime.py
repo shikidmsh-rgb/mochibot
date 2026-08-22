@@ -108,6 +108,7 @@ class MainRuntimeEntry:
     reminder_id: int | None = None
     scheduled_for: str | None = None
     intent: str | None = None
+    recurrence: str | None = None
     idempotency_key: str | None = None
     claim_token: str | None = None
     lease_until: str | None = None
@@ -144,6 +145,7 @@ class MainRuntimeEntry:
         transport: str,
         claim_token: str,
         lease_until: str,
+        recurrence: str | None = None,
     ) -> "MainRuntimeEntry":
         if isinstance(reminder_id, bool) or not isinstance(reminder_id, int):
             raise ValueError("self reminder id must be an integer")
@@ -167,6 +169,10 @@ class MainRuntimeEntry:
             datetime.fromisoformat(lease_until)
         except ValueError as exc:
             raise ValueError("self reminder lease must be ISO 8601") from exc
+        if recurrence is not None and (
+            not isinstance(recurrence, str) or not recurrence.strip()
+        ):
+            raise ValueError("self reminder recurrence must be a non-empty string")
         stable_key = (
             f"self-reminder:{reminder_id}:{scheduled_for.strip()}"
         )
@@ -178,6 +184,7 @@ class MainRuntimeEntry:
             reminder_id=reminder_id,
             scheduled_for=scheduled_for.strip(),
             intent=intent.strip(),
+            recurrence=recurrence.strip() if recurrence else None,
             idempotency_key=stable_key,
             claim_token=claim_token.strip(),
             lease_until=lease_until.strip(),

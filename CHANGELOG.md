@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v1.0.9
+- 修复 DeepSeek 思考模式在自主情境历史续轮中缺失 `reasoning_content` 导致的请求中断
+- 优化 Self Reminder：使用独立 typed event 与只读对话证据，避免把旧聊天误当作待回复消息
+
 ## v1.0.8
 - 提升天气查询稳定性，改用可靠的 Open-Meteo 数据源
 - 保留已确认的工具结果，让后续对话能自然承接

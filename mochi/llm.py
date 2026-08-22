@@ -229,7 +229,7 @@ class _OpenAICompatChat:
     a hot-swap) skips the probe-and-retry round-trip entirely.
     """
 
-    # Class-level cache: model → {use_max_completion_tokens}
+    # Class-level cache: endpoint + model → negotiated OpenAI-compatible quirks.
     # Survives provider instance recreation (hot-swap, pool reload).
     # GIL-safe: dict read/write is atomic; values are write-once per model.
     _model_caps: dict[str, dict[str, bool]] = {}
@@ -237,23 +237,48 @@ class _OpenAICompatChat:
     # Per-instance capability flags (set after first successful call)
     # None = unknown, True = supported, False = not supported
     _use_max_completion_tokens: bool | None = None
+    _requires_reasoning_placeholders: bool = False
 
-    def _init_caps_from_cache(self, model: str) -> None:
+    def _init_caps_from_cache(self, model: str, base_url: str = "") -> None:
         """Seed instance flags from class-level cache if available."""
-        cached = self._model_caps.get(model)
+        endpoint = base_url.rstrip("/").lower() or "openai-default"
+        self._caps_cache_key = f"{endpoint}::{model}"
+        cached = self._model_caps.get(self._caps_cache_key)
         if cached:
             self._use_max_completion_tokens = cached.get("use_max_completion_tokens")
+            self._requires_reasoning_placeholders = cached.get(
+                "requires_reasoning_placeholders", False,
+            )
             log.debug(
-                "Model %s: restored max_completion_tokens=%s from cache",
+                "Model %s: restored max_completion_tokens=%s, "
+                "reasoning_placeholders=%s from cache",
                 model, self._use_max_completion_tokens,
+                self._requires_reasoning_placeholders,
             )
 
     def _save_caps_to_cache(self, model: str) -> None:
         """Persist resolved capability flags to the class-level cache."""
+        cache_key = getattr(self, "_caps_cache_key", model)
+        cached = dict(self._model_caps.get(cache_key, {}))
         if self._use_max_completion_tokens is not None:
-            self._model_caps[model] = {
-                "use_max_completion_tokens": self._use_max_completion_tokens,
-            }
+            cached["use_max_completion_tokens"] = self._use_max_completion_tokens
+        if self._requires_reasoning_placeholders:
+            cached["requires_reasoning_placeholders"] = True
+        if cached:
+            self._model_caps[cache_key] = cached
+
+    @staticmethod
+    def _with_reasoning_placeholders(messages: list[dict]) -> list[dict]:
+        """Copy assistant history with explicit empty reasoning placeholders."""
+        return [
+            (
+                {**message, "reasoning_content": ""}
+                if message.get("role") == "assistant"
+                and "reasoning_content" not in message
+                else message
+            )
+            for message in messages
+        ]
 
     def _do_chat(self, client, model: str, messages: list[dict],
                  tools: list[dict] | None, temperature: float | None,
@@ -261,7 +286,12 @@ class _OpenAICompatChat:
         """Call chat.completions.create with auto-negotiation."""
         from openai import BadRequestError
 
-        kwargs: dict = {"model": model, "messages": messages}
+        request_messages = (
+            self._with_reasoning_placeholders(messages)
+            if self._requires_reasoning_placeholders
+            else messages
+        )
+        kwargs: dict = {"model": model, "messages": request_messages}
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
@@ -281,43 +311,55 @@ class _OpenAICompatChat:
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
 
-        try:
-            resp = client.chat.completions.create(**kwargs)
-            # Success — lock in the capabilities
-            if self._use_max_completion_tokens is None:
-                self._use_max_completion_tokens = True
-                log.debug("Model %s: using max_completion_tokens", model)
-            self._save_caps_to_cache(model)
-            return resp
-        except BadRequestError as e:
-            err_msg = str(e).lower()
-            retried = False
-
-            # Handle max_tokens vs max_completion_tokens
-            if "max_tokens" in err_msg and "max_completion_tokens" in err_msg:
-                if self._use_max_completion_tokens is None:
-                    # Was trying max_completion_tokens, need max_tokens
-                    self._use_max_completion_tokens = False
-                    kwargs.pop("max_completion_tokens", None)
-                    kwargs["max_tokens"] = max_tokens
-                    log.info("Model %s: falling back to max_tokens", model)
-                    retried = True
-                elif not self._use_max_completion_tokens:
-                    # Was trying max_tokens, need max_completion_tokens
-                    self._use_max_completion_tokens = True
-                    kwargs.pop("max_tokens", None)
-                    kwargs["max_completion_tokens"] = max_tokens
-                    log.info("Model %s: falling back to max_completion_tokens", model)
-                    retried = True
-
-            if retried:
+        for attempt in range(3):
+            try:
                 resp = client.chat.completions.create(**kwargs)
-                # Lock in capabilities from the successful retry
                 if self._use_max_completion_tokens is None:
-                    self._use_max_completion_tokens = "max_completion_tokens" in kwargs
+                    self._use_max_completion_tokens = True
+                    log.debug("Model %s: using max_completion_tokens", model)
                 self._save_caps_to_cache(model)
                 return resp
-            raise
+            except BadRequestError as exc:
+                err_msg = str(exc).lower()
+                changed = False
+
+                if "max_tokens" in err_msg and "max_completion_tokens" in err_msg:
+                    if self._use_max_completion_tokens is None:
+                        self._use_max_completion_tokens = False
+                        kwargs.pop("max_completion_tokens", None)
+                        kwargs["max_tokens"] = max_tokens
+                        log.info("Model %s: falling back to max_tokens", model)
+                        changed = True
+                    elif not self._use_max_completion_tokens:
+                        self._use_max_completion_tokens = True
+                        kwargs.pop("max_tokens", None)
+                        kwargs["max_completion_tokens"] = max_tokens
+                        log.info(
+                            "Model %s: falling back to max_completion_tokens",
+                            model,
+                        )
+                        changed = True
+
+                if (
+                    "reasoning_content" in err_msg
+                    and "must be passed back" in err_msg
+                    and not self._requires_reasoning_placeholders
+                ):
+                    normalized = self._with_reasoning_placeholders(messages)
+                    if normalized != messages:
+                        self._requires_reasoning_placeholders = True
+                        kwargs["messages"] = normalized
+                        log.info(
+                            "Model %s: adding empty reasoning placeholders to "
+                            "assistant history",
+                            model,
+                        )
+                        changed = True
+
+                if not changed or attempt == 2:
+                    raise
+
+        raise RuntimeError("OpenAI-compatible capability negotiation exhausted")
 
 
 class OpenAIProvider(_OpenAICompatChat, LLMProvider):
@@ -328,7 +370,8 @@ class OpenAIProvider(_OpenAICompatChat, LLMProvider):
         self._model = model
         self._base_url = base_url
         self._use_max_completion_tokens = None
-        self._init_caps_from_cache(model)
+        self._requires_reasoning_placeholders = False
+        self._init_caps_from_cache(model, base_url)
         kwargs: dict = {
             "api_key": api_key,
             "max_retries": 0,

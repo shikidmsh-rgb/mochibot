@@ -259,6 +259,7 @@ async def _prepare_self_reminder(
             transport=row_transport,
             claim_token=claimed["claimed_at"],
             lease_until=claimed["lease_until"],
+            recurrence=claimed.get("recurrence"),
         )
         result = await asyncio.wait_for(
             _self_prepare_callback(entry),

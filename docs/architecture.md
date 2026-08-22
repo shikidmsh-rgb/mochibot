@@ -184,9 +184,13 @@ embedding is available, and recent-only rows are never semantic recall filler.
 `manage_reminder(kind="self")` stores a private future intent, not a prewritten
 user notification. It may be one-time or recurring. At each scheduled time,
 the reminder scheduler claims the row and creates
-`MainRuntimeEntry(kind="self_reminder")`; Main sees current Core, conversation,
-Diary, and the capabilities available on the pinned transport, without a
-synthetic user message.
+`MainRuntimeEntry(kind="self_reminder")` containing the intent, scheduled time,
+and recurrence. Main sees current Core, Diary, and the capabilities available
+on the pinned transport. Recent completed conversation is projected as
+bounded read-only evidence rather than replayed as active user/assistant turns.
+The complete typed reminder event is the sole provider turn and explicitly
+states that no new owner message exists; no synthetic conversation row is
+created.
 
 Main may act, prepare a user-visible result, or finish with `[SKIP]`. Tool-only
 success and skip require no transport delivery; for a recurring reminder they

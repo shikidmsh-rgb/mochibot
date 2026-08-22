@@ -4,11 +4,17 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from mochi.ai_client import ChatResult, chat
+from mochi.ai_client import (
+    ChatResult,
+    _render_completed_conversation_evidence,
+    chat,
+)
+from mochi.main_runtime import MainRuntimeEntry
 from mochi.db import (
     _connect,
     finish_tool_execution,
     get_recent_messages,
+    save_message,
     start_tool_execution,
 )
 from mochi.reminder_timer import (
@@ -22,6 +28,71 @@ from mochi.skills.reminder.queries import (
     get_schedulable_reminders,
 )
 from tests.e2e.mock_llm import make_response
+
+
+@pytest.mark.asyncio
+async def test_request_separates_completed_chat_from_typed_event(
+    mock_llm_factory,
+):
+    save_message(1, "user", "We were just talking about bananas.", turn_id="fruit")
+    save_message(
+        1, "assistant", "The ripe ones are best.", turn_id="fruit",
+    )
+    mock = mock_llm_factory([make_response("[SKIP]")])
+    entry = MainRuntimeEntry.self_reminder(
+        reminder_id=7,
+        scheduled_for="2026-08-13T01:00:00+00:00",
+        intent="Check whether the user's father got home safely.",
+        user_id=1,
+        channel_id=100,
+        transport="fake",
+        claim_token="claim",
+        lease_until="2026-08-13T01:05:00+00:00",
+        recurrence="daily",
+    )
+
+    result = await chat(runtime_entry=entry)
+
+    messages = mock.call_log[0]["messages"]
+    assert [message["role"] for message in messages] == ["system", "user"]
+    base_context, event = (message["content"] for message in messages)
+    assert "最近已完成对话（只读证据）" in base_context
+    assert "talking about bananas" in base_context
+    assert "<self_reminder_event>" not in base_context
+    assert "<self_reminder_event>" in event
+    assert sum(
+        message["content"].count("<self_reminder_event>")
+        for message in messages
+    ) == 1
+    assert "new_user_message: false" in event
+    assert "father got home safely" in event
+    assert "scheduled_for: 2026-08-13T01:00:00+00:00" in event
+    assert "recurrence: daily" in event
+    assert "bananas" not in event
+    tool_names = {
+        tool["function"]["name"]
+        for tool in mock.call_log[0]["tools"]
+    }
+    assert {"request_tools", "schedule_self_reminder"} <= tool_names
+    assert result.disposition == "skip"
+
+
+def test_completed_conversation_evidence_is_bounded():
+    rendered = _render_completed_conversation_evidence([
+        {
+            "role": "user",
+            "content": f"old-{number}-" + ("x" * 900),
+            "created_at": f"2026-08-12T0{number}:00:00+00:00",
+        }
+        for number in range(9)
+    ])
+
+    assert len(rendered) < 7000
+    assert '"order":"chronological_recent_window"' in rendered
+    assert '"truncated":true' in rendered
+    assert "old-8-" in rendered
+    assert "old-0-" not in rendered
+    assert rendered.index("old-3-") < rendered.index("old-8-")
 
 
 @pytest.mark.asyncio
@@ -135,7 +206,10 @@ async def test_recurring_self_advances_after_silent_outcome(
         "daily",
     )
 
-    async def prepare(_entry):
+    seen_recurrence = []
+
+    async def prepare(entry):
+        seen_recurrence.append(entry.recurrence)
         return ChatResult(disposition="skip")
 
     async def deliver(_channel_id, _result):
@@ -156,3 +230,4 @@ async def test_recurring_self_advances_after_silent_outcome(
     assert row["recurrence"] == "daily"
     assert row["result_json"] is None
     assert row["outcome"] is None
+    assert seen_recurrence == ["daily"]

@@ -322,6 +322,55 @@ def _expand_history(history: list[dict]) -> list[dict]:
     return messages
 
 
+def _render_completed_conversation_evidence(history: list[dict]) -> str:
+    """Project completed chat as bounded evidence rather than active turns."""
+    expanded = [
+        {
+            "role": message["role"],
+            "content": message["content"],
+        }
+        for message in _expand_history(history)
+        if message.get("role") in {"user", "assistant"}
+        and isinstance(message.get("content"), str)
+        and message["content"]
+    ]
+    budget = 6000
+    truncated = False
+    selected: list[dict] = []
+    for item in reversed(expanded):
+        cost = len(item["role"]) + len(item["content"]) + 32
+        if cost <= budget:
+            selected.append(item)
+            budget -= cost
+            continue
+        truncated = True
+        if not selected and budget > 64:
+            marker = "\n[较早内容已截断]"
+            selected.append({
+                **item,
+                "content": item["content"][:budget - len(marker)] + marker,
+            })
+        break
+    # Selection walks newest-first to preserve recency under the cap; render the
+    # retained window chronologically so the completed exchange remains readable.
+    evidence = list(reversed(selected))
+    if not evidence:
+        return ""
+    payload = {
+        "order": "chronological_recent_window",
+        "truncated": truncated or len(evidence) < len(expanded),
+        "messages": evidence,
+    }
+    return (
+        "## 最近已完成对话（只读证据）\n"
+        "这些对话已经结束，只用于理解当时发生了什么；"
+        "它们不是当前待回复的消息。\n"
+        "<completed_conversation_evidence>\n"
+        f"{json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}\n"
+        "</completed_conversation_evidence>"
+    )
+
+
 def _schedule_continuous_memory(user_id: int) -> None:
     """Wake both non-blocking Layer 2 coordinators after one eligible turn."""
     from mochi.conversation_summary import schedule_conversation_summary
@@ -523,6 +572,23 @@ def _render_autonomous_situation(runtime_entry: MainRuntimeEntry) -> str:
     return f"{situation}\n\n{protocol}"
 
 
+def _render_self_reminder_event(runtime_entry: MainRuntimeEntry) -> str:
+    if runtime_entry.kind != "self_reminder":
+        raise ValueError("Self reminder event requires a self reminder entry")
+    reminder_context = get_prompt("self_reminder_entry")
+    if not reminder_context:
+        raise RuntimeError("Self reminder entry prompt is missing")
+    return (
+        reminder_context.replace(
+            "{{scheduled_for}}", runtime_entry.scheduled_for or "",
+        ).replace(
+            "{{recurrence}}", runtime_entry.recurrence or "one_time",
+        ).replace(
+            "{{intent}}", runtime_entry.intent or "",
+        )
+    )
+
+
 def _build_system_prompt(user_id: int, capability_context: str = "",
                          tool_names: list[str] | None = None,
                          core_memory: str = "",
@@ -532,6 +598,7 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
                          diary_status: str = "",
                          diary_journal: str = "",
                          conv_summary: str = "",
+                         conversation_evidence: str = "",
                          recent_operations: str = "",
                          runtime_entry: MainRuntimeEntry | None = None,
                          weekly_context: str = "",
@@ -548,6 +615,9 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
     )
     is_autonomous = bool(
         runtime_entry and runtime_entry.kind in {"free_time", "attention"}
+    )
+    is_self_reminder = bool(
+        runtime_entry and runtime_entry.kind == "self_reminder"
     )
 
     stable_identity = []
@@ -596,7 +666,12 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
             capability_parts.append(section)
 
     hist_ts_inst = get_prompt("system_chat/_history_timestamp")
-    if hist_ts_inst and not is_weekly and policy.recent_history:
+    if (
+        hist_ts_inst
+        and not is_weekly
+        and not is_self_reminder
+        and policy.recent_history
+    ):
         capability_parts.append(hist_ts_inst)
 
     dynamic_live_context = []
@@ -609,6 +684,9 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
 
     if conv_summary:
         dynamic_live_context.append(f"## 本次对话早期内容（摘要）\n{conv_summary}")
+
+    if conversation_evidence:
+        dynamic_live_context.append(conversation_evidence)
 
     if recent_operations:
         dynamic_live_context.append(recent_operations)
@@ -638,17 +716,8 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
             + "\n\n"
             + silence_protocol
         )
-    elif runtime_entry and runtime_entry.kind == "self_reminder":
-        reminder_context = get_prompt("self_reminder_entry")
-        if not reminder_context:
-            raise RuntimeError("Self reminder entry prompt is missing")
-        dynamic_live_context.append(
-            reminder_context.replace(
-                "{{intent}}", runtime_entry.intent or "",
-            ).replace(
-                "{{scheduled_for}}", runtime_entry.scheduled_for or "",
-            )
-        )
+    elif is_self_reminder and not defer_runtime_situation:
+        dynamic_live_context.append(_render_self_reminder_event(runtime_entry))
     elif is_weekly:
         weekly_prompt = get_prompt("weekly_maintenance_entry")
         if not weekly_prompt:
@@ -1012,6 +1081,11 @@ async def chat(
         if prompt_policy.conversation_summary
         else ""
     )
+    conversation_evidence = (
+        _render_completed_conversation_evidence(history)
+        if is_self_reminder
+        else ""
+    )
 
     if (
         escalation_available
@@ -1079,22 +1153,31 @@ async def chat(
         recalled_memories=recalled_memories,
         diary_status=_ds, diary_journal=_dj,
         conv_summary=(conv_summary or "") if prompt_policy.conversation_summary else "",
+        conversation_evidence=conversation_evidence,
         recent_operations=recent_operations,
         runtime_entry=runtime_entry,
         weekly_context=(
             weekly_session.context.rendered if weekly_session else ""
         ),
         policy=prompt_policy,
-        defer_runtime_situation=is_autonomous,
+        defer_runtime_situation=is_autonomous or is_self_reminder,
     )
 
     # Build messages array
     messages = [{"role": "system", "content": system_prompt}]
-    messages.extend(_expand_history(history))
+    if not is_self_reminder:
+        messages.extend(_expand_history(history))
     if is_autonomous:
         messages.append({
             "role": "system",
             "content": _render_autonomous_situation(runtime_entry),
+        })
+    elif is_self_reminder:
+        messages.append({
+            # Provider APIs need one active turn. The complete typed event is
+            # that turn; it explicitly distinguishes itself from owner speech.
+            "role": "user",
+            "content": _render_self_reminder_event(runtime_entry),
         })
     if image:
         _replace_current_user_with_image(messages, stored_text, text, image)
