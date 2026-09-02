@@ -74,7 +74,10 @@ Azure AI Foundry embedding use the same OpenAI-compatible embedding adapter.
 
 Each provider round receives one immutable tool-availability snapshot. The
 provider schema and dispatch allowlist are derived from that same snapshot, so
-a tool cannot execute merely because it exists in the global registry.
+a tool cannot execute merely because it exists in the global registry. Main
+dispatches only provider-completed tool-call rounds whose arguments parse and
+match that snapshot's schema; rejected calls receive paired, turn-local tool
+errors so the model can recover without recording or executing them.
 
 Ordinary chat can carry forward up to two recently executed skills marked
 `multi_turn`, keeping their routed tools reachable for short natural
