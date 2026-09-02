@@ -421,7 +421,7 @@ def test_openai_compatible_chat_handles_text_and_tools(monkeypatch):
     async def _search(*args, **kwargs):
         return "1. External result"
 
-    monkeypatch.setattr(web_handler, "_ddg_search", _search)
+    monkeypatch.setattr(web_handler, "_bing_search", _search)
     web_success = asyncio.run(WebSearchSkill().run(SkillContext(
         trigger="tool_call",
         tool_name="web_search",
@@ -435,9 +435,9 @@ def test_openai_compatible_chat_handles_text_and_tools(monkeypatch):
     }
 
     async def _failed_search(*args, **kwargs):
-        raise RuntimeError("network unavailable")
+        raise ValueError("network unavailable")
 
-    monkeypatch.setattr(web_handler, "_ddg_search", _failed_search)
+    monkeypatch.setattr(web_handler, "_bing_search", _failed_search)
     web_failure = asyncio.run(WebSearchSkill().run(SkillContext(
         trigger="tool_call",
         tool_name="web_search",

@@ -9,7 +9,7 @@ type: tool
 ## Tools
 
 ### web_search (routed)
-通过 DuckDuckGo 搜索互联网。用于查询时事、新闻、价格、知识、教程等。
+通过 Bing 搜索互联网。用于查询时事、新闻、价格、知识、教程等。
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
