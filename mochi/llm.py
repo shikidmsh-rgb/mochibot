@@ -46,6 +46,8 @@ class ToolCallDict(TypedDict):
     name: str
     arguments: object
     argument_error: str | None
+    argument_preview: str | None
+    envelope_error: str | None
 
 
 @dataclass
@@ -173,25 +175,66 @@ def extract_json(content: str) -> str:
     return s
 
 
+def _tool_call_envelope(
+    index: int,
+    call_id: object,
+    name: object,
+) -> tuple[str, str, str | None]:
+    errors = []
+    if isinstance(call_id, str) and call_id.strip():
+        safe_id = call_id
+    else:
+        safe_id = f"rejected_tool_call_{index}"
+        errors.append("tool call id was missing")
+    if isinstance(name, str) and name.strip():
+        safe_name = name
+    else:
+        safe_name = "invalid_tool_call"
+        errors.append("tool name was missing")
+    return safe_id, safe_name, "; ".join(errors) or None
+
+
+def _argument_preview(value: object, *, limit: int = 500) -> str:
+    if isinstance(value, str):
+        text = value
+    else:
+        try:
+            text = json.dumps(value, ensure_ascii=False)
+        except (TypeError, ValueError):
+            text = repr(value)
+    return text if len(text) <= limit else f"{text[:limit]}..."
+
+
 def _parse_openai_tool_calls(choice) -> list[ToolCallDict]:
     """Extract tool calls from an OpenAI-style chat completion choice."""
     tool_calls: list[ToolCallDict] = []
     if choice.message.tool_calls:
-        for tc in choice.message.tool_calls:
+        for index, tc in enumerate(choice.message.tool_calls, start=1):
+            function = getattr(tc, "function", None)
+            raw_name = getattr(function, "name", None)
+            call_id, name, envelope_error = _tool_call_envelope(
+                index,
+                getattr(tc, "id", None),
+                raw_name,
+            )
+            raw_arguments = getattr(function, "arguments", None)
             try:
-                parsed_args = json.loads(tc.function.arguments)
+                parsed_args = json.loads(raw_arguments)
             except (json.JSONDecodeError, TypeError):
-                log.warning("Malformed tool_call arguments for %s",
-                            tc.function.name)
+                log.warning("Malformed tool_call arguments for %s", name)
                 parsed_args = None
                 argument_error = "arguments were not valid JSON"
+                argument_preview = _argument_preview(raw_arguments)
             else:
                 argument_error = None
+                argument_preview = None
             tool_calls.append({
-                "id": tc.id,
-                "name": tc.function.name,
+                "id": call_id,
+                "name": name,
                 "arguments": parsed_args,
                 "argument_error": argument_error,
+                "argument_preview": argument_preview,
+                "envelope_error": envelope_error,
             })
     return tool_calls
 
@@ -464,20 +507,29 @@ class AnthropicProvider(LLMProvider):
 
         content = ""
         tool_calls = []
-        for block in resp.content:
+        for index, block in enumerate(resp.content, start=1):
             if block.type == "text":
                 content += block.text
             elif block.type == "tool_use":
+                call_id, name, envelope_error = _tool_call_envelope(
+                    index,
+                    getattr(block, "id", None),
+                    getattr(block, "name", None),
+                )
                 arguments = block.input
                 argument_error = None
+                argument_preview = None
                 if not isinstance(arguments, dict):
+                    argument_preview = _argument_preview(arguments)
                     arguments = None
                     argument_error = "arguments were not an object"
                 tool_calls.append({
-                    "id": block.id,
-                    "name": block.name,
+                    "id": call_id,
+                    "name": name,
                     "arguments": arguments,
                     "argument_error": argument_error,
+                    "argument_preview": argument_preview,
+                    "envelope_error": envelope_error,
                 })
             elif block.type in ("thinking", "redacted_thinking"):
                 # Internal reasoning — NEVER leak into user-facing content.

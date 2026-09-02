@@ -707,6 +707,15 @@ def _tool_loop_exhaustion_message(
     return "处理过程出了点问题，你再说一次试试？"
 
 
+def _model_failure_after_tools_message(tool_audit: list[dict]) -> str:
+    if any(item.get("status") == "success" for item in tool_audit):
+        return (
+            "刚才已有工具调用成功，但最终回复没有生成。"
+            "为避免重复修改，请先确认现状后再重试。"
+        )
+    return "刚才的工具调用没有成功，最终回复也没有生成。"
+
+
 def _render_autonomous_situation(runtime_entry: MainRuntimeEntry) -> str:
     if runtime_entry.kind != "free_time":
         raise ValueError("runtime situation is only available for autonomous entries")
@@ -1607,18 +1616,20 @@ async def chat(
                 )
                 if is_model_api_error(e):
                     reply = format_chat_model_api_error(e)
+                    if tool_audit:
+                        reply = (
+                            _model_failure_after_tools_message(tool_audit)
+                            + "\n\n"
+                            + reply
+                        )
                     if image:
                         reply += (
                             "\n如果只有图片消息失败，也请确认该 Chat 模型支持图片。"
                         )
-                    return ChatResult(
-                        text=reply,
-                        stickers=pending_stickers,
-                        tool_audit=tool_audit,
-                        successful_effects=successful_effects,
-                        bedtime_requested=bedtime_requested,
-                        _after_delivery=list(after_delivery_actions),
-                    )
+                    result = _final_result(reply)
+                    result.tool_audit = list(tool_audit)
+                    result.successful_effects = successful_effects
+                    return result
                 raise
 
         _log_main_usage(response)
@@ -1675,7 +1686,22 @@ async def chat(
                     ),
                 })
                 continue
+            envelope_error = tc.get("envelope_error")
+            if envelope_error:
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "content": tool_call_error(
+                        tc["name"],
+                        "invalid_tool_call",
+                        f"{envelope_error}. The tool was not executed; "
+                        "retry with a complete tool-call envelope.",
+                    ),
+                })
+                continue
             if tc["argument_error"]:
+                preview = tc.get("argument_preview")
+                received = f" Received: {preview}" if preview else ""
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc["id"],
@@ -1683,7 +1709,8 @@ async def chat(
                         tc["name"],
                         "malformed_tool_arguments",
                         "The tool arguments were malformed. The tool was not "
-                        "executed; retry with one valid JSON object.",
+                        "executed; retry with one valid JSON object."
+                        f"{received}",
                     ),
                 })
                 continue

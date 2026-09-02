@@ -22,6 +22,8 @@ def test_openai_response_preserves_reasoning_content_for_tool_followup():
             "name": "get_weather",
             "arguments": {"city": "Suzhou"},
             "argument_error": None,
+            "argument_preview": None,
+            "envelope_error": None,
         }],
     )
 
@@ -68,6 +70,8 @@ def test_openai_response_preserves_reasoning_content_for_tool_followup():
         "name": "weather",
         "arguments": {"city": "Tokyo"},
         "argument_error": None,
+        "argument_preview": None,
+        "envelope_error": None,
     }]
 
     malformed_call = SimpleNamespace(
@@ -81,6 +85,24 @@ def test_openai_response_preserves_reasoning_content_for_tool_followup():
     malformed = llm._parse_openai_tool_calls(malformed_choice)
     assert malformed[0]["arguments"] is None
     assert malformed[0]["argument_error"] == "arguments were not valid JSON"
+    assert malformed[0]["argument_preview"] == '{"city":'
+
+    missing_envelope_choice = SimpleNamespace(
+        message=SimpleNamespace(
+            content="",
+            tool_calls=[SimpleNamespace(
+                id="",
+                function=SimpleNamespace(name=None, arguments="{}"),
+            )],
+        ),
+        finish_reason="tool_calls",
+    )
+    missing_envelope = llm._parse_openai_tool_calls(missing_envelope_choice)[0]
+    assert missing_envelope["id"] == "rejected_tool_call_1"
+    assert missing_envelope["name"] == "invalid_tool_call"
+    assert missing_envelope["envelope_error"] == (
+        "tool call id was missing; tool name was missing"
+    )
 
     incomplete = llm._openai_response(
         SimpleNamespace(message=message, finish_reason="length"),
@@ -113,6 +135,8 @@ def test_openai_response_preserves_reasoning_content_for_tool_followup():
         "name": "weather",
         "arguments": {"city": "Tokyo"},
         "argument_error": None,
+        "argument_preview": None,
+        "envelope_error": None,
     }]
     assert anthropic_result.tool_calls_complete is True
 
@@ -135,3 +159,11 @@ def test_openai_response_preserves_reasoning_content_for_tool_followup():
     assert availability.validate_arguments("nullable", {}) == (
         "arguments.value is required"
     )
+
+    from mochi.ai_client import _model_failure_after_tools_message
+
+    partial_message = _model_failure_after_tools_message([
+        {"name": "update_core", "status": "success"},
+    ])
+    assert "已有工具调用成功" in partial_message
+    assert "先确认现状后再重试" in partial_message
