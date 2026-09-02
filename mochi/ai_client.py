@@ -1597,14 +1597,25 @@ async def chat(
                     return ChatResult(disposition="invalid")
                 if is_weekly:
                     raise
-                if image:
-                    return ChatResult(
-                        text=(
-                            "图片处理失败了。请确认管理后台配置的 Chat 模型支持图片，"
-                            "或换一张图片再试。"
+                from mochi.model_health import (
+                    format_chat_model_api_error,
+                    is_model_api_error,
+                )
+                if is_model_api_error(e):
+                    reply = format_chat_model_api_error(e)
+                    if image:
+                        reply += (
+                            "\n如果只有图片消息失败，也请确认该 Chat 模型支持图片。"
                         )
+                    return ChatResult(
+                        text=reply,
+                        stickers=pending_stickers,
+                        tool_audit=tool_audit,
+                        successful_effects=successful_effects,
+                        bedtime_requested=bedtime_requested,
+                        _after_delivery=list(after_delivery_actions),
                     )
-                return ChatResult(text=f"API 报错：{e}")
+                raise
 
         _log_main_usage(response)
         if recalled_memories and not recall_exposure_recorded:

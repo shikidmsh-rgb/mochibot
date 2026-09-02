@@ -14,6 +14,89 @@ _lock = threading.Lock()
 _stats: dict[str, dict] = {}
 
 
+def _model_api_error_types() -> tuple[type[Exception], ...]:
+    types: list[type[Exception]] = []
+    try:
+        from openai import APIError as OpenAIAPIError
+        types.append(OpenAIAPIError)
+    except ImportError:
+        pass
+    try:
+        from anthropic import APIError as AnthropicAPIError
+        types.append(AnthropicAPIError)
+    except ImportError:
+        pass
+    return tuple(types)
+
+
+def is_model_api_error(exc: Exception) -> bool:
+    """Return whether an exception came from a supported chat provider SDK."""
+    error_types = _model_api_error_types()
+    return bool(error_types) and isinstance(exc, error_types)
+
+
+def describe_model_api_error(exc: Exception) -> dict:
+    """Return bounded, actionable provider error details without raw payloads."""
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, bool) or not isinstance(status, int):
+        status = None
+
+    code = getattr(exc, "code", None)
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        detail = body.get("error", body)
+        if isinstance(detail, dict):
+            code = code or detail.get("code") or detail.get("type")
+    code_text = str(code or "").strip()
+    if not code_text.replace("_", "").replace("-", "").isalnum():
+        code_text = ""
+    code_text = code_text[:80]
+
+    class_name = type(exc).__name__.lower()
+    code_lower = code_text.lower()
+    if status == 401 or "authentication" in class_name:
+        message = "API Key 不正确或已经失效。"
+    elif status == 403 or "permission" in class_name:
+        message = "API Key 没有访问该模型的权限。"
+    elif (
+        status == 404
+        or code_lower in {"unknown_model", "model_not_found", "resource_not_found"}
+    ):
+        message = "模型名、Base URL 或 API 路径不存在。"
+    elif status == 429 or "ratelimit" in class_name:
+        message = "模型额度不足或请求过于频繁。"
+    elif status == 408 or "timeout" in class_name:
+        message = "请求模型服务超时。"
+    elif "connection" in class_name:
+        message = "无法连接模型服务。"
+    elif status is not None and status >= 500:
+        message = "模型服务端暂时异常。"
+    else:
+        message = "模型服务请求失败。"
+
+    result = {"error": message}
+    if status is not None:
+        result["status"] = status
+    if code_text:
+        result["code"] = code_text
+    return result
+
+
+def format_chat_model_api_error(exc: Exception) -> str:
+    """Render a concise owner-facing Main API failure."""
+    detail = describe_model_api_error(exc)
+    technical = []
+    if "status" in detail:
+        technical.append(f"HTTP {detail['status']}")
+    if "code" in detail:
+        technical.append(detail["code"])
+    suffix = f"（{' · '.join(technical)}）" if technical else ""
+    return (
+        "模型服务暂时不可用，请到管理后台检查 Chat 模型的 API 配置和服务状态。\n"
+        f"错误：{detail['error']}{suffix}"
+    )
+
+
 def _ensure(tier: str) -> dict:
     if tier not in _stats:
         _stats[tier] = {

@@ -45,38 +45,15 @@ def _get_app_version() -> str:
 
 def _format_embedding_test_error(exc: Exception) -> dict:
     """Turn provider exceptions into concise, actionable UI errors."""
-    status = getattr(exc, "status_code", None)
-    code = getattr(exc, "code", None)
-    body = getattr(exc, "body", None)
-    if isinstance(body, dict):
-        detail = body.get("error", body)
-        if isinstance(detail, dict):
-            code = code or detail.get("code")
+    from mochi.model_health import describe_model_api_error, is_model_api_error
 
-    code_text = str(code or "").strip()
-    raw = f"{code_text} {exc}".lower()
-    if code_text.lower() == "unknown_model" or "unknown_model" in raw:
-        message = (
-            "模型名不匹配或服务暂时未就绪。请先重试一次；"
-            "持续失败时检查服务端的模型部署名。"
-        )
-    elif status == 401 or "invalid_api_key" in raw or "incorrect api key" in raw:
-        message = "API Key 不正确，请检查后重试。"
-    elif (
-        status == 404
-        or "resource_not_found" in raw
-        or "not found" in raw
-    ):
-        message = "Base URL / API 路径或模型部署不存在，请检查配置。"
-    else:
-        message = "连接失败，请检查 Base URL、模型名和服务状态。"
-
-    result = {"ok": False, "error": message}
-    if code_text:
-        result["code"] = code_text[:80]
-    if isinstance(status, int):
-        result["status"] = status
-    return result
+    if is_model_api_error(exc):
+        return {"ok": False, **describe_model_api_error(exc)}
+    return {
+        "ok": False,
+        "error": "Embedding 客户端或响应处理失败，请检查配置和运行日志。",
+        "code": type(exc).__name__[:80],
+    }
 
 
 if HAS_FASTAPI:
