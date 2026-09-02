@@ -7,7 +7,8 @@ ENTER_BEDTIME_DEF = {
     "function": {
         "name": ENTER_BEDTIME_TOOL_NAME,
         "description": (
-            "当用户明确准备结束对话去睡觉时，在当前告别送达后进入休息。"
+            "深夜聊天自然收尾时，你可以在当前告别送达后也进入休息；"
+            "适合用户明确说自己要睡了、不再继续聊的时刻。"
         ),
         "parameters": {
             "type": "object",
