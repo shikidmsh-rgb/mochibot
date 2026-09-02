@@ -13,6 +13,8 @@ from urllib.parse import urlsplit
 from mochi.config import (
     TZ,
     MAIN_PROVIDER, MAIN_API_KEY, MAIN_MODEL, MAIN_BASE_URL,
+    FREE_TIME_AWAKE_END,
+    FREE_TIME_AWAKE_START,
 )
 from mochi.db import _connect
 from mochi.admin.admin_crypto import encrypt_api_key, decrypt_api_key
@@ -323,18 +325,25 @@ _ENV_ONLY_SYSTEM_KEYS = frozenset({
     "THINK_FALLBACK_MINUTES",
     "LLM_HEARTBEAT_TIMEOUT_SECONDS",
 })
+_DEPRECATED_SYSTEM_KEYS = frozenset({
+    "MAX_DAILY_PROACTIVE",
+    "FREE_TIME_MIN_MINUTES",
+    "FREE_TIME_MAX_MINUTES",
+})
 
 SYSTEM_DEFAULTS: dict[str, tuple[str, any]] = {
     # ── Heartbeat ──
     "HEARTBEAT_INTERVAL_MINUTES":     ("int",   20),
-    "MAX_DAILY_PROACTIVE":            ("int",   10),
+    "MAX_DAILY_FREE_TIME":            ("int",   32),
     "ATTENTION_INTERVAL_MINUTES":     ("int",   60),
-    "FREE_TIME_MIN_MINUTES":          ("int",   90),
-    "FREE_TIME_MAX_MINUTES":          ("int",   240),
     "FALLBACK_WAKE_HOUR":             ("int",   10),
     "BEDTIME_ENTRY_ENABLED":          ("bool",  True),
     "BEDTIME_ENTRY_TIMEOUT_S":        ("int",   60),
     # ── Sleep/Wake ──
+    "WAKE_EARLIEST_HOUR":             ("int",   8),
+    "SLEEP_AFTER_HOUR":               ("int",   1),
+    "FREE_TIME_AWAKE_START":          ("str",   FREE_TIME_AWAKE_START),
+    "FREE_TIME_AWAKE_END":            ("str",   FREE_TIME_AWAKE_END),
     "SILENCE_PAUSE_DAYS":             ("float", 3.0),
     # ── Basic ──
     "TIMEZONE_OFFSET_HOURS":          ("float", 8.0),
@@ -415,15 +424,41 @@ def seed_system_config_from_env() -> None:
     from mochi.admin.admin_env import read_env_file
 
     conn = _connect()
-    placeholders = ",".join("?" for _ in _ENV_ONLY_SYSTEM_KEYS)
+    existing_new = conn.execute(
+        "SELECT 1 FROM skill_config WHERE skill_name = ? "
+        "AND key = 'MAX_DAILY_FREE_TIME'",
+        (_SYSTEM_SKILL_NAME,),
+    ).fetchone()
+    legacy = conn.execute(
+        "SELECT value FROM skill_config WHERE skill_name = ? "
+        "AND key = 'MAX_DAILY_PROACTIVE'",
+        (_SYSTEM_SKILL_NAME,),
+    ).fetchone()
+    env_file = read_env_file()
+    legacy_value = (
+        legacy["value"]
+        if legacy is not None
+        else env_file.get("MAX_DAILY_PROACTIVE")
+        if env_file.get("MAX_DAILY_PROACTIVE") is not None
+        else os.environ.get("MAX_DAILY_PROACTIVE")
+    )
+    if existing_new is None and str(legacy_value or "").strip() == "0":
+        now = datetime.now(TZ).isoformat()
+        conn.execute(
+            "INSERT INTO skill_config (skill_name, key, value, updated_at) "
+            "VALUES (?, 'MAX_DAILY_FREE_TIME', '0', ?)",
+            (_SYSTEM_SKILL_NAME, now),
+        )
+    cleared_keys = _ENV_ONLY_SYSTEM_KEYS | _DEPRECATED_SYSTEM_KEYS
+    placeholders = ",".join("?" for _ in cleared_keys)
     deleted = conn.execute(
         f"DELETE FROM skill_config WHERE skill_name = ? AND key IN ({placeholders})",
-        [_SYSTEM_SKILL_NAME] + list(_ENV_ONLY_SYSTEM_KEYS),
+        [_SYSTEM_SKILL_NAME] + list(cleared_keys),
     ).rowcount
     conn.commit()
     conn.close()
     if deleted:
-        log.info("Cleared %d env-only system overrides from DB", deleted)
+        log.info("Cleared %d env-only/deprecated system overrides from DB", deleted)
         invalidate_system_config_cache()
 
     existing = get_system_overrides()

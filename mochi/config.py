@@ -117,6 +117,20 @@ def _persist_owner(user_id: int) -> None:
 # ═══════════════════════════════════════════════════════════════════════════
 
 HEARTBEAT_INTERVAL_MINUTES = _env_int("HEARTBEAT_INTERVAL_MINUTES", 20)
+# 08:00–00:00 is the default Free Time window (16 hours). Adjacent slots
+# stay at least this far apart; the hard ceiling is how many such points
+# fit in the configured window (64 for the default). Daily quota defaults
+# to 32, not the window maximum.
+FREE_TIME_MIN_GAP_MINUTES = 15
+FREE_TIME_WINDOW_MINUTES = 16 * 60
+FREE_TIME_DAILY_MAX = FREE_TIME_WINDOW_MINUTES // FREE_TIME_MIN_GAP_MINUTES
+MAX_DAILY_FREE_TIME = _env_int("MAX_DAILY_FREE_TIME", 32)
+FREE_TIME_AWAKE_START = _env("FREE_TIME_AWAKE_START", "08:00")
+FREE_TIME_AWAKE_END = _env("FREE_TIME_AWAKE_END", "00:00")
+FREE_TIME_SEARCH_SHARE = _env_float("FREE_TIME_SEARCH_SHARE", 0.2)
+FREE_TIME_UNAVAILABLE_FLOOR_MINUTES = max(
+    1, _env_int("FREE_TIME_UNAVAILABLE_FLOOR_MINUTES", 45),
+)
 MAX_DAILY_PROACTIVE = _env_int("MAX_DAILY_PROACTIVE", 10)
 PROACTIVE_COOLDOWN_SECONDS = _env_int("PROACTIVE_COOLDOWN_SECONDS", 1800)
 ATTENTION_INTERVAL_MINUTES = _env_int("ATTENTION_INTERVAL_MINUTES", 60)
@@ -125,10 +139,11 @@ FREE_TIME_MAX_MINUTES = _env_int("FREE_TIME_MAX_MINUTES", 240)
 LLM_HEARTBEAT_TIMEOUT_SECONDS = _env_int("LLM_HEARTBEAT_TIMEOUT_SECONDS", 120)
 
 # Sleep/Wake State Machine
-WAKE_EARLIEST_HOUR = _env_int("WAKE_EARLIEST_HOUR", 6)   # don't wake on user msg before this
-SLEEP_AFTER_HOUR = _env_int("SLEEP_AFTER_HOUR", 21)      # bedtime availability + silence checks
+WAKE_EARLIEST_HOUR = _env_int("WAKE_EARLIEST_HOUR", 8)   # sleep ends; auto-wake and message-wake
+SLEEP_AFTER_HOUR = _env_int("SLEEP_AFTER_HOUR", 1)       # rest window starts here; may wrap past midnight
 SILENCE_THRESHOLD_HOURS = _env_float("SILENCE_THRESHOLD_HOURS", 1.0)  # silence → sleep
 SILENCE_PAUSE_DAYS = _env_float("SILENCE_PAUSE_DAYS", 3.0)
+# Unused by heartbeat auto-wake; leftover .env/DB values still seed as a no-op.
 FALLBACK_WAKE_HOUR = _env_int("FALLBACK_WAKE_HOUR", 10)
 
 # ═══════════════════════════════════════════════════════════════════════════

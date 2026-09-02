@@ -357,6 +357,7 @@ function statusIcon(type) {
 const loaded = {};
 let _settingsRequestGeneration = 0;
 let _systemRequestGeneration = 0;
+let _freeTimeMax = 64;
 const loaders = { settings:loadSettings, memory:loadMemory, advanced:loadAdvanced, system:loadSystem };
 
 document.getElementById('sidebar-nav').addEventListener('click', e => {
@@ -1410,7 +1411,7 @@ async function loadSettings() {
     const ownerBound = s.config_status.owner_user_id?.set || false;
     const preferencesConfigured = (
       prefs.TIMEZONE_OFFSET_HOURS?.source === 'user'
-      && prefs.MAX_DAILY_PROACTIVE?.source === 'user'
+      && prefs.MAX_DAILY_FREE_TIME?.source === 'user'
     );
     const setupComplete = hasModel && hasTransport && preferencesConfigured;
     const activeTransport = tgConfigured ? 'Telegram' : (wxConfigured ? 'WeChat' : null);
@@ -1534,12 +1535,32 @@ async function loadSettings() {
     const timezone = prefs.TIMEZONE_OFFSET_HOURS || {value: 8, default: 8, source: 'default'};
     const browserTimezone = -(new Date().getTimezoneOffset() / 60);
     const timezoneValue = timezone.source === 'default' ? browserTimezone : timezone.value;
-    const proactive = prefs.MAX_DAILY_PROACTIVE || {value: 10, default: 10};
-    const proactiveEnabled = Number(proactive.value) > 0;
-    const proactiveLimit = proactiveEnabled ? Number(proactive.value) : Number(proactive.default || 10);
+    const freeTime = prefs.MAX_DAILY_FREE_TIME || {};
+    const freeTimeEnabled = Number(freeTime.value) > 0;
+    const sleepAfter = prefs.SLEEP_AFTER_HOUR || {value: 1, default: 1};
+    const wakeEarliest = prefs.WAKE_EARLIEST_HOUR || {value: 8, default: 8};
+    const ftStart = prefs.FREE_TIME_AWAKE_START || {value: '08:00', default: '08:00'};
+    const ftEnd = prefs.FREE_TIME_AWAKE_END || {value: '00:00', default: '00:00'};
+    const sleepStartClock = hourToClock(sleepAfter.value, 1);
+    const wakeClock = hourToClock(wakeEarliest.value, 8);
+    const ftStartClock = clockValue(ftStart.value, '08:00');
+    const ftEndClock = clockValue(ftEnd.value, '00:00');
+    // Bounds and the fallback number come from the API so the form can never
+    // offer — and silently save — a value the server would reject.
+    _freeTimeMax = Number(freeTime.max) || windowCapacity(ftStartClock, ftEndClock) || _freeTimeMax;
+    const freeTimeLimit = freeTimeEnabled
+      ? Number(freeTime.value)
+      : Number(freeTime.default);
     html += `<div class="card"><div class="settings-section-head">
-      <div><div class="settings-section-title">相处偏好</div><div class="settings-section-copy">时间和主动联系</div></div>
+      <div><div class="settings-section-title">相处偏好</div><div class="settings-section-copy">时间、睡眠和 Free Time</div></div>
     </div>
+      <div class="config-form-row" style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)">
+        <label class="toggle"><input id="pref-proactive-enabled" type="checkbox" ${freeTimeEnabled?'checked':''} onchange="toggleProactivePreference()"><span class="slider"></span></label>
+        <div style="min-width:220px;flex:1;font-size:14px">Free Time 自主思考</div>
+        <label style="font-size:12px;color:var(--text-soft)">每天安排</label>
+        <input class="form-input" id="pref-proactive-limit" type="number" min="1" max="${_freeTimeMax}" style="width:80px" value="${esc(freeTimeLimit)}" ${freeTimeEnabled?'':'disabled'}>
+        <span style="font-size:12px;color:var(--text-soft)">次</span>
+      </div>
       <div class="config-form-row" style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)">
         <div style="min-width:260px;flex:1">
           <div style="font-size:14px">时区</div>
@@ -1548,16 +1569,25 @@ async function loadSettings() {
         <input class="form-input" id="pref-timezone" type="number" min="-12" max="14" step="0.25" style="width:100px" value="${esc(timezoneValue)}">
         <span style="font-size:12px;color:var(--text-soft)">UTC 偏移</span>
       </div>
-      <div class="config-form-row" style="display:flex;align-items:center;gap:12px;padding:10px 0">
-        <label class="toggle"><input id="pref-proactive-enabled" type="checkbox" ${proactiveEnabled?'checked':''} onchange="toggleProactivePreference()"><span class="slider"></span></label>
+      <div class="config-form-row" style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)">
         <div style="min-width:220px;flex:1">
-          <div style="font-size:14px">主动关心</div>
-          <div style="font-size:11px;color:var(--text-soft);margin-top:2px">允许 Agent 在有值得说的事情时主动联系你</div>
+          <div style="font-size:14px">睡眠时段</div>
+          <div style="font-size:11px;color:var(--text-soft);margin-top:2px">这段时间说话也不会叫醒；过了结束点会自动醒。只支持整点。醒了你还没开口时，Free Time 会变少，你发一条消息后恢复。</div>
         </div>
-        <label style="font-size:12px;color:var(--text-soft)">每天最多</label>
-        <input class="form-input" id="pref-proactive-limit" type="number" min="1" max="50" style="width:80px" value="${esc(proactiveLimit)}" ${proactiveEnabled?'':'disabled'}>
-        <span style="font-size:12px;color:var(--text-soft)">次</span>
+        <input class="form-input" id="pref-sleep-start" type="time" step="3600" style="width:120px" value="${esc(sleepStartClock)}" onchange="snapSleepHour(this);syncFreeTimeCap()">
+        <span style="font-size:12px;color:var(--text-soft)">至</span>
+        <input class="form-input" id="pref-sleep-end" type="time" step="3600" style="width:120px" value="${esc(wakeClock)}" onchange="snapSleepHour(this);syncFreeTimeCap()">
       </div>
+      <div class="config-form-row" style="display:flex;align-items:center;gap:12px;padding:10px 0">
+        <div style="min-width:220px;flex:1">
+          <div style="font-size:14px">Free Time 活跃时段</div>
+          <div style="font-size:11px;color:var(--text-soft);margin-top:2px">机会铺在这个区间里；结束早于开始时视为跨过午夜</div>
+        </div>
+        <input class="form-input" id="pref-ft-start" type="time" style="width:120px" value="${esc(ftStartClock)}" onchange="syncFreeTimeCap()">
+        <span style="font-size:12px;color:var(--text-soft)">至</span>
+        <input class="form-input" id="pref-ft-end" type="time" style="width:120px" value="${esc(ftEndClock)}" onchange="syncFreeTimeCap()">
+      </div>
+      <div id="pref-schedule-hint" style="font-size:11px;color:var(--text-soft);margin-top:6px"></div>
       <div style="margin-top:14px"><button class="btn btn-primary" onclick="savePreferences()">保存偏好</button>
         <span style="font-size:11px;color:var(--text-soft);margin-left:8px">约一分钟内生效</span></div>
     </div>`;
@@ -1578,9 +1608,83 @@ async function loadSettings() {
     if (document.getElementById('page-settings').classList.contains('active')) {
       startSettingsPolling();
     }
+    syncFreeTimeCap();
   } catch(e) {
     if (generation !== _settingsRequestGeneration) return;
     el.innerHTML = `<div class="card" style="color:var(--danger)">❌ ${esc(e.message)}</div>`;
+  }
+}
+
+function hourToClock(value, fallbackHour) {
+  const hour = Number(value);
+  const wrapped = Number.isFinite(hour)
+    ? ((Math.trunc(hour) % 24) + 24) % 24
+    : fallbackHour;
+  return String(wrapped).padStart(2, '0') + ':00';
+}
+
+function clockValue(value, fallback) {
+  const text = String(value == null ? '' : value).trim();
+  const match = /^(\d{1,2}):(\d{2})(?::\d{2})?$/.exec(text);
+  if (!match) return fallback;
+  return String(Number(match[1])).padStart(2, '0') + ':' + match[2];
+}
+
+function clockToMinutes(value) {
+  const match = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(String(value || ''));
+  if (!match) return null;
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  const second = Number(match[3] || 0);
+  if (hour > 23 || minute > 59 || second > 59) return null;
+  return hour * 60 + minute;
+}
+
+function windowCapacity(start, end) {
+  const begin = clockToMinutes(start);
+  const finishRaw = clockToMinutes(end);
+  if (begin == null || finishRaw == null || begin === finishRaw) return 0;
+  let finish = finishRaw;
+  if (finish <= begin) finish += 24 * 60;
+  const span = finish - begin;
+  return Math.max(1, Math.floor(span / 15));
+}
+
+function clockHour(value) {
+  const minutes = clockToMinutes(value);
+  if (minutes == null) return null;
+  if (minutes % 60 !== 0) return null;
+  return Math.floor(minutes / 60) % 24;
+}
+
+function snapSleepHour(input) {
+  if (!input) return;
+  const minutes = clockToMinutes(input.value);
+  if (minutes == null) return;
+  const hour = Math.floor(minutes / 60) % 24;
+  input.value = String(hour).padStart(2, '0') + ':00';
+}
+
+function syncFreeTimeCap() {
+  const start = document.getElementById('pref-ft-start')?.value;
+  const end = document.getElementById('pref-ft-end')?.value;
+  const sleepStart = document.getElementById('pref-sleep-start')?.value;
+  const sleepEnd = document.getElementById('pref-sleep-end')?.value;
+  const cap = windowCapacity(start, end);
+  if (cap > 0) _freeTimeMax = cap;
+  const limit = document.getElementById('pref-proactive-limit');
+  if (limit) {
+    limit.max = String(_freeTimeMax);
+    const current = Number(limit.value);
+    if (Number.isFinite(current) && current > _freeTimeMax) {
+      limit.value = String(_freeTimeMax);
+    }
+  }
+  const hint = document.getElementById('pref-schedule-hint');
+  if (hint) {
+    const sleepLabel = (sleepStart && sleepEnd) ? `${sleepStart}–${sleepEnd}` : '01:00–08:00';
+    const windowLabel = (start && end) ? `${start}–${end}` : '08:00–00:00';
+    hint.textContent = `机会在 ${windowLabel} 内均匀分布并带随机抖动，安排数是当天要排的次数（默认 32，不是塞满窗口）。约 20% 的机会带上联网搜索。热聊中的到期机会会过期；中途调大会补足当天剩余时段。当前窗口最多 ${_freeTimeMax} 次。睡眠时段是 ${sleepLabel}。过了睡眠结束点会自动醒；醒了你还没开口时主动找你会变少。`;
   }
 }
 
@@ -1591,19 +1695,47 @@ function toggleProactivePreference() {
 }
 
 async function savePreferences() {
+  snapSleepHour(document.getElementById('pref-sleep-start'));
+  snapSleepHour(document.getElementById('pref-sleep-end'));
+  syncFreeTimeCap();
   const timezone = Number(document.getElementById('pref-timezone')?.value);
   const enabled = document.getElementById('pref-proactive-enabled')?.checked;
   const limit = Number(document.getElementById('pref-proactive-limit')?.value);
+  const sleepStart = document.getElementById('pref-sleep-start')?.value;
+  const sleepEnd = document.getElementById('pref-sleep-end')?.value;
+  const ftStart = document.getElementById('pref-ft-start')?.value;
+  const ftEnd = document.getElementById('pref-ft-end')?.value;
+  const sleepHour = clockHour(sleepStart);
+  const wakeHour = clockHour(sleepEnd);
   if (!Number.isFinite(timezone) || timezone < -12 || timezone > 14) {
     return showToast('时区必须在 UTC-12 到 UTC+14 之间');
   }
-  if (enabled && (!Number.isInteger(limit) || limit < 1 || limit > 50)) {
-    return showToast('主动关心上限必须是 1 到 50 的整数');
+  if (sleepHour == null || wakeHour == null) {
+    return showToast('睡眠时段只支持整点，例如 01:00');
+  }
+  if (sleepHour === wakeHour) {
+    return showToast('睡眠开始和结束不能是同一个小时');
+  }
+  if (clockToMinutes(ftStart) == null) {
+    return showToast('请填写 Free Time 开始时间');
+  }
+  if (clockToMinutes(ftEnd) == null) {
+    return showToast('请填写 Free Time 结束时间');
+  }
+  if (ftStart === ftEnd || clockToMinutes(ftStart) === clockToMinutes(ftEnd)) {
+    return showToast('Free Time 开始和结束不能相同');
+  }
+  if (enabled && (!Number.isInteger(limit) || limit < 1 || limit > _freeTimeMax)) {
+    return showToast(`Free Time 思考次数必须是 1 到 ${_freeTimeMax} 的整数`);
   }
   try {
     await api('PUT', '/preferences', {
       TIMEZONE_OFFSET_HOURS: timezone,
-      MAX_DAILY_PROACTIVE: enabled ? limit : 0,
+      MAX_DAILY_FREE_TIME: enabled ? limit : 0,
+      SLEEP_AFTER_HOUR: sleepHour,
+      WAKE_EARLIEST_HOUR: wakeHour,
+      FREE_TIME_AWAKE_START: ftStart,
+      FREE_TIME_AWAKE_END: ftEnd,
     });
     showToast('✅ 偏好已保存');
     loaded.settings = false;

@@ -388,6 +388,9 @@ class TelegramTransport(Transport):
         if user_id is None:
             return
 
+        from mochi.heartbeat import track_active_chat_task
+        track_active_chat_task()
+
         image = None
         text = update.message.text or update.message.caption or "请看看这张图片。"
         if update.message.photo:
@@ -581,6 +584,9 @@ class TelegramTransport(Transport):
         user_id = await self._check_owner(update)
         if user_id is None:
             return
+
+        from mochi.heartbeat import track_active_chat_task
+        track_active_chat_task()
 
         self._dispatch_state_signals()
 

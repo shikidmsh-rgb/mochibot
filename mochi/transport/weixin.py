@@ -581,6 +581,8 @@ class WeixinTransport(Transport):
 
         # Heartbeat wake signals
         try:
+            from mochi.heartbeat import track_active_chat_task
+            track_active_chat_task()
             self._dispatch_state_signals()
         except Exception as e:
             log.debug("WeChat: heartbeat signal error (non-fatal): %s", e)

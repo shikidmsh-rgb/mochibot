@@ -2614,6 +2614,17 @@ def get_last_user_message_time(user_id: int) -> str | None:
     return row["created_at"] if row else None
 
 
+def get_last_user_message(user_id: int) -> dict | None:
+    conn = _connect()
+    row = conn.execute(
+        "SELECT content, created_at FROM messages "
+        "WHERE user_id = ? AND role = 'user' ORDER BY id DESC LIMIT 1",
+        (user_id,),
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
 def get_daily_message_counts(user_id: int, days: int = 7) -> list[dict]:
     """Get per-day user message counts for the last N days.
 

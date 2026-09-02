@@ -87,6 +87,8 @@ async def test_failed_proactive_delivery_reuses_prepared_result(
         return False
 
     monkeypatch.setattr(observers, "collect_attention_facts", no_observer_change)
+    monkeypatch.setattr(heartbeat, "ensure_daily_free_time_plan", lambda **_: [])
+    monkeypatch.setattr(heartbeat, "_state", heartbeat.AWAKE)
     mock = mock_llm_factory([make_response("I was thinking of you.")])
     deliveries = [False, True]
     prepared = 0
@@ -145,6 +147,8 @@ async def test_proactive_cooldown_suppresses_instead_of_queuing(
         return await chat(runtime_entry=entry)
 
     monkeypatch.setattr(observers, "collect_attention_facts", no_observer_change)
+    monkeypatch.setattr(heartbeat, "ensure_daily_free_time_plan", lambda **_: [])
+    monkeypatch.setattr(heartbeat, "_state", heartbeat.AWAKE)
     mock_llm_factory([make_response("A time-sensitive thought.")])
     heartbeat.set_main_runtime_callbacks(prepare, deliver, "fake")
     set_schedule_due("free_time", clock)

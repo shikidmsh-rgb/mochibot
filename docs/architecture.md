@@ -193,10 +193,21 @@ to annoy through duplication than to require guaranteed delivery.
 
 ## Free Time and Attention flow
 
-Heartbeat keeps two independent clocks. Free Time is randomized, unassigned
-companion time; Attention runs periodically and can be advanced by a changed
-observer fact without moving the Free Time clock. Sleeping and long-silence
-pause gates run before observer or model work.
+Heartbeat keeps two independent clocks. Attention still runs on its interval
+and can be advanced by a changed observer fact. Free Time is no longer a
+random interval: the daily quota (`MAX_DAILY_FREE_TIME`, default 32, 0=off)
+is laid across the configured awake window (default 08:00–00:00, wrapping
+midnight) as even buckets plus jitter, at least 15 minutes apart. The window
+capacity is the 15-minute grid (64 for the default). Changing timezone or
+the window replans the remaining day; mid-window starts do not pack leftover
+slots into the evening.
+
+Sleep and wake hours are the same admin preferences (default 01:00–08:00).
+Owner messages during rest do not wake; auto-wake is the sleep window's end,
+not a 10:00 fallback. Until the owner speaks in the current awake period,
+due Free Time slots are still consumed but skipped unless 45 minutes have
+passed (`quiet_wake`). A short busy/sleep cue uses the same floor. Sleeping
+and long-silence pause gates still run before observer or model work.
 
 Both situations enter the standard Main personality and Agent First tool loop.
 Free Time receives only the last two role-true conversation turns and last
