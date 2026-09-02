@@ -110,6 +110,7 @@ class ConfigField:
     type: str           # "int", "float", "bool", "str"
     default: str        # always str — cast by resolver
     description: str = ""
+    secret: bool = False
     internal: bool = False  # hidden from admin UI when True
 
 
@@ -137,6 +138,7 @@ def _flush_config_entry(
         type=field_type,
         default=props["default"],
         description=props.get("description", ""),
+        secret=props.get("secret", "").lower() in ("true", "yes", "1"),
         internal=props.get("internal", "").lower() in ("true", "yes", "1"),
     ))
 
@@ -636,7 +638,7 @@ class Skill(ABC):
             self._config_schema_typed = raw_schema
             # Also populate dict-based for backward compat
             self.config_schema = [
-                {"key": f.key, "type": f.type, "secret": False,
+                {"key": f.key, "type": f.type, "secret": f.secret,
                  "default": f.default, "description": f.description,
                  "internal": f.internal}
                 for f in raw_schema
@@ -650,6 +652,7 @@ class Skill(ABC):
                     type=d.get("type", "str"),
                     default=d.get("default", ""),
                     description=d.get("description", ""),
+                    secret=bool(d.get("secret", False)),
                     internal=bool(d.get("internal", False)),
                 )
                 for d in raw_schema

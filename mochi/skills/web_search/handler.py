@@ -1,6 +1,8 @@
 """Web search skill using bounded Bing HTML requests."""
 
 import asyncio
+import hashlib
+import json
 import logging
 import re
 import time
@@ -18,6 +20,8 @@ _DEFAULT_MAX_RESULTS = 5
 _SEARCH_TIMEOUT_S = 10
 _SEARCH_MAX_RESPONSE_BYTES = 1024 * 1024
 _BING_SEARCH_URL = "https://www.bing.com/search"
+_BAIDU_SEARCH_URL = "https://qianfan.baidubce.com/v2/ai_search/web_search"
+_BAIDU_RECENCY_VALUES = frozenset({"week", "month", "semiyear", "year"})
 _CACHE_TTL_S = 300
 _CACHE_SIZE = 256
 
@@ -194,7 +198,7 @@ def _extract_bing_results(
 
 
 async def _bing_search(query: str, max_results: int = 5) -> str:
-    cache_key = f"{query}|{max_results}"
+    cache_key = f"bing|{query}|{max_results}"
     cached = _cache.get(cache_key)
     if cached is not None:
         return cached
@@ -252,6 +256,182 @@ async def _bing_search_within_deadline(query: str, max_results: int) -> str:
     )
 
 
+def _format_baidu_results(payload: dict, max_results: int) -> str:
+    code = payload.get("code")
+    if code:
+        raise ValueError(f"Baidu search returned error code {code}.")
+
+    raw_references = payload.get("references")
+    if isinstance(raw_references, dict):
+        raw_references = [raw_references]
+    if not isinstance(raw_references, list):
+        raise ValueError("Baidu search response did not contain references.")
+
+    results: list[str] = []
+    for item in raw_references:
+        if not isinstance(item, dict) or item.get("type", "web") != "web":
+            continue
+        title = _single_line([
+            str(item.get("title") or item.get("web_anchor") or "")
+        ])
+        url = str(item.get("url") or "").strip()
+        snippet = _single_line([
+            str(item.get("snippet") or item.get("content") or "")
+        ])[:500]
+        if not title or not url:
+            continue
+        details = " · ".join(
+            value
+            for value in (
+                _single_line([str(item.get("website") or "")]),
+                _single_line([str(item.get("date") or "")]),
+            )
+            if value
+        )
+        description = " · ".join(value for value in (details, snippet) if value)
+        results.append(f"{len(results) + 1}. {title}\n   {url}\n   {description}")
+        if len(results) >= max_results:
+            break
+
+    if not results:
+        raise ValueError("Baidu search returned no web results.")
+    return "\n\n".join(results)
+
+
+async def _baidu_search(
+    query: str,
+    *,
+    api_key: str,
+    max_results: int = 5,
+    recency: str = "",
+    use_cache: bool = True,
+) -> str:
+    key_fingerprint = hashlib.sha256(api_key.encode()).hexdigest()[:12]
+    cache_key = f"baidu|{key_fingerprint}|{query}|{max_results}|{recency}"
+    if use_cache:
+        cached = _cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+    payload: dict = {
+        "messages": [{"role": "user", "content": query}],
+        "search_source": "baidu_search_v2",
+        "resource_type_filter": [{"type": "web", "top_k": max_results}],
+        "sort": {"priority": "auto"},
+    }
+    if recency:
+        payload["search_recency_filter"] = recency
+
+    try:
+        async with asyncio.timeout(_SEARCH_TIMEOUT_S):
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(_SEARCH_TIMEOUT_S),
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                    "User-Agent": "MochiBot/1.0",
+                },
+            ) as client:
+                async with client.stream(
+                    "POST",
+                    _BAIDU_SEARCH_URL,
+                    json=payload,
+                ) as response:
+                    if response.status_code in {401, 403}:
+                        raise ValueError("Baidu API key was rejected.")
+                    if response.status_code in {402, 429}:
+                        raise ValueError("Baidu search quota is unavailable.")
+                    if not 200 <= response.status_code < 300:
+                        raise ValueError(
+                            f"Baidu search returned HTTP {response.status_code}."
+                        )
+
+                    chunks: list[bytes] = []
+                    size = 0
+                    async for chunk in response.aiter_bytes():
+                        size += len(chunk)
+                        if size > _SEARCH_MAX_RESPONSE_BYTES:
+                            raise ValueError(
+                                "Baidu search response is larger than the 1 MB limit."
+                            )
+                        chunks.append(chunk)
+    except TimeoutError as exc:
+        raise ValueError(
+            f"Baidu search timed out after {_SEARCH_TIMEOUT_S} seconds."
+        ) from exc
+
+    try:
+        response_payload = json.loads(b"".join(chunks))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Baidu search returned invalid JSON.") from exc
+    if not isinstance(response_payload, dict):
+        raise ValueError("Baidu search returned an invalid response.")
+
+    output = _format_baidu_results(response_payload, max_results)
+    if use_cache:
+        _cache.put(cache_key, output)
+    return output
+
+
+def _search_error_label(exc: Exception) -> str:
+    if isinstance(exc, httpx.TimeoutException):
+        return "request timed out"
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"HTTP {exc.response.status_code}"
+    if isinstance(exc, httpx.HTTPError):
+        return "network request failed"
+    if isinstance(exc, OSError):
+        return "network connection failed"
+    return str(exc).rstrip(".")
+
+
+async def _web_search(
+    query: str,
+    *,
+    api_key: str,
+    max_results: int,
+    recency: str,
+) -> str:
+    if not api_key:
+        output = await _bing_search(query, max_results=max_results)
+        if recency:
+            return (
+                "[Bing does not support the requested recency filter; "
+                "these results may fall outside that window.]\n\n"
+                f"{output}"
+            )
+        return output
+
+    try:
+        return await _baidu_search(
+            query,
+            api_key=api_key,
+            max_results=max_results,
+            recency=recency,
+        )
+    except (httpx.HTTPError, ValueError, OSError) as baidu_error:
+        reason = _search_error_label(baidu_error)
+        log.warning("Baidu search unavailable; using Bing fallback: %s", reason)
+        try:
+            fallback = await _bing_search(query, max_results=max_results)
+        except (httpx.HTTPError, ValueError, OSError) as bing_error:
+            raise ValueError(
+                "Baidu search failed "
+                f"({reason}); Bing fallback failed ({_search_error_label(bing_error)})."
+            ) from bing_error
+        return (
+            f"[Baidu search unavailable: {reason}. "
+            "The following results are from Bing fallback"
+            + (
+                " and the requested recency filter was not enforced"
+                if recency
+                else ""
+            )
+            + ".]\n\n"
+            f"{fallback}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Skill handler
 # ---------------------------------------------------------------------------
@@ -272,10 +452,25 @@ class WebSearchSkill(Skill):
 
         max_results = context.args.get("max_results", _DEFAULT_MAX_RESULTS)
         max_results = max(1, min(10, int(max_results)))
+        recency = str(context.args.get("recency") or "").strip().lower()
+        if recency and recency not in _BAIDU_RECENCY_VALUES:
+            return SkillResult(
+                output=(
+                    "Invalid recency. Use week, month, semiyear, year, "
+                    "or leave it empty."
+                ),
+                success=False,
+            )
 
         try:
-            result = await _bing_search(query, max_results=max_results)
+            result = await _web_search(
+                query,
+                api_key=str(self.config.get("BAIDU_API_KEY") or "").strip(),
+                max_results=max_results,
+                recency=recency,
+            )
             return SkillResult(output=result, content_source="external_web")
         except (httpx.HTTPError, ValueError, OSError) as exc:
-            log.error("Web search failed: %s", exc)
-            return SkillResult(output=f"Search error: {exc}", success=False)
+            error = _search_error_label(exc)
+            log.error("Web search failed: %s", error)
+            return SkillResult(output=f"Search error: {error}", success=False)

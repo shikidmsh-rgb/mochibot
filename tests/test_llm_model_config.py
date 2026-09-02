@@ -434,6 +434,36 @@ def test_openai_compatible_chat_handles_text_and_tools(monkeypatch):
         "result": "1. External result",
     }
 
+    calls = []
+
+    async def _baidu(query, *, api_key, max_results, recency, **_kwargs):
+        calls.append(("baidu", query, api_key, max_results, recency))
+        return "1. Baidu result"
+
+    monkeypatch.setattr(web_handler, "_baidu_search", _baidu)
+    configured_search = WebSearchSkill()
+    configured_search.config = {"BAIDU_API_KEY": "secret"}
+    baidu_success = asyncio.run(configured_search.run(SkillContext(
+        trigger="tool_call",
+        tool_name="web_search",
+        args={"query": "today", "max_results": 3, "recency": "week"},
+    )))
+    assert baidu_success.output == "1. Baidu result"
+    assert calls == [("baidu", "today", "secret", 3, "week")]
+
+    async def _failed_baidu(*_args, **_kwargs):
+        raise ValueError("Baidu API key was rejected.")
+
+    monkeypatch.setattr(web_handler, "_baidu_search", _failed_baidu)
+    baidu_fallback = asyncio.run(configured_search.run(SkillContext(
+        trigger="tool_call",
+        tool_name="web_search",
+        args={"query": "today", "recency": "week"},
+    )))
+    assert baidu_fallback.success
+    assert "Bing fallback" in baidu_fallback.output
+    assert baidu_fallback.output.endswith("1. External result")
+
     async def _failed_search(*args, **kwargs):
         raise ValueError("network unavailable")
 

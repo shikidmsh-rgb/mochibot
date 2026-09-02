@@ -64,12 +64,16 @@ def resolve_skill_config(skill_name: str, schema: list) -> dict:
         db_val = db_overrides.get(key)
         if db_val is not None:
             try:
+                if field.secret:
+                    from mochi.credential_crypto import decrypt_secret
+                    db_val = decrypt_secret(db_val)
                 result[key] = _cast(db_val, type_name)
                 continue
             except (ValueError, TypeError):
                 log.warning(
                     "Skill %s config '%s': bad DB value '%s' for type %s — falling through",
-                    skill_name, key, db_val, type_name,
+                    skill_name, key, "[REDACTED]" if field.secret else db_val,
+                    type_name,
                 )
 
         # Priority 2a: .env override (namespaced: SKILL_HABIT_DIARY_JOURNAL)
@@ -82,7 +86,8 @@ def resolve_skill_config(skill_name: str, schema: list) -> dict:
             except (ValueError, TypeError):
                 log.warning(
                     "Skill %s config '%s': bad .env value '%s' for type %s — falling through",
-                    skill_name, key, env_val, type_name,
+                    skill_name, key, "[REDACTED]" if field.secret else env_val,
+                    type_name,
                 )
 
         # Priority 2b: .env override (bare key, backward compat)
@@ -94,7 +99,8 @@ def resolve_skill_config(skill_name: str, schema: list) -> dict:
             except (ValueError, TypeError):
                 log.warning(
                     "Skill %s config '%s': bad .env value '%s' for type %s — falling through",
-                    skill_name, key, env_val, type_name,
+                    skill_name, key, "[REDACTED]" if field.secret else env_val,
+                    type_name,
                 )
 
         # Priority 3: SKILL.md default

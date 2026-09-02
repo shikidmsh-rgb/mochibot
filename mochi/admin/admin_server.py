@@ -889,6 +889,108 @@ if HAS_FASTAPI:
         except Exception as e:
             return _format_embedding_test_error(e)
 
+    # ── Web Search Config (shown on Advanced page) ───────────────────────
+
+    @app.get("/api/search/config", dependencies=[Depends(_verify_token)])
+    async def api_get_search_config():
+        from mochi import skills as skill_registry
+
+        skill = skill_registry.get_skill("web_search")
+        api_key = str(skill.config.get("BAIDU_API_KEY") or "") if skill else ""
+        return {
+            "provider": "baidu" if api_key else "bing",
+            "api_key_set": bool(api_key),
+            "fallback_provider": "bing",
+        }
+
+    @app.put("/api/search/config", dependencies=[Depends(_verify_token)])
+    async def api_set_search_config(request: Request):
+        from mochi import skills as skill_registry
+        from mochi.credential_crypto import encrypt_secret, is_encrypted
+        from mochi.db import delete_skill_config, set_skill_config
+
+        body = await request.json()
+        skill = skill_registry.get_skill("web_search")
+        if skill is None:
+            raise HTTPException(503, "web_search skill is unavailable")
+
+        if body.get("clear"):
+            delete_skill_config("web_search", "BAIDU_API_KEY")
+        else:
+            api_key = str(body.get("api_key") or "").strip()
+            if not api_key:
+                raise HTTPException(400, "API Key is required")
+            if len(api_key) > 4096 or any(
+                char in api_key for char in ("\n", "\r", "\0")
+            ):
+                raise HTTPException(400, "API Key is invalid")
+            if not os.environ.get("ADMIN_TOKEN"):
+                from mochi.admin.__main__ import _ensure_admin_token
+                _ensure_admin_token(log)
+            encrypted = encrypt_secret(api_key)
+            if encrypted == api_key or not is_encrypted(encrypted):
+                raise HTTPException(
+                    503,
+                    "Credential encryption is unavailable; API Key was not saved",
+                )
+            set_skill_config("web_search", "BAIDU_API_KEY", encrypted)
+
+        skill.refresh_config()
+        return {
+            "ok": True,
+            "provider": (
+                "baidu"
+                if str(skill.config.get("BAIDU_API_KEY") or "")
+                else "bing"
+            ),
+        }
+
+    @app.post("/api/search/test", dependencies=[Depends(_verify_token)])
+    async def api_test_search(request: Request):
+        _check_test_rate()
+        from mochi import skills as skill_registry
+        from mochi.skills.web_search.handler import (
+            _baidu_search,
+            _search_error_label,
+        )
+
+        body = await request.json()
+        candidate_key = str(body.get("api_key") or "").strip()
+        if len(candidate_key) > 4096 or any(
+            char in candidate_key for char in ("\n", "\r", "\0")
+        ):
+            return {"ok": False, "error": "API Key 格式无效。"}
+        skill = skill_registry.get_skill("web_search")
+        api_key = candidate_key or (
+            str(skill.config.get("BAIDU_API_KEY") or "").strip()
+            if skill
+            else ""
+        )
+        if not api_key:
+            return {"ok": False, "error": "百度搜索 API Key 尚未配置。"}
+        try:
+            start = time.monotonic()
+            output = await _baidu_search(
+                "今日重要新闻",
+                api_key=api_key,
+                max_results=3,
+                recency="week",
+                use_cache=False,
+            )
+            elapsed = int((time.monotonic() - start) * 1000)
+            result_count = sum(
+                line[:1].isdigit() and ". " in line[:4]
+                for line in output.splitlines()
+            )
+            return {
+                "ok": True,
+                "provider": "baidu",
+                "result_count": result_count,
+                "latency_ms": elapsed,
+            }
+        except (httpx.HTTPError, ValueError, OSError) as exc:
+            return {"ok": False, "error": _search_error_label(exc)}
+
     # ═══════════════════════════════════════════════════════════════════════
     # User preferences
     # ═══════════════════════════════════════════════════════════════════════

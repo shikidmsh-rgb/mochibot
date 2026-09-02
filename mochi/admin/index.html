@@ -1787,12 +1787,13 @@ let _lastAutoModel = '';
 async function loadAdvanced() {
   const el = document.getElementById('advanced-content');
   try {
-    const [models, tiers, embCfg] = await Promise.all([
+    const [models, tiers, embCfg, searchCfg] = await Promise.all([
       api('GET','/models'),
       api('GET','/tiers'),
       api('GET','/embedding/config'),
+      api('GET','/search/config'),
     ]);
-    let html = '<p style="font-size:13px;color:var(--text-soft);margin-bottom:16px">管理模型服务、自定义接口与语义检索。正常使用通常无需调整这里。</p>';
+    let html = '<p style="font-size:13px;color:var(--text-soft);margin-bottom:16px">管理模型服务、联网搜索与语义检索。正常使用通常无需调整这里。</p>';
 
     html += '<div class="card"><div class="card-title">Agent 模型</div>';
     for (const tier of ['main', 'lite']) {
@@ -1891,6 +1892,26 @@ async function loadAdvanced() {
     html += '<div id="emb-test-result" style="font-size:13px;margin-top:8px"></div>';
     html += '</div>'; // end emb-form
     html += '</div>'; // end card
+
+    const searchConfigured = Boolean(searchCfg.api_key_set);
+    const searchBadge = searchConfigured
+      ? '<span class="badge badge-ok" style="margin-left:8px">百度优先</span>'
+      : '<span class="badge badge-gray" style="margin-left:8px">Bing</span>';
+    html += `<div class="card"><div class="card-title">联网搜索 ${searchBadge}</div>
+      <p style="font-size:12px;color:var(--text-soft);margin-bottom:12px">
+        未配置时使用免密钥 Bing。配置百度千帆 AI Search 后优先使用百度，调用失败会明确回退到 Bing。
+      </p>
+      <div class="form-group"><label class="form-label">百度千帆 API Key ${searchConfigured ? '<span class="badge badge-ok">已加密保存</span>' : ''}</label>
+        <input class="form-input" id="search-apikey" type="password" autocomplete="new-password"
+          placeholder="${searchConfigured ? '（不修改）' : 'bce-v3/...'}"></div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button class="btn btn-primary" onclick="saveSearchConfig()">保存</button>
+        <button class="btn btn-ghost" onclick="testSearchConfig(this)">🔌 测试百度搜索</button>
+        ${searchConfigured ? '<button class="btn btn-ghost" style="color:var(--danger)" onclick="deleteSearchConfig()">删除 Key</button>' : ''}
+        <span style="font-size:11px;color:var(--text-soft)">使用 ADMIN_TOKEN 加密，立即生效</span>
+      </div>
+      <div id="search-test-result" style="font-size:13px;margin-top:8px"></div>
+    </div>`;
 
     el.innerHTML = html;
     updateEmbeddingFields();
@@ -2475,6 +2496,59 @@ function closeEmbeddingEdit() {
   const form = document.getElementById('emb-form');
   if (summary) summary.style.display = 'block';
   if (form) form.style.display = 'none';
+}
+
+async function saveSearchConfig(silent) {
+  const apiKey = (document.getElementById('search-apikey')?.value || '').trim();
+  if (!apiKey) {
+    if (!silent) showToast('请输入百度千帆 API Key');
+    return false;
+  }
+  try {
+    await api('PUT', '/search/config', {api_key: apiKey});
+    document.getElementById('search-apikey').value = '';
+    if (!silent) {
+      showToast('✅ 百度搜索 Key 已加密保存');
+      loaded.advanced = false;
+      loadAdvanced();
+    }
+    return true;
+  } catch(e) {
+    if (!silent) showToast('保存失败: ' + e.message);
+    throw e;
+  }
+}
+
+async function testSearchConfig(btn) {
+  const res = document.getElementById('search-test-result');
+  const apiKey = (document.getElementById('search-apikey')?.value || '').trim();
+  res.innerHTML = '<span style="color:var(--text-soft)">⏳ 正在测试真实搜索…</span>';
+  btn.disabled = true;
+  try {
+    const result = await api('POST', '/search/test', apiKey ? {api_key: apiKey} : {});
+    if (result.ok) {
+      res.innerHTML = `<span style="color:var(--success);font-weight:600">✅ 百度搜索成功，返回 ${result.result_count} 条结果${result.latency_ms ? '，延迟 '+result.latency_ms+'ms' : ''}</span>`;
+      showToast('✅ 百度搜索测试通过');
+    } else {
+      res.innerHTML = `<span style="color:var(--danger);font-weight:600">❌ ${esc(result.error || '测试失败')}</span>`;
+    }
+  } catch(e) {
+    res.innerHTML = `<span style="color:var(--danger);font-weight:600">❌ ${esc(e.message)}</span>`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function deleteSearchConfig() {
+  if (!confirm('确定删除百度搜索 API Key 并恢复使用 Bing？')) return;
+  try {
+    await api('PUT', '/search/config', {clear: true});
+    showToast('已恢复使用 Bing');
+    loaded.advanced = false;
+    loadAdvanced();
+  } catch(e) {
+    showToast('删除失败: ' + e.message);
+  }
 }
 
 async function testEmbeddingSummary(btn) {

@@ -27,16 +27,19 @@ def _admin_log_url(host: str, port: int) -> str:
 def _ensure_admin_token(log) -> str:
     """Ensure ADMIN_TOKEN is set. Auto-generate if missing."""
     from mochi.admin.admin_env import read_env_value, _bootstrap_write_env
+    import mochi.config as config_module
 
     token = read_env_value("ADMIN_TOKEN")
     if token:
         os.environ["ADMIN_TOKEN"] = token
+        config_module.ADMIN_TOKEN = token
         log.info("Using existing ADMIN_TOKEN from .env")
         return token
 
     token = secrets.token_urlsafe(32)
     _bootstrap_write_env("ADMIN_TOKEN", token)
     os.environ["ADMIN_TOKEN"] = token
+    config_module.ADMIN_TOKEN = token
     log.info("Generated new ADMIN_TOKEN (saved to .env)")
     return token
 

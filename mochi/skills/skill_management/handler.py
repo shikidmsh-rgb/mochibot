@@ -110,7 +110,7 @@ class SkillManagementSkill(Skill):
 
         db_overrides = get_skill_config(skill_name)
         # Keys that should be masked (internal or typically secret)
-        secret_keys = {f.key for f in schema if f.internal}
+        secret_keys = {f.key for f in schema if f.internal or f.secret}
         secret_keys |= set(getattr(skill, "requires_config", []))
 
         lines = [f"Config for '{skill_name}':\n"]
@@ -162,6 +162,16 @@ class SkillManagementSkill(Skill):
                 success=False,
             )
 
+        field = schema_map[key]
+        if field.secret:
+            return SkillResult(
+                output=(
+                    f"'{skill_name}.{key}' 是秘密配置，"
+                    "只能由主人在管理后台中设置。"
+                ),
+                success=False,
+            )
+
         # Empty value = clear DB override
         if not value:
             changed = key in get_skill_config(skill_name)
@@ -175,7 +185,6 @@ class SkillManagementSkill(Skill):
             )
 
         # Validate type
-        field = schema_map[key]
         try:
             _cast(value, field.type)
         except (ValueError, TypeError):
