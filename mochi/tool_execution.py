@@ -53,6 +53,12 @@ def sanitize_arguments(tool_name: str, args: dict) -> dict:
         sanitized = {}
     if tool_name == "set_skill_config" and "value" in sanitized:
         sanitized["value"] = "[REDACTED]"
+    if tool_name == "save_mochi_file":
+        for key in ("content", "old_text", "new_text"):
+            if key in sanitized:
+                sanitized[key] = "[REDACTED]"
+    if tool_name == "browse_mochi_files" and "query" in sanitized:
+        sanitized["query"] = "[REDACTED]"
     return sanitized
 
 
@@ -87,8 +93,6 @@ def _compact_summary(tool_name: str, args: dict, result: SkillResult) -> str:
             f"Updated configuration {args.get('skill_name', '?')}."
             f"{args.get('key', '?')}."
         )
-    elif tool_name == "edit_file" and args.get("action") == "write":
-        summary = f"Updated file {args.get('path', '?')}."
     else:
         summary = result.output or "No result"
     summary = " ".join(str(summary).split())
@@ -97,6 +101,8 @@ def _compact_summary(tool_name: str, args: dict, result: SkillResult) -> str:
 
 def _entity_refs(skill_name: str, args: dict, result: SkillResult) -> list[str]:
     refs = [str(r) for r in result.entity_refs if r]
+    if skill_name == "mochi_files":
+        return refs[:10]
     for key, value in args.items():
         if not key.endswith("_id") or value in (None, ""):
             continue

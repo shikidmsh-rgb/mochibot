@@ -27,9 +27,19 @@ setup, not broad provider or multi-user infrastructure.
   consuming Attention state.
 - **Persistence** (`mochi/db.py`) stores conversation, memory, configuration,
   usage, and tool execution facts.
+- **Mochi Files** (`mochi/mochi_files_store.py`) gives sovereign Main a bounded
+  private Markdown space under `data/mochi_files/`. The harness supplies only
+  safe storage operations; Main alone decides whether, what, and how to write.
 
 Dependency direction is transport/heartbeat -> Main -> skills and persistence.
 Skills do not import transports or orchestration.
+
+Mochi Files is separate from Core, Memory, KG, Diary, and SQLite. Its two
+on-demand tools are available only to Main tool calls and are never used by
+Lite, Nightly, scripts, or harness jobs. Browse results are current-turn
+Agent-authored documents, not external truth or automatically recalled context.
+Writes use exact UTF-8 Markdown files, fixed quotas, atomic publication, and one
+hidden previous version for append/edit recovery safety.
 
 Main 可通过 resident `look_around` 读取 Observer 已有缓存的安全视图。
 该工具只读，不触发采集、外部请求或 Attention 状态变化；Free Time 默认
