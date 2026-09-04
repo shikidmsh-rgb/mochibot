@@ -29,7 +29,12 @@ log = logging.getLogger(__name__)
 def _get_disabled_skills() -> set[str]:
     """Lazy wrapper to avoid circular import with mochi.db."""
     from mochi.db import get_disabled_skills
-    return get_disabled_skills()
+
+    return {
+        name
+        for name in get_disabled_skills()
+        if not getattr(_skills.get(name), "locked", False)
+    }
 
 
 def get_missing_config(skill: Skill) -> list[str]:
@@ -314,7 +319,8 @@ skill_for_tool = get_tool_skill
 
 async def dispatch(tool_name: str, args: dict, user_id: int = 0,
                    channel_id: int = 0, transport: str = "",
-                   actor: str = "") -> SkillResult:
+                   actor: str = "",
+                   owner_authorized: bool = False) -> SkillResult:
     """Dispatch a tool call to the appropriate skill."""
     skill_name = _tool_map.get(tool_name)
     if not skill_name:
@@ -364,6 +370,7 @@ async def dispatch(tool_name: str, args: dict, user_id: int = 0,
         channel_id=channel_id,
         transport=transport,
         actor=actor,
+        owner_authorized=owner_authorized,
         tool_name=tool_name,
         args=args,
     )

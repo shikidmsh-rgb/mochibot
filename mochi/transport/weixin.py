@@ -598,6 +598,7 @@ class WeixinTransport(Transport):
             text=text,
             transport="wechat",
             raw={"weixin_user_id": from_user},
+            owner_authorized=from_user == self._owner_weixin_id,
         )
 
         # Call chat via callback

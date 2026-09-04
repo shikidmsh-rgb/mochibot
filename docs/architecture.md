@@ -95,6 +95,13 @@ controls only whether the owner may disable a skill. Concrete deny rules, rate
 limits, state-change facts, recoverability, and receipts remain execution
 contracts rather than an abstract risk taxonomy.
 
+Explicit owner requests to change sleep/wake hours, timezone, or the daily
+Free Time/Attention limit route `manage_agent_settings` into Main's turn.
+Transport-authenticated owner status is carried into tool dispatch before the
+tool writes the existing system-override store. Heartbeat resolves sleep/wake
+values at each decision boundary. Core may remember a preference but is never
+runtime configuration authority.
+
 ## Bedtime flow
 
 During night conversations, Main may call the framework-scoped

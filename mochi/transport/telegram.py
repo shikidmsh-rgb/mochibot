@@ -461,6 +461,7 @@ class TelegramTransport(Transport):
             channel_id=chat_id,
             text=text,
             transport="telegram",
+            owner_authorized=True,
             image=image,
             on_interim=_on_interim,
         )
@@ -590,6 +591,7 @@ class TelegramTransport(Transport):
             channel_id=update.effective_chat.id,
             text=update.message.caption or "",
             transport="telegram",
+            owner_authorized=True,
             raw={
                 "sticker": {
                     "file_id": sticker.file_id,
