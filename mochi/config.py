@@ -117,7 +117,7 @@ def _persist_owner(user_id: int) -> None:
 # ═══════════════════════════════════════════════════════════════════════════
 
 HEARTBEAT_INTERVAL_MINUTES = _env_int("HEARTBEAT_INTERVAL_MINUTES", 20)
-MAX_DAILY_PROACTIVE = _env_int("MAX_DAILY_PROACTIVE", 10)
+MAX_DAILY_PROACTIVE = _env_int("MAX_DAILY_PROACTIVE", 5)
 PROACTIVE_COOLDOWN_SECONDS = _env_int("PROACTIVE_COOLDOWN_SECONDS", 1800)
 ATTENTION_INTERVAL_MINUTES = _env_int("ATTENTION_INTERVAL_MINUTES", 60)
 FREE_TIME_MIN_MINUTES = _env_int("FREE_TIME_MIN_MINUTES", 90)
@@ -126,7 +126,7 @@ LLM_HEARTBEAT_TIMEOUT_SECONDS = _env_int("LLM_HEARTBEAT_TIMEOUT_SECONDS", 120)
 
 # Sleep/Wake State Machine
 WAKE_EARLIEST_HOUR = _env_int("WAKE_EARLIEST_HOUR", 6)   # don't wake on user msg before this
-SLEEP_AFTER_HOUR = _env_int("SLEEP_AFTER_HOUR", 21)      # bedtime availability + silence checks
+SLEEP_AFTER_HOUR = _env_int("SLEEP_AFTER_HOUR", 23)      # bedtime availability + silence checks
 SILENCE_THRESHOLD_HOURS = _env_float("SILENCE_THRESHOLD_HOURS", 1.0)  # silence → sleep
 SILENCE_PAUSE_DAYS = _env_float("SILENCE_PAUSE_DAYS", 3.0)
 FALLBACK_WAKE_HOUR = _env_int("FALLBACK_WAKE_HOUR", 10)

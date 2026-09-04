@@ -327,7 +327,7 @@ _ENV_ONLY_SYSTEM_KEYS = frozenset({
 SYSTEM_DEFAULTS: dict[str, tuple[str, any]] = {
     # ── Heartbeat ──
     "HEARTBEAT_INTERVAL_MINUTES":     ("int",   20),
-    "MAX_DAILY_PROACTIVE":            ("int",   10),
+    "MAX_DAILY_PROACTIVE":            ("int",   5),
     "ATTENTION_INTERVAL_MINUTES":     ("int",   60),
     "FREE_TIME_MIN_MINUTES":          ("int",   90),
     "FREE_TIME_MAX_MINUTES":          ("int",   240),

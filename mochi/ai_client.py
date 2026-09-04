@@ -934,6 +934,7 @@ async def chat(
     tool_budget = ToolLoopBudget()
     on_interim = message.on_interim if message is not None else None
     bedtime_finalization_attempted = False
+    bedtime_skip_requested = False
 
     def _log_main_usage(
         response: LLMResponse,
@@ -967,6 +968,8 @@ async def chat(
             if tool_names_used else None
         )
         if is_bedtime:
+            if bedtime_skip_requested:
+                return ChatResult(disposition="skip")
             if not reply and not pending_stickers:
                 log.warning("Bedtime Main turn returned no disposition")
                 return ChatResult()
@@ -1056,8 +1059,12 @@ async def chat(
         return STICKER_RE.sub("", final_response.content or "").strip()
 
     async def _ensure_bedtime_farewell(reply: str) -> str:
+        nonlocal bedtime_skip_requested
         if not (is_bedtime or bedtime_requested):
             return reply
+        if reply == "[SKIP]" and is_bedtime:
+            bedtime_skip_requested = True
+            return ""
         if reply == "[SKIP]":
             reply = ""
         if pending_stickers:

@@ -106,7 +106,9 @@ separate classifier decides what the user meant.
 Heartbeat-detected silence still creates a `MainRuntimeEntry(kind="bedtime")`
 with a lived sleep-transition situation. The heartbeat atomically claims the
 transition, Main may use the abilities available in the turn, and the runtime
-completes sleep even when model or delivery work fails.
+completes sleep even when model or delivery work fails. When the recent
+conversation already completed a bedtime farewell, Main may choose `[SKIP]`
+and let the transition finish without sending a duplicate goodbye.
 
 ## Nightly and Weekly memory flow
 
