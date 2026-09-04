@@ -6,7 +6,8 @@ import pytest
 
 from mochi.transport import IncomingMessage
 from mochi.ai_client import chat
-from mochi.db import get_recent_tool_executions
+from mochi.db import get_recent_tool_executions, save_message
+from mochi.main_runtime import MainRuntimeEntry
 from mochi.skills.todo.queries import get_todos
 from tests.e2e.mock_llm import make_response, make_tool_call
 
@@ -53,6 +54,34 @@ class TestSimpleReply:
         )
         assert "Bedtime will begin after your farewell" in (
             mock.call_log[1]["messages"][-1]["content"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_silent_bedtime_does_not_repeat_recent_farewell(
+        self, mock_llm_factory,
+    ):
+        turn_id = "recent-goodnight"
+        save_message(1, "user", "晚安宝", turn_id=turn_id)
+        save_message(1, "assistant", "晚安，睡吧。", turn_id=turn_id)
+        mock = mock_llm_factory([make_response("[SKIP]")])
+        entry = MainRuntimeEntry.bedtime(
+            trigger="resleep",
+            user_id=1,
+            channel_id=100,
+            transport="fake",
+        )
+
+        reply = await chat(runtime_entry=entry)
+
+        assert reply.text == ""
+        assert reply.disposition == "skip"
+        assert len(mock.call_log) == 1
+        assert "如果刚刚已经完成睡前告别，你可以只回复 `[SKIP]`" in (
+            mock.call_log[0]["messages"][0]["content"]
+        )
+        assert any(
+            message["role"] == "assistant" and "晚安，睡吧。" in message["content"]
+            for message in mock.call_log[0]["messages"]
         )
 
     @pytest.mark.asyncio

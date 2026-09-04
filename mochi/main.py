@@ -208,6 +208,8 @@ async def main():
                 transport=_t.name,
             )
             result = await chat(runtime_entry=entry)
+            if result.disposition == "skip":
+                return True
             if not result.text and not result.stickers:
                 return False
             delivered = await _t.send_chat_result(user_id, result)
