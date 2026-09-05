@@ -1326,6 +1326,11 @@ async def chat(
                         user_id=user_id, channel_id=channel_id,
                         transport=transport,
                         actor="main",
+                        owner_authorized=(
+                            message.owner_authorized
+                            if message is not None
+                            else False
+                        ),
                     )
                 outcome = outcome_for(
                     skill_name, tc["name"], arguments, result,

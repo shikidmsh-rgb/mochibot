@@ -335,6 +335,8 @@ SYSTEM_DEFAULTS: dict[str, tuple[str, any]] = {
     "BEDTIME_ENTRY_ENABLED":          ("bool",  True),
     "BEDTIME_ENTRY_TIMEOUT_S":        ("int",   60),
     # ── Sleep/Wake ──
+    "WAKE_EARLIEST_HOUR":             ("int",   6),
+    "SLEEP_AFTER_HOUR":               ("int",   23),
     "SILENCE_PAUSE_DAYS":             ("float", 3.0),
     # ── Basic ──
     "TIMEZONE_OFFSET_HOURS":          ("float", 8.0),

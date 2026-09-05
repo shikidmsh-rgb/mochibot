@@ -70,6 +70,7 @@ class SkillContext:
     channel_id: int = 0
     transport: str = ""     # "telegram" | "wechat" — from IncomingMessage
     actor: str = ""          # "main" only when invoked by a Main tool loop
+    owner_authorized: bool = False
     tool_name: str = ""     # only set for trigger="tool_call"
     args: dict = field(default_factory=dict)
     observation: dict | None = None  # only set for trigger="heartbeat"

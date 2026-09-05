@@ -9,7 +9,7 @@ from mochi.request_tools import REQUEST_TOOLS_DEF
 from mochi.tool_policy import filter_tools
 
 
-_SKILLOFF_BASE_TOOLS = ("update_core",)
+_SKILLOFF_BASE_TOOLS = ("update_core", "manage_agent_settings")
 _SKILLOFF_TELEGRAM_TOOLS = ("send_sticker",)
 MAX_ROUTED_SKILLS = 2
 

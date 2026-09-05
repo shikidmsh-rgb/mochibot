@@ -35,6 +35,7 @@ class IncomingMessage:
     text: str
     transport: str  # "telegram"
     raw: dict | None = None  # transport-specific raw data
+    owner_authorized: bool = False
     image: ImageAttachment | None = field(default=None, repr=False)
     runtime_entry: "MainRuntimeEntry | None" = field(default=None, repr=False)
     # Optional callback fired during tool execution (set by transport layer).

@@ -29,6 +29,7 @@ from mochi.ai_client import chat, ChatResult
 from mochi.transport import Transport, IncomingMessage
 from mochi.heartbeat import (
     heartbeat_loop,
+    reload_state_after_config_seed,
     set_bedtime_callback,
     set_main_runtime_callbacks,
     set_weekly_callback,
@@ -112,6 +113,7 @@ async def main():
     # 0c. Seed system config from .env on first run (DB empty)
     from mochi.admin.admin_db import seed_system_config_from_env
     seed_system_config_from_env()
+    reload_state_after_config_seed()
 
     # 1. Config validation
     config_status = validate_config()
@@ -167,16 +169,16 @@ async def main():
         transport = WeixinTransport()
         set_weixin_handler(handle_message)
 
-    if transport:
-        await transport.start()
-        log.info("Transport started: %s", transport.name)
-
-    # 3a. Restore owner ID from DB (persists across all restart types)
+    # 3a. Restore owner ID before polling can accept an inbound sender.
     if transport and hasattr(transport, "restore_owner_id"):
         from mochi.db import get_skill_config
         saved_id = get_skill_config("_transport:wechat").get("owner_weixin_id")
         if saved_id:
             transport.restore_owner_id(saved_id, source="DB")
+
+    if transport:
+        await transport.start()
+        log.info("Transport started: %s", transport.name)
 
     # 3b. Send restart-complete notification if restarting
     restart_info = consume_restart_flag()

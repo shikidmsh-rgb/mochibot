@@ -1,6 +1,7 @@
 """E2E tests for the chat flow: message → LLM → tool dispatch → DB → response."""
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -16,7 +17,7 @@ def _msg(text: str, user_id: int = 1, channel_id: int = 100) -> IncomingMessage:
     """Helper to create an IncomingMessage."""
     return IncomingMessage(
         user_id=user_id, channel_id=channel_id,
-        text=text, transport="fake",
+        text=text, transport="fake", owner_authorized=True,
     )
 
 
@@ -83,6 +84,116 @@ class TestSimpleReply:
             message["role"] == "assistant" and "晚安，睡吧。" in message["content"]
             for message in mock.call_log[0]["messages"]
         )
+
+    @pytest.mark.asyncio
+    async def test_explicit_bedtime_setting_is_routed_and_applied(
+        self, mock_llm_factory, monkeypatch,
+    ):
+        import mochi.admin.admin_db as admin_db
+        import mochi.config as config
+        import mochi.heartbeat as heartbeat
+        import mochi.tool_router as tool_router
+
+        monkeypatch.setattr(config, "TOOL_ROUTER_ENABLED", True)
+        monkeypatch.setattr(config, "TOOL_ESCALATION_ENABLED", False)
+        monkeypatch.setattr(
+            admin_db, "list_tier_assignments", lambda: {"lite": "mock"},
+        )
+
+        async def route_settings(*_args, **kwargs):
+            assert "skill_management" in kwargs["catalog"]
+            return ["skill_management"]
+
+        monkeypatch.setattr(tool_router, "classify_skills", route_settings)
+        admin_db.set_system_override("SLEEP_AFTER_HOUR", "21")
+
+        class NightClock:
+            @classmethod
+            def now(cls, _tz):
+                return SimpleNamespace(hour=22)
+
+        monkeypatch.setattr(heartbeat, "datetime", NightClock)
+        assert heartbeat.bedtime_tool_available() is True
+
+        mock = mock_llm_factory([
+            make_response(tool_calls=[
+                make_tool_call("manage_agent_settings", {
+                    "action": "set",
+                    "key": "sleep_after_hour",
+                    "value": 23,
+                }),
+            ]),
+            make_response("知道了，今晚十一点再休息。"),
+        ])
+
+        reply = await chat(_msg("你睡觉时间太早了以后改成11点"))
+
+        setting_tool = next(
+            tool for tool in mock.call_log[0]["tools"]
+            if tool["function"]["name"] == "manage_agent_settings"
+        )
+        assert "sleep_after_hour" in (
+            setting_tool["function"]["parameters"]["properties"]["key"]["enum"]
+        )
+        assert admin_db.get_system_config("SLEEP_AFTER_HOUR") == 23
+        assert heartbeat.bedtime_tool_available() is False
+        receipt = mock.call_log[1]["messages"][-1]
+        assert receipt["role"] == "tool"
+        assert "sleep_after_hour: 21 → 23" in receipt["content"]
+        assert '"changed":true' in receipt["content"]
+        execution = get_recent_tool_executions(1, limit=1)[0]
+        assert execution["tool_name"] == "manage_agent_settings"
+        assert execution["status"] == "success"
+        assert execution["state_changed"] == 1
+        assert reply.text
+
+        from mochi.skills import dispatch
+
+        denied = await dispatch(
+            "manage_agent_settings",
+            {
+                "action": "set",
+                "key": "sleep_after_hour",
+                "value": 22,
+            },
+            user_id=2,
+            channel_id=200,
+            transport="wechat",
+            actor="main",
+            owner_authorized=False,
+        )
+        assert denied.success is False
+        assert denied.error_code == "owner_authorization_required"
+        assert admin_db.get_system_config("SLEEP_AFTER_HOUR") == 23
+
+        locked = await dispatch(
+            "toggle_skill",
+            {"skill_name": "skill_management", "enabled": False},
+            user_id=1,
+            actor="main",
+            owner_authorized=True,
+        )
+        assert locked.success is False
+        assert "无法关闭" in locked.output
+
+        from mochi.db import set_skill_enabled, set_skill_mode
+        from mochi.turn_tool_policy import build_turn_tool_plan
+
+        set_skill_enabled("skill_management", False)
+        set_skill_mode("off")
+        skilloff_plan = build_turn_tool_plan("fake")
+        assert "manage_agent_settings" in {
+            tool["function"]["name"]
+            for tool in skilloff_plan.resident_definitions
+        }
+        view_settings = await dispatch(
+            "manage_agent_settings",
+            {"action": "view"},
+            user_id=1,
+            actor="main",
+            owner_authorized=True,
+        )
+        assert view_settings.success is True
 
     @pytest.mark.asyncio
     async def test_update_core(self, mock_llm_factory):

@@ -7,6 +7,25 @@ from mochi.skills.base import Skill, SkillContext, SkillResult
 
 log = logging.getLogger(__name__)
 
+_AGENT_SETTING_FIELDS = {
+    "sleep_after_hour": (
+        "SLEEP_AFTER_HOUR", "int", 1, 24,
+        "每天从哪个本地小时起进入休息时段；24 表示午夜。",
+    ),
+    "wake_earliest_hour": (
+        "WAKE_EARLIEST_HOUR", "int", 0, 23,
+        "用户消息最早能唤醒你的本地小时。",
+    ),
+    "timezone_offset_hours": (
+        "TIMEZONE_OFFSET_HOURS", "float", -12, 14,
+        "本地时间相对 UTC 的小时偏移。",
+    ),
+    "max_daily_proactive": (
+        "MAX_DAILY_PROACTIVE", "int", 0, 50,
+        "每天最多送达多少条 Free Time/Attention 主动消息。",
+    ),
+}
+
 
 class SkillManagementSkill(Skill):
 
@@ -26,8 +45,131 @@ class SkillManagementSkill(Skill):
                 args.get("key", ""),
                 args.get("value", ""),
             )
+        elif tool == "manage_agent_settings":
+            if not context.owner_authorized:
+                return SkillResult(
+                    output="只有 Owner 可以查看或调整运行设置。",
+                    success=False,
+                    error_code="owner_authorization_required",
+                    retryable=False,
+                )
+            return self._manage_agent_settings(args)
 
         return SkillResult(output=f"Unknown tool: {tool}", success=False)
+
+    def _manage_agent_settings(self, args: dict) -> SkillResult:
+        action = args.get("action", "")
+        if action == "view":
+            return self._get_agent_settings()
+        if action == "set":
+            return self._set_agent_setting(
+                str(args.get("key") or ""),
+                args.get("value"),
+            )
+        return SkillResult(
+            output="action 必须是 view 或 set。",
+            success=False,
+            error_code="invalid_action",
+            retryable=True,
+        )
+
+    def _get_agent_settings(self) -> SkillResult:
+        from mochi.admin.admin_db import get_system_config
+
+        lines = ["当前运行设置："]
+        for key, (system_key, _type, minimum, maximum, description) in (
+            _AGENT_SETTING_FIELDS.items()
+        ):
+            lines.append(
+                f"- {key} = {get_system_config(system_key)} "
+                f"(范围 {minimum}–{maximum})\n  {description}"
+            )
+        return SkillResult(output="\n".join(lines))
+
+    def _set_agent_setting(self, key: str, value) -> SkillResult:
+        from mochi.admin.admin_db import (
+            get_system_config,
+            set_system_override,
+        )
+
+        field = _AGENT_SETTING_FIELDS.get(key)
+        if field is None:
+            return SkillResult(
+                output=(
+                    f"未知运行设置 '{key}'。可调整项："
+                    + ", ".join(_AGENT_SETTING_FIELDS)
+                ),
+                success=False,
+                error_code="unknown_setting",
+                retryable=True,
+            )
+        system_key, type_name, minimum, maximum, description = field
+        if isinstance(value, bool):
+            return SkillResult(
+                output=f"{key} 必须是数字。",
+                success=False,
+                error_code="invalid_setting_value",
+                retryable=True,
+            )
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return SkillResult(
+                output=f"{key} 必须是数字。",
+                success=False,
+                error_code="invalid_setting_value",
+                retryable=True,
+            )
+        if type_name == "int":
+            if not numeric.is_integer():
+                return SkillResult(
+                    output=f"{key} 必须是整数。",
+                    success=False,
+                    error_code="invalid_setting_value",
+                    retryable=True,
+                )
+            normalized: int | float = int(numeric)
+        else:
+            normalized = numeric
+        if not minimum <= normalized <= maximum:
+            return SkillResult(
+                output=f"{key} 必须在 {minimum}–{maximum} 之间。",
+                success=False,
+                error_code="setting_out_of_range",
+                retryable=True,
+            )
+
+        wake_hour = (
+            normalized
+            if key == "wake_earliest_hour"
+            else int(get_system_config("WAKE_EARLIEST_HOUR"))
+        )
+        sleep_hour = (
+            normalized
+            if key == "sleep_after_hour"
+            else int(get_system_config("SLEEP_AFTER_HOUR"))
+        )
+        if wake_hour >= sleep_hour:
+            return SkillResult(
+                output="最早清醒时间必须早于休息时段起点。",
+                success=False,
+                error_code="invalid_awake_window",
+                retryable=True,
+            )
+
+        old_value = get_system_config(system_key)
+        if old_value == normalized:
+            return SkillResult(
+                output=f"{key} 已经是 {normalized}，无需修改。",
+                summary=f"Runtime setting {key} remains {normalized}.",
+            )
+        set_system_override(system_key, str(normalized))
+        new_value = get_system_config(system_key)
+        return SkillResult(
+            output=f"已调整运行设置：{key}: {old_value} → {new_value}\n{description}",
+            summary=f"Runtime setting {key} changed from {old_value} to {new_value}.",
+            state_changed=True,
+        )
 
     # ── list_skills ──────────────────────────────────────────
 
@@ -70,7 +212,7 @@ class SkillManagementSkill(Skill):
             return SkillResult(output=f"Unknown skill: '{skill_name}'", success=False)
 
         # Core skills cannot be disabled
-        if not enabled and getattr(skill, "core", False):
+        if not enabled and skill.locked:
             return SkillResult(
                 output=f"核心技能 '{skill_name}' 无法关闭。",
                 success=False,

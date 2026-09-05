@@ -24,6 +24,7 @@
 - **记忆项**——每 10 个普通聊天回合由无人格 Lite 连续提取；全文召回常开，向量仅作可选增强
 - **知识图谱**——从有来源的记忆项增量投影实体关系，聊到时可选注入精确上下文
 - **每天一本 diary**——习惯进度、待办、提醒汇总成当日状态面板
+- **Mochi Files**——Main 自己决定何时创作，把完整作品保存为私人的 Markdown 文件；不会自动分类、注入或代写
 - **每周记忆整理**——Nightly 只可靠归档；每周由同一个 Main 回看真实证据，谨慎整理 Core 与记忆项
 
 
@@ -87,6 +88,7 @@
 | **web_search** | 联网搜索——DuckDuckGo，无需 API key |
 | **sticker** | 表情包——学习你转发的贴纸，聊天时自动发（仅 Telegram） |
 | **skill_management** | 技能管理——通过对话列出、开关、配置所有技能 |
+| **mochi_files** | Main 私人的 Markdown 作品空间——按需创建、追加、精确编辑与重新打开 |
 
 > **想加一个新 Skill？** 在 `mochi/skills/` 下新建文件夹，放入 `SKILL.md` + `handler.py`，重启 bot 就会自动注册。详见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
