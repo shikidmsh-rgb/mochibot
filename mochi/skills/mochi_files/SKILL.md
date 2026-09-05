@@ -1,6 +1,6 @@
 ---
 name: mochi_files
-description: "你有一片持久的私人 Markdown 空间，可以按自己的方式保存并重新打开完整作品；具体操作可从工具箱发现。"
+description: "持久 Markdown 文件空间"
 type: tool
 locked: true
 triggers: [tool_call]

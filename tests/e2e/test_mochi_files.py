@@ -13,8 +13,7 @@ from tests.e2e.mock_llm import make_response, make_tool_call
 
 
 CAPABILITY = (
-    "你有一片持久的私人 Markdown 空间，可以按自己的方式保存并重新打开完整作品；"
-    "具体操作可从工具箱发现。"
+    "`mochi_files` 是持久的 Markdown 文件空间，可按需读写完整作品与资料。"
 )
 FILES_TOOLS = {"browse_mochi_files", "save_mochi_file"}
 
@@ -85,6 +84,7 @@ async def test_mochi_files_request_tools_vertical_contract(
         if isinstance(item.get("content"), str)
     )
     assert initial_prompt.count(CAPABILITY) == 1
+    assert "你有一片持久的私人 Markdown 空间" not in initial_prompt
     assert "old_text" not in initial_prompt
     assert "上一版本" not in initial_prompt
     assert "### mochi_files" not in initial_prompt
