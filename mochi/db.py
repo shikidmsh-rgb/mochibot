@@ -19,6 +19,7 @@ from mochi.config import (
     RECALL_KEYWORD_BOOST, RECALL_FTS_CANDIDATE_MULTIPLIER, RECALL_FALLBACK_LIMIT,
     RECALL_DECAY_HALF_LIFE_DAYS, VEC_SEARCH_NATIVE_ENABLED, VEC_SEARCH_CANDIDATE_LIMIT,
 )
+from mochi.memory_contract import memory_contents_equal
 
 logger = logging.getLogger(__name__)
 
@@ -1454,31 +1455,11 @@ def text_similarity(a: str, b: str) -> float:
     return difflib.SequenceMatcher(None, na, nb).ratio()
 
 
-def _memory_contents_match(content: str, existing_content: str) -> bool:
-    normalized = _normalize_text(content)
-    existing = _normalize_text(existing_content)
-    if not normalized or not existing:
-        return False
-    shorter = min(len(normalized), len(existing))
-    return (
-        normalized == existing
-        or (
-            shorter >= 6
-            and (normalized in existing or existing in normalized)
-        )
-        or (
-            shorter >= 8
-            and difflib.SequenceMatcher(None, normalized, existing).ratio()
-            >= 0.94
-        )
-    )
-
-
 def _find_memory_duplicate_in_rows(
     content: str, rows: list[sqlite3.Row | dict],
 ) -> dict | None:
     for row in rows:
-        if _memory_contents_match(content, row["content"]):
+        if memory_contents_equal(content, row["content"]):
             return dict(row)
     return None
 
@@ -1708,13 +1689,10 @@ def save_memory_item(user_id: int, content: str,
                      importance: int = 1, source: str = "extracted",
                      embedding: bytes | None = None,
                      evidence_message_ids: list[int] | tuple[int, ...] | None = None) -> int:
-    """Save a memory item with on-insert smart dedup.
+    """Save a memory, merging evidence only for whitespace-equal content.
 
-    Dedup priority:
-      1. Exact/text similarity (normalized, SequenceMatcher)
-      2. Vector cosine similarity (if embedding provided)
-    If a match is found: UPDATE (keep longer content, bump importance/access).
-    Otherwise: INSERT new row.
+    Similar text or embeddings do not establish that two facts are identical.
+    Existing content and its metadata are preserved when evidence is merged.
     """
     from mochi.memory_contract import (
         decode_evidence_message_ids,
@@ -1722,38 +1700,15 @@ def save_memory_item(user_id: int, content: str,
         merge_evidence_message_ids,
     )
 
-    now = datetime.now(TZ).isoformat()
     conn = _connect()
     new_evidence = tuple(evidence_message_ids or ())
-    norm_content = _normalize_text(content)
     candidates = conn.execute(
-        "SELECT id, content, access_count, embedding, evidence_message_ids "
+        "SELECT id, content, evidence_message_ids "
         "FROM memory_items WHERE user_id = ? "
         "ORDER BY updated_at DESC LIMIT 120",
         (user_id,),
     ).fetchall()
-    existing = None
-    for candidate in candidates:
-        normalized = _normalize_text(candidate["content"])
-        if not norm_content or not normalized:
-            continue
-        if (
-            norm_content == normalized
-            or difflib.SequenceMatcher(
-                None, norm_content, normalized,
-            ).ratio() >= 0.92
-        ):
-            existing = candidate
-            break
-    if not existing and embedding:
-        for candidate in candidates:
-            candidate_embedding = candidate["embedding"]
-            if (
-                candidate_embedding
-                and _cosine_similarity(embedding, candidate_embedding) >= 0.92
-            ):
-                existing = candidate
-                break
+    existing = _find_memory_duplicate_in_rows(content, candidates)
 
     if existing:
         merged_evidence = merge_evidence_message_ids(
@@ -1761,63 +1716,16 @@ def save_memory_item(user_id: int, content: str,
             new_evidence,
         )
         evidence_json = encode_evidence_message_ids(merged_evidence)
-        # Skip if content is identical
-        if existing["content"] == content:
-            conn.execute(
-                "UPDATE memory_items SET evidence_message_ids = ? WHERE id = ?",
-                (evidence_json, existing["id"]),
-            )
-            conn.commit()
-            conn.close()
-            return existing["id"]
-
-        # Decide what to keep
-        keep_content = (
-            content
-            if len(content) >= len(existing["content"])
-            else existing["content"]
+        conn.execute(
+            "UPDATE memory_items SET evidence_message_ids = ? WHERE id = ?",
+            (evidence_json, existing["id"]),
         )
-        keep_emb = (
-            embedding
-            if len(content) >= len(existing["content"])
-            else existing["embedding"]
-        )
-
-        if keep_emb is not None:
-            conn.execute(
-                "UPDATE memory_items SET content = ?, importance = MAX(importance, ?), "
-                "updated_at = ?, access_count = access_count + 1, embedding = ?, "
-                "evidence_message_ids = ? WHERE id = ?",
-                (
-                    keep_content, importance, now, keep_emb,
-                    evidence_json, existing["id"],
-                ),
-            )
-        else:
-            conn.execute(
-                "UPDATE memory_items SET content = ?, importance = MAX(importance, ?), "
-                "updated_at = ?, access_count = access_count + 1, "
-                "evidence_message_ids = ? WHERE id = ?",
-                (keep_content, importance, now, evidence_json, existing["id"]),
-            )
         item_id = existing["id"]
-        if keep_content != existing["content"]:
-            _invalidate_memory_kg_indexes(conn, [item_id])
-        # Update FTS + vec indices (same conn — not yet committed)
-        _sync_memory_item_indexes(conn, item_id, keep_content, keep_emb)
     else:
-        evidence_json = encode_evidence_message_ids(new_evidence)
-        cur = conn.execute(
-            "INSERT INTO memory_items (user_id, category, content, importance, "
-            "source, created_at, updated_at, embedding, evidence_message_ids) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                user_id, "", content, importance, source, now, now,
-                embedding, evidence_json,
-            ),
+        item_id = insert_memory_item(
+            user_id, content, importance, source=source, embedding=embedding,
+            evidence_message_ids=new_evidence, conn=conn,
         )
-        item_id = cur.lastrowid
-        _sync_memory_item_indexes(conn, item_id, content, embedding)
 
     conn.commit()
     conn.close()

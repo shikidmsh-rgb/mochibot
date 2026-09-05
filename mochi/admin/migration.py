@@ -12,11 +12,12 @@ import json
 import logging
 import re
 import threading
-from difflib import SequenceMatcher
 import time
 from datetime import datetime, timezone
 import uuid
 from dataclasses import dataclass
+
+from mochi.memory_contract import memory_contents_equal
 
 log = logging.getLogger(__name__)
 
@@ -345,55 +346,19 @@ def _run_extract(job_id: str, session_id: str, model_name: str,
 
 
 def _dedup_memory_items(items: list[dict]) -> list[dict]:
-    """Remove semantically duplicate memory items using text similarity.
-
-    Keeps the longer (more detailed) item when two items are similar.
-    """
-    if not items:
-        return items
-
-    def _normalize(text: str) -> str:
-        """Strip date prefixes and whitespace for comparison."""
-        text = re.sub(r"^\[[\d\-]+\]\s*", "", text.strip())
-        return text
-
-    def _keywords(text: str) -> set[str]:
-        """Extract content characters for overlap check."""
-        # Remove punctuation and whitespace, keep meaningful chars
-        return set(re.sub(r"[，。、！？「」\s\d\[\]\-（）\(\)]", "", text))
-
-    # Mark items to drop
-    drop = set()
-    for i in range(len(items)):
-        if i in drop:
-            continue
-        ci = _normalize(items[i].get("content", ""))
-        ki = _keywords(ci)
-        for j in range(i + 1, len(items)):
-            if j in drop:
-                continue
-            cj = _normalize(items[j].get("content", ""))
-            kj = _keywords(cj)
-
-            # Substring containment
-            if ci in cj or cj in ci:
-                drop.add(i if len(ci) <= len(cj) else j)
-                continue
-
-            # Bigram overlap: if the smaller set is mostly covered by the larger
-            smaller, larger = (ki, kj) if len(ki) <= len(kj) else (kj, ki)
-            if smaller and len(smaller & larger) / len(smaller) > 0.65:
-                drop.add(i if len(ci) <= len(cj) else j)
-                continue
-
-            # SequenceMatcher for remaining cases
-            ratio = SequenceMatcher(None, ci, cj).ratio()
-            if ratio > 0.6:
-                drop.add(i if len(ci) <= len(cj) else j)
-
-    kept = [item for idx, item in enumerate(items) if idx not in drop]
-    if drop:
-        log.info("Dedup removed %d/%d memory items", len(drop), len(items))
+    """Keep distinct content, including corrections and dated experiences."""
+    kept: list[dict] = []
+    for item in items:
+        if not any(
+            memory_contents_equal(
+                item.get("content", ""), existing.get("content", ""),
+            )
+            for existing in kept
+        ):
+            kept.append(item)
+    removed = len(items) - len(kept)
+    if removed:
+        log.info("Dedup removed %d/%d memory items", removed, len(items))
     return kept
 
 

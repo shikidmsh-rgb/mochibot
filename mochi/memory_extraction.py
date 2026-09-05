@@ -11,7 +11,6 @@ import threading
 from mochi.config import MEMORY_EXTRACTION_BATCH_TURNS, OWNER_USER_ID
 from mochi.core_store import read_core
 from mochi.db import (
-    _normalize_text,
     commit_memory_extraction_batch,
     get_memory_extraction_batch,
     get_memory_extraction_references,
@@ -19,10 +18,10 @@ from mochi.db import (
     list_memory_extraction_users,
     log_usage,
     record_memory_extraction_error,
-    text_similarity,
 )
 from mochi.llm import get_client_for_tier
 from mochi.memory_contract import (
+    memory_contents_equal,
     normalize_evidence_message_ids,
     validate_memory_content,
     validate_memory_importance,
@@ -132,27 +131,11 @@ def validate_extraction_response(raw: str, batch: list[dict]) -> list[dict]:
     return validated
 
 
-def _same_fact(left: str, right: str) -> bool:
-    normalized_left = _normalize_text(left)
-    normalized_right = _normalize_text(right)
-    if not normalized_left or not normalized_right:
-        return False
-    shorter = min(len(normalized_left), len(normalized_right))
-    if normalized_left == normalized_right:
-        return True
-    if shorter >= 6 and (
-        normalized_left in normalized_right
-        or normalized_right in normalized_left
-    ):
-        return True
-    return shorter >= 8 and text_similarity(left, right) >= 0.94
-
-
 def _filter_batch_duplicates(candidates: list[dict]) -> list[dict]:
     kept: list[dict] = []
     for candidate in candidates:
         if not any(
-            _same_fact(candidate["content"], existing["content"])
+            memory_contents_equal(candidate["content"], existing["content"])
             for existing in kept
         ):
             kept.append(candidate)
@@ -161,16 +144,16 @@ def _filter_batch_duplicates(candidates: list[dict]) -> list[dict]:
 
 def _filter_core_duplicates(candidates: list[dict], core: str) -> list[dict]:
     core_lines = [
-        line.strip().lstrip("-* ").strip()
+        re.sub(r"^[-*]\s+", "", line.strip())
         for line in core.splitlines()
         if line.strip() and not line.lstrip().startswith("#")
     ]
     return [
         candidate
         for candidate in candidates
-        if not _same_fact(candidate["content"], core)
+        if not memory_contents_equal(candidate["content"], core)
         and not any(
-            _same_fact(candidate["content"], line)
+            memory_contents_equal(candidate["content"], line)
             for line in core_lines
         )
     ]

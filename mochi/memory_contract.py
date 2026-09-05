@@ -17,6 +17,12 @@ _SUBJECT_PREFIX_RE = re.compile(
 )
 
 
+def memory_contents_equal(left: str, right: str) -> bool:
+    """Ignore whitespace differences, but preserve all other content."""
+    words = left.split()
+    return bool(words) and words == right.split()
+
+
 def validate_memory_content(content: object) -> str:
     if not isinstance(content, str):
         raise ValueError("memory content must be a string")
