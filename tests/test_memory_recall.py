@@ -31,8 +31,10 @@ class Pool:
     def __init__(self, embedding=None, error=None):
         self.embedding = embedding
         self.error = error
+        self.queries = []
 
-    def embed(self, _text):
+    def embed(self, text):
+        self.queries.append(text)
         if self.error:
             raise self.error
         return self.embedding
@@ -51,6 +53,35 @@ def _recall_config(monkeypatch):
     monkeypatch.setattr(config, "MEMORY_AUTO_RECALL_MAX_TOKENS", 600)
     monkeypatch.setattr(config, "MEMORY_AUTO_RECALL_COOLDOWN", 0)
     monkeypatch.setattr(config, "KG_ENABLED", False)
+
+
+@pytest.mark.parametrize("cooldown", [0, 120])
+def test_consecutive_topics_recall_unless_cooldown_is_explicit(
+    monkeypatch, cooldown,
+):
+    import mochi.ai_client as ai_client
+    import mochi.config as config
+    import mochi.model_pool as model_pool
+
+    monkeypatch.setattr(config, "MEMORY_AUTO_RECALL_COOLDOWN", cooldown)
+    monkeypatch.setattr(ai_client.time, "time", lambda: 1000.0)
+    pool = Pool()
+    monkeypatch.setattr(model_pool, "get_pool", lambda: pool)
+    save_memory_item(1, "Gets nervous before presentations", source="admin")
+    save_memory_item(1, "Has a cat that dislikes car rides", source="admin")
+
+    first = _retrieve_memories_for_turn("presentations", 1)
+    second = _retrieve_memories_for_turn("cat", 1)
+
+    assert [item["text"] for item in first] == [
+        "Gets nervous before presentations",
+    ]
+    assert [item["text"] for item in second] == (
+        ["Has a cat that dislikes car rides"] if cooldown == 0 else []
+    )
+    assert pool.queries == (
+        ["presentations", "cat"] if cooldown == 0 else ["presentations"]
+    )
 
 
 @pytest.mark.parametrize(
