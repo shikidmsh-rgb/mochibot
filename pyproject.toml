@@ -1,6 +1,6 @@
 [project]
 name = "mochibot"
-version = "1.0.13"
+version = "1.0.14"
 description = "A lightweight AI companion framework with autonomous heartbeat, layered memory, and modular skills."
 readme = "README.md"
 license = {text = "MIT"}
