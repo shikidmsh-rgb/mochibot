@@ -4,7 +4,7 @@ MochiBot 目前处于早期 alpha 阶段，欢迎贡献！
 
 1. Fork 仓库
 2. 创建 feature 分支
-3. 遵循 [ARCHITECTURE.md](ARCHITECTURE.md) 中的架构规则
+3. 遵循 [docs/architecture.md](docs/architecture.md) 中的架构规则
 4. 提交 PR
 
 ---

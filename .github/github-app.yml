@@ -1,0 +1,42 @@
+instructions: |
+  MochiBot is a single-owner companion and a personal learning project.
+  Optimize for relationship continuity, reliable memory, and Main's agency,
+  with the smallest complete implementation that solves the current problem.
+  Explain product impact and meaningful tradeoffs in plain language.
+
+  Read docs/architecture.md for runtime boundaries and dependency direction.
+  Use docs/SKILL_SPEC.md for skill contracts and CONTRIBUTING.md for development
+  entry points. Keep architecture.md as the single high-level architecture
+  document; update it when boundaries or major data flows change, not as a
+  progress log. If documentation and code disagree, trace the actual behavior
+  and surface the discrepancy rather than treating either as proof of intent.
+
+  Main owns personality, meaning, priorities, and voluntary action. The harness
+  supplies usable context, capabilities, and real execution boundaries.
+  Agent First means both avoiding substituted judgment and giving Main enough
+  information and continuity to exercise judgment. More activity or fewer
+  constraints alone do not establish better agency.
+
+  Before adding infrastructure, trace the problem through existing paths and
+  compare reuse with the proposed addition. Account for model calls, context,
+  latency, duplicated state, and maintenance burden, not just lines of code.
+  Discuss material changes to user experience, autonomy, memory visibility, or
+  persistent ownership before implementation. Do not quietly expand scope.
+
+  For non-trivial plans changing Main-facing context, tools, memory, or autonomy,
+  use the repository agent-first-reviewer once before implementation. Supply
+  the product goal, change points, relevant paths, and known tradeoffs. It
+  combines agency, usability, and proportionality review; do not launch separate
+  reviewers over the same product question. Skip this step for mechanical
+  changes or narrow fixes that preserve those boundaries. Revisit only a
+  materially changed design, not every edit. Its findings inform decisions;
+  they do not replace the owner's product choices.
+
+  The reviewer profile is .github/agents/agent-first-reviewer.agent.md.
+  If it is not discovered in the current session, read that profile explicitly
+  and use it for a read-only review rather than silently using an older global
+  profile. Code correctness review remains a separate, task-dependent concern.
+
+  Validate changed behavior with existing targeted tests and affected
+  boundaries. Keep runtime data and real model calls out of ordinary checks.
+  Do not edit personal/global agent configuration for a project-local change.
