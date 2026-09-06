@@ -25,10 +25,11 @@ from mochi.heartbeat_runtime import (
     claim_run,
     complete_delivery,
     complete_without_delivery,
+    delivery_lease_valid,
     delivery_wait_seconds,
     ensure_schedules,
     entry_from_claim,
-    get_schedulable_runs,
+    expire_abandoned_runs,
     materialize_due_runs,
     record_failure,
     recover_prior_tool_attempt,
@@ -384,8 +385,6 @@ async def _run_weekly_if_due(
 
 
 async def _prepare_autonomous(claimed: dict) -> DurableChatResult | None:
-    if claimed.get("result_json"):
-        return DurableChatResult.from_json(claimed["result_json"])
     recovered = recover_prior_tool_attempt(claimed)
     if recovered is not None:
         complete_without_delivery(claimed, recovered, "tools_only")
@@ -439,26 +438,30 @@ async def _deliver_autonomous(
     if _runtime_delivery_callback is None:
         record_failure(claimed, "Runtime delivery callback is not registered")
         return False
-    if claimed.get("last_error") == "delivery budget/cooldown":
+    wait_seconds = delivery_wait_seconds(
+        now=datetime.now(TZ),
+        max_daily=int(_effective("MAX_DAILY_PROACTIVE")),
+        cooldown_seconds=int(_effective("PROACTIVE_COOLDOWN_SECONDS")),
+    )
+    if (durable.text or durable.stickers) and wait_seconds:
         complete_without_delivery(claimed, durable, "suppressed")
         log_heartbeat(_state, f"{claimed['entry_kind']}_delivery_suppressed")
         return False
-    retrying_prepared_delivery = bool(
-        claimed.get("result_json") and claimed.get("last_error")
-    )
-    if not retrying_prepared_delivery:
-        wait_seconds = delivery_wait_seconds(
-            now=datetime.now(TZ),
-            max_daily=int(_effective("MAX_DAILY_PROACTIVE")),
-            cooldown_seconds=int(_effective("PROACTIVE_COOLDOWN_SECONDS")),
-        )
-        if (durable.text or durable.stickers) and wait_seconds:
-            complete_without_delivery(claimed, durable, "suppressed")
-            log_heartbeat(_state, f"{claimed['entry_kind']}_delivery_suppressed")
-            return False
     if not begin_delivery(claimed):
+        complete_without_delivery(claimed, durable, "expired")
+        log_heartbeat(_state, f"{claimed['entry_kind']}_expired")
         return False
     from mochi.ai_client import ChatResult
+    from mochi.transport import DeliveryError
+
+    state_changed_at = _state_changed_at
+
+    def can_deliver() -> bool:
+        return (
+            _state == AWAKE and not _silent_pause
+            and _state_changed_at == state_changed_at
+            and delivery_lease_valid(claimed)
+        )
 
     remaining = durable
     components = []
@@ -466,6 +469,10 @@ async def _deliver_autonomous(
         components.append(("text", remaining.text))
     components.extend(("sticker", item) for item in remaining.stickers)
     for kind, value in components:
+        if not can_deliver():
+            complete_without_delivery(claimed, remaining, "expired")
+            log_heartbeat(_state, f"{claimed['entry_kind']}_expired", "state changed")
+            return False
         component = (
             ChatResult(text=value)
             if kind == "text"
@@ -473,16 +480,32 @@ async def _deliver_autonomous(
         )
         try:
             delivered = await _runtime_delivery_callback(
-                claimed["channel_id"], component,
+                claimed["channel_id"], component, can_deliver=can_deliver,
             )
-        except Exception as exc:
-            record_failure(claimed, f"transport exception: {exc}")
+        except DeliveryError as exc:
+            if exc.outcome == "expired":
+                complete_without_delivery(claimed, remaining, "expired")
+            else:
+                record_failure(claimed, str(exc), outcome=exc.outcome)
             log_heartbeat(
-                _state, f"{claimed['entry_kind']}_delivery_failure", str(exc)[:200],
+                _state, f"{claimed['entry_kind']}_{exc.outcome}", str(exc),
+            )
+            return False
+        except Exception as exc:
+            record_failure(
+                claimed, f"transport exception: {type(exc).__name__}",
+                outcome="delivery_unknown",
+            )
+            log_heartbeat(
+                _state, f"{claimed['entry_kind']}_delivery_unknown",
+                type(exc).__name__,
             )
             return False
         if not delivered:
-            record_failure(claimed, "transport reported delivery failure")
+            record_failure(
+                claimed, "transport did not confirm delivery",
+                outcome="delivery_unknown",
+            )
             log_heartbeat(_state, f"{claimed['entry_kind']}_delivery_failure")
             return False
         if kind == "text":
@@ -495,14 +518,14 @@ async def _deliver_autonomous(
             checkpointed = checkpoint_visible_delivery(claimed)
         if not checkpointed:
             return False
+        if kind == "text" and durable.pending_history:
+            if not ChatResult.from_durable(durable).confirm_delivered():
+                record_failure(claimed, "delivered text history was not confirmed")
+                return False
         remaining = remove_delivered_component(remaining, kind, value)
         if not store_delivery_progress(claimed, remaining):
             return False
 
-    result = ChatResult.from_durable(durable)
-    if durable.pending_history and not result.confirm_delivered():
-        record_failure(claimed, "delivered result history was not confirmed")
-        return False
     if not complete_delivery(claimed):
         return False
     log_heartbeat(
@@ -512,8 +535,16 @@ async def _deliver_autonomous(
 
 
 async def _run_claimed_entry(claimed: dict) -> None:
+    state_changed_at = _state_changed_at
     durable = await _prepare_autonomous(claimed)
     if durable is None:
+        return
+    if (
+        _state != AWAKE or _silent_pause
+        or _state_changed_at != state_changed_at
+    ):
+        complete_without_delivery(claimed, durable, "expired")
+        log_heartbeat(_state, f"{claimed['entry_kind']}_expired", "state changed")
         return
     await _deliver_autonomous(claimed, durable)
 
@@ -524,9 +555,10 @@ async def run_main_runtime_tick(
     now: datetime | None = None,
 ) -> list[str]:
     """Collect facts, advance independent clocks, and run each durable claim."""
+    now = now or datetime.now(TZ)
+    expire_abandoned_runs(now=now)
     if _state != AWAKE or _silent_pause:
         return []
-    now = now or datetime.now(TZ)
     from mochi.observers import collect_attention_facts
 
     changed = await collect_attention_facts()
@@ -555,8 +587,10 @@ async def run_main_runtime_tick(
         free_time_min_minutes=int(_effective("FREE_TIME_MIN_MINUTES")),
         free_time_max_minutes=int(_effective("FREE_TIME_MAX_MINUTES")),
     )
-    for row in get_schedulable_runs(now=now):
-        claimed = claim_run(row["run_key"], now=now)
+    for run_key in created:
+        if _state != AWAKE or _silent_pause:
+            break
+        claimed = claim_run(run_key)
         if claimed is not None:
             await _run_claimed_entry(claimed)
     return created

@@ -205,10 +205,19 @@ outbox. SQLite claims and leases prevent concurrent workers, while the external
 send boundary remains at-least-once because transport and SQLite cannot commit
 atomically.
 
-Autonomous Free Time/Attention delivery is more conservative: a transport
-timeout is terminally audited as `delivery_unknown` and is not automatically
-retried, because an accepted-but-unacknowledged proactive message is more likely
-to annoy through duplication than to require guaranteed delivery.
+Autonomous Free Time/Attention delivery is single-attempt: unavailable transport,
+explicit rejection, and uncertain delivery are terminal, separately audited
+outcomes. No prepared text or tool loop is replayed on a later heartbeat or
+restart. An abandoned turn expires, retaining its result and execution evidence.
+The next clock creates a new present-time situation, not a retry of an old one.
+Explicit reminders retain their independent durable retry behavior.
+
+WeChat persists the owner's latest reply context using the existing encrypted
+configuration storage, scoped to the bot credentials, endpoint, and recipient.
+Restart restores that context; a session rejection invalidates the matching
+token without erasing a newer inbound token. Missing context is a local
+unavailable state, not a blind API attempt. Send diagnostics retain numeric
+HTTP/API error codes, never reply tokens or raw response bodies.
 
 ## Free Time and Attention flow
 
@@ -228,10 +237,12 @@ and may request other tools; neither inherits a sticky routed skill.
 
 Observers own factual source state, Main owns meaning/action/expression, and
 the transport owns delivery. A Main skip does not resolve observer facts.
-Heartbeat stores the prepared result before delivery, so model generation and
-tool effects do not repeat after a transport failure. History and proactive
-delivery logs are written only after successful text delivery. SQLite cannot
-commit atomically with an external transport, so a crash at that boundary can
-still duplicate one component: autonomous delivery is honestly at-least-once.
-Daily limits and cooldowns constrain delivery only; they do not filter topics
-or decide what facts mean.
+Heartbeat stores the prepared result before delivery for audit, not as a retry
+outbox. Only the current tick's newly created turns can run; retired clock kinds
+are not materialized. Each unsent bubble/chunk requires the current lease and
+awake situation; ordinary replies and reminders do not inherit this gate.
+History and proactive delivery logs are written only after confirmed text
+delivery, even if a later sticker fails. SQLite cannot commit atomically with an
+external transport: a crash can leave delivery uncertain, but does not authorize
+replay. Daily limits and cooldowns apply to every new delivery; they do not
+filter topics, suppress private tool activity, or decide what facts mean.

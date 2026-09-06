@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import random
 import uuid
 from dataclasses import replace
@@ -16,6 +17,7 @@ from mochi.main_runtime import AttentionFact, DurableChatResult, MainRuntimeEntr
 UTC = timezone.utc
 _LEASE_SECONDS = 300
 _MAX_ATTENTION_FACTS = 12
+log = logging.getLogger(__name__)
 
 
 def _utc_now() -> datetime:
@@ -241,7 +243,8 @@ def materialize_due_runs(
         conn.execute("BEGIN IMMEDIATE")
         due_rows = conn.execute(
             "SELECT entry_kind, next_due_at, wake_reason FROM heartbeat_schedules "
-            "WHERE next_due_at <= ? ORDER BY next_due_at, entry_kind",
+            "WHERE entry_kind IN ('free_time', 'attention') AND next_due_at <= ? "
+            "ORDER BY next_due_at, entry_kind",
             (now_iso,),
         ).fetchall()
         for row in due_rows:
@@ -281,30 +284,32 @@ def materialize_due_runs(
     return created
 
 
-def get_schedulable_runs(*, now: datetime) -> list[dict]:
-    now_iso = _iso(now)
+def expire_abandoned_runs(*, now: datetime | None = None) -> int:
+    """Retain abandoned turns for audit, never replay their text or tools."""
+    now_iso = _iso(now or _utc_now())
     conn = _connect()
     try:
-        rows = conn.execute(
-            "SELECT * FROM heartbeat_runs WHERE "
-            "(status = 'ready' AND last_error = 'delivery budget/cooldown' AND "
-            "(lease_until IS NULL OR lease_until <= ?)) OR "
-            "(status IN ('pending', 'ready') AND "
-            "(next_attempt_at IS NULL OR next_attempt_at <= ?) AND "
-            "(lease_until IS NULL OR lease_until <= ?)) OR "
-            "(status = 'running' AND lease_until <= ?) "
-            "ORDER BY created_at, run_key",
-            (now_iso, now_iso, now_iso, now_iso),
-        ).fetchall()
-        return [dict(row) for row in rows]
+        cursor = conn.execute(
+            "UPDATE heartbeat_runs SET status = 'expired', "
+            "outcome = CASE WHEN delivery_started_at IS NOT NULL "
+            "THEN 'delivery_unknown' ELSE 'expired' END, handled_at = ?, "
+            "claim_token = NULL, lease_until = NULL, next_attempt_at = NULL "
+            "WHERE status IN ('pending', 'ready', 'running') "
+            "AND (lease_until IS NULL OR lease_until <= ?)",
+            (now_iso, now_iso),
+        )
+        conn.commit()
+        if cursor.rowcount:
+            log.info("Expired %d abandoned autonomous turns", cursor.rowcount)
+        return cursor.rowcount
     finally:
         conn.close()
 
 
 def claim_run(
-    run_key: str, *, now: datetime, lease_seconds: int = _LEASE_SECONDS,
+    run_key: str, *, now: datetime | None = None, lease_seconds: int = _LEASE_SECONDS,
 ) -> dict | None:
-    now = now.astimezone(UTC)
+    now = (now or _utc_now()).astimezone(UTC)
     now_iso = _iso(now)
     claim_token = f"{now_iso}:{uuid.uuid4().hex}"
     lease_until = _iso(now + timedelta(seconds=lease_seconds))
@@ -319,33 +324,23 @@ def claim_run(
             return None
         item = dict(row)
         status = item["status"]
-        retry_at = _as_utc(item.get("next_attempt_at"))
-        lease = _as_utc(item.get("lease_until"))
-        legacy_budget_queue = (
-            status == "ready"
-            and item.get("last_error") == "delivery budget/cooldown"
-        )
-        if status not in {"pending", "ready", "running"}:
+        if (
+            status != "pending" or item.get("result_json")
+            or item.get("attempt_count") or item.get("claim_token")
+        ):
             conn.rollback()
             return None
-        if retry_at and retry_at > now and not legacy_budget_queue:
-            conn.rollback()
-            return None
-        if lease and lease > now:
-            conn.rollback()
-            return None
-        claimed_status = "ready" if item.get("result_json") else "running"
         cursor = conn.execute(
-            "UPDATE heartbeat_runs SET status = ?, claim_token = ?, lease_until = ?, "
+            "UPDATE heartbeat_runs SET status = 'running', claim_token = ?, lease_until = ?, "
             "delivery_started_at = NULL WHERE run_key = ? AND status = ?",
-            (claimed_status, claim_token, lease_until, run_key, status),
+            (claim_token, lease_until, run_key, status),
         )
         if cursor.rowcount != 1:
             conn.rollback()
             return None
         conn.commit()
         item.update(
-            status=claimed_status,
+            status="running",
             claim_token=claim_token,
             lease_until=lease_until,
         )
@@ -366,6 +361,8 @@ def entry_from_claim(claimed: dict) -> MainRuntimeEntry:
     }
     if claimed["entry_kind"] == "free_time":
         return MainRuntimeEntry.free_time(**common)
+    if claimed["entry_kind"] != "attention":
+        raise ValueError(f"Unsupported heartbeat entry: {claimed['entry_kind']}")
     raw_facts = json.loads(claimed.get("facts_json") or "[]")
     facts = tuple(AttentionFact(**item) for item in raw_facts)
     return MainRuntimeEntry.attention(facts=facts, **common)
@@ -389,7 +386,7 @@ def store_prepared_result(claimed: dict, durable: DurableChatResult) -> bool:
 def complete_without_delivery(
     claimed: dict, durable: DurableChatResult, outcome: str,
 ) -> bool:
-    if outcome not in {"skip", "tools_only", "suppressed"}:
+    if outcome not in {"skip", "tools_only", "suppressed", "expired"}:
         raise ValueError("invalid autonomous Main outcome")
     now_iso = _iso(_utc_now())
     conn = _connect()
@@ -467,6 +464,11 @@ def delivery_wait_seconds(
     return 0
 
 
+def delivery_lease_valid(claimed: dict) -> bool:
+    deadline = _as_utc(claimed.get("lease_until"))
+    return deadline is not None and _utc_now() < deadline
+
+
 def begin_delivery(
     claimed: dict,
     *,
@@ -478,11 +480,12 @@ def begin_delivery(
         cursor = conn.execute(
             "UPDATE heartbeat_runs SET delivery_started_at = ? "
             "WHERE run_key = ? AND status = 'ready' AND claim_token = ? "
-            "AND delivery_started_at IS NULL",
+            "AND delivery_started_at IS NULL AND lease_until > ?",
             (
                 now_iso,
                 claimed["run_key"],
                 claimed["claim_token"],
+                now_iso,
             ),
         )
         conn.commit()
@@ -550,35 +553,28 @@ def checkpoint_visible_delivery(claimed: dict) -> bool:
         conn.close()
 
 
-def record_failure(claimed: dict, error: str) -> datetime | None:
-    now = _utc_now()
+def record_failure(
+    claimed: dict, error: str, *, outcome: str = "failed",
+) -> bool:
+    if outcome not in {
+        "failed", "delivery_unavailable", "delivery_rejected", "delivery_unknown",
+    }:
+        raise ValueError("invalid autonomous failure outcome")
     conn = _connect()
     try:
-        conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute(
-            "SELECT attempt_count, result_json FROM heartbeat_runs "
-            "WHERE run_key = ? AND claim_token = ? "
+        cursor = conn.execute(
+            "UPDATE heartbeat_runs SET status = 'failed', outcome = ?, "
+            "attempt_count = attempt_count + 1, handled_at = ?, "
+            "next_attempt_at = NULL, last_error = ?, claim_token = NULL, "
+            "lease_until = NULL WHERE run_key = ? AND claim_token = ? "
             "AND status IN ('running', 'ready')",
-            (claimed["run_key"], claimed["claim_token"]),
-        ).fetchone()
-        if row is None:
-            conn.rollback()
-            return None
-        attempt = int(row["attempt_count"] or 0) + 1
-        retry_at = now + timedelta(seconds=min(60 * (2 ** min(attempt - 1, 6)), 3600))
-        status = "ready" if row["result_json"] else "pending"
-        conn.execute(
-            "UPDATE heartbeat_runs SET status = ?, attempt_count = ?, "
-            "next_attempt_at = ?, last_error = ?, claim_token = NULL, "
-            "lease_until = NULL, delivery_started_at = NULL "
-            "WHERE run_key = ? AND claim_token = ?",
             (
-                status, attempt, _iso(retry_at), error[:1000],
+                outcome, _iso(_utc_now()), error[:1000],
                 claimed["run_key"], claimed["claim_token"],
             ),
         )
         conn.commit()
-        return retry_at
+        return cursor.rowcount == 1
     finally:
         conn.close()
 

@@ -8,12 +8,32 @@ import base64
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from mochi.main_runtime import MainRuntimeEntry
 
 log = logging.getLogger(__name__)
+
+
+class DeliveryError(RuntimeError):
+    """A safe diagnostic with an explicit transport delivery outcome."""
+
+    def __init__(
+        self,
+        reason: str,
+        *,
+        outcome: Literal[
+            "delivery_unavailable", "delivery_rejected", "delivery_unknown", "expired",
+        ],
+    ):
+        super().__init__(reason)
+        self.outcome = outcome
+
+
+def ensure_delivery_allowed(can_deliver: Callable[[], bool] | None) -> None:
+    if can_deliver is not None and not can_deliver():
+        raise DeliveryError("autonomous delivery window ended", outcome="expired")
 
 
 @dataclass(frozen=True)
@@ -75,6 +95,18 @@ class Transport(ABC):
         if delivered:
             result.confirm_delivered()
         return delivered
+
+    async def send_chat_result_checked(
+        self, user_id: int, result, *, can_deliver: Callable[[], bool] | None = None,
+    ) -> bool:
+        """Preserve detailed failures where supported, otherwise report uncertainty."""
+        ensure_delivery_allowed(can_deliver)
+        if not await self.send_chat_result(user_id, result):
+            raise DeliveryError(
+                f"{self.name}: transport did not confirm delivery",
+                outcome="delivery_unknown",
+            )
+        return True
 
     @property
     @abstractmethod

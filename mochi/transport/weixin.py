@@ -6,13 +6,17 @@ WEIXIN_BOT_TOKEN in .env. Run `python scripts/weixin_auth.py` to obtain a token.
 
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 import os
 import struct
+from collections.abc import Callable
 from typing import Any
 
-from mochi.transport import Transport, IncomingMessage
+from mochi.transport import (
+    DeliveryError, Transport, IncomingMessage, ensure_delivery_allowed,
+)
 from mochi.transport.utils import clean_reply_markers, split_bubbles, split_text
 from mochi.config import (
     OWNER_USER_ID,
@@ -138,6 +142,63 @@ class WeixinTransport(Transport):
         """Pre-set the owner WeChat ID (used after restart)."""
         self._owner_weixin_id = weixin_id
         log.info("WeChat: owner ID restored (%s): %s", source, weixin_id)
+        from mochi.admin.admin_crypto import decrypt_api_key
+        from mochi.db import get_skill_config
+
+        raw = get_skill_config("_transport:wechat").get("reply_context")
+        if not raw:
+            return
+        try:
+            saved = json.loads(raw)
+        except ValueError:
+            log.warning("WeChat: stored reply context is invalid")
+            return
+        if not isinstance(saved, dict):
+            log.warning("WeChat: stored reply context is not an object")
+            return
+        if (
+            saved.get("account") != self._context_account()
+            or saved.get("owner") != weixin_id
+        ):
+            log.info("WeChat: ignoring reply context for a different account or owner")
+            return
+        encrypted = saved.get("token")
+        if not isinstance(encrypted, str):
+            log.warning("WeChat: stored reply context has no valid token")
+            return
+        token = decrypt_api_key(encrypted)
+        if token:
+            self._context_tokens[weixin_id] = token
+            log.info("WeChat: reply context restored")
+
+    @staticmethod
+    def _context_account() -> str:
+        identity = f"{WEIXIN_BASE_URL.rstrip('/')}\n{WEIXIN_BOT_TOKEN}"
+        return hashlib.sha256(identity.encode()).hexdigest()
+
+    def _remember_context_token(self, weixin_id: str, token: str) -> None:
+        if self._context_tokens.get(weixin_id) == token:
+            return
+        if weixin_id == self._owner_weixin_id:
+            from mochi.admin.admin_crypto import encrypt_api_key
+            from mochi.db import set_skill_config
+
+            set_skill_config(
+                "_transport:wechat",
+                "reply_context",
+                json.dumps({
+                    "account": self._context_account(),
+                    "owner": weixin_id,
+                    "token": encrypt_api_key(token),
+                }),
+            )
+        self._context_tokens[weixin_id] = token
+
+    def _invalidate_context_token(self, weixin_id: str, token: str) -> None:
+        # A late response for an older send must not erase a new inbound token.
+        if self._context_tokens.get(weixin_id) == token:
+            self._remember_context_token(weixin_id, "")
+            log.warning("WeChat: reply context invalidated after session rejection")
 
     async def start(self) -> None:
         try:
@@ -195,26 +256,27 @@ class WeixinTransport(Transport):
         context_token: str,
     ) -> bool:
         """Send all text bubbles and report complete delivery."""
-        text = clean_reply_markers(text)
-        if not text:
+        try:
+            return await self._send_text_checked(weixin_id, text, context_token)
+        except DeliveryError as exc:
+            log.warning("WeChat: %s: %s", exc.outcome, exc)
             return False
 
-        delivered = True
+    async def _send_text_checked(
+        self, weixin_id: str, text: str, context_token: str,
+        *, can_deliver: Callable[[], bool] | None = None,
+    ) -> bool:
+        text = clean_reply_markers(text)
+        if not text:
+            raise DeliveryError("wechat: empty text", outcome="delivery_unavailable")
         bubbles = split_bubbles(text)
         for i, bubble in enumerate(bubbles):
             if i > 0:
                 await asyncio.sleep(WEIXIN_BUBBLE_DELAY_S)
             for chunk in split_text(bubble, WEIXIN_MSG_LIMIT):
-                try:
-                    response = await self._weixin_send_message(
-                        weixin_id, chunk, context_token,
-                    )
-                    if response.get("ret", 0) != 0 or response.get("errcode", 0) != 0:
-                        delivered = False
-                except Exception as e:
-                    log.error("WeChat: send error to %s: %s", weixin_id, e)
-                    delivered = False
-        return delivered
+                ensure_delivery_allowed(can_deliver)
+                await self._weixin_send_message(weixin_id, chunk, context_token)
+        return True
 
     async def send_chat_result(
         self,
@@ -223,15 +285,30 @@ class WeixinTransport(Transport):
         *,
         context_token: str | None = None,
     ) -> bool:
-        if not self._session or not self._owner_weixin_id or not result.text:
+        try:
+            return await self.send_chat_result_checked(
+                user_id, result, context_token=context_token,
+            )
+        except DeliveryError as exc:
+            log.warning("WeChat: %s: %s", exc.outcome, exc)
             return False
+
+    async def send_chat_result_checked(
+        self, user_id: int, result, *, context_token: str | None = None,
+        can_deliver: Callable[[], bool] | None = None,
+    ) -> bool:
+        if not self._session or not self._owner_weixin_id or not result.text:
+            raise DeliveryError(
+                "wechat: session, owner or text not ready",
+                outcome="delivery_unavailable",
+            )
         token = (
             context_token
             if context_token is not None
             else self._context_tokens.get(self._owner_weixin_id, "")
         )
-        delivered = await self._send_text(
-            self._owner_weixin_id, result.text, token,
+        delivered = await self._send_text_checked(
+            self._owner_weixin_id, result.text, token, can_deliver=can_deliver,
         )
         if delivered:
             result.confirm_delivered()
@@ -261,9 +338,8 @@ class WeixinTransport(Transport):
                 log.debug("WeChat API %s HTTP %s (len=%d)",
                           endpoint, resp.status, len(raw))
                 if not resp.ok:
-                    log.error("WeChat API %s HTTP %s: %s",
-                              endpoint, resp.status, raw[:200])
-                    return {"ret": -1, "errmsg": f"HTTP {resp.status}"}
+                    log.error("WeChat API %s HTTP %s", endpoint, resp.status)
+                    return {"ret": -1, "http_status": resp.status}
                 return json.loads(raw)
         except asyncio.TimeoutError:
             if timeout_is_wait:
@@ -272,7 +348,7 @@ class WeixinTransport(Transport):
             log.error("WeChat API %s timeout after %ss", endpoint, timeout_s)
             raise
         except Exception as e:
-            log.error("WeChat API %s error: %s", endpoint, e)
+            log.error("WeChat API %s error: %s", endpoint, type(e).__name__)
             raise
 
     async def _weixin_get_updates(self, get_updates_buf: str,
@@ -283,8 +359,17 @@ class WeixinTransport(Transport):
 
     async def _weixin_send_message(self, to: str, text: str,
                                    context_token: str) -> dict:
+        import aiohttp
+
+        if not self._session or self._session_expired or not context_token:
+            reason = (
+                "session expired" if self._session_expired
+                else "session not ready" if not self._session
+                else "reply context missing; waiting for an inbound message"
+            )
+            raise DeliveryError(f"wechat: {reason}", outcome="delivery_unavailable")
         client_id = f"mochi-weixin-{struct.unpack('>I', os.urandom(4))[0]}"
-        return await self._api_post("ilink/bot/sendmessage", {
+        body = {
             "msg": {
                 "from_user_id": "",
                 "to_user_id": to,
@@ -297,7 +382,38 @@ class WeixinTransport(Transport):
                 ],
             },
             "base_info": {"channel_version": "1.0.0"},
-        })
+        }
+        try:
+            response = await self._api_post("ilink/bot/sendmessage", body)
+        except (asyncio.TimeoutError, aiohttp.ClientError, ValueError) as exc:
+            raise DeliveryError(
+                f"wechat sendmessage: {type(exc).__name__}; delivery unconfirmed",
+                outcome="delivery_unknown",
+            ) from exc
+        if not isinstance(response, dict):
+            raise DeliveryError(
+                "wechat sendmessage: invalid response", outcome="delivery_unknown",
+            )
+        ret = response.get("ret", 0)
+        errcode = response.get("errcode", 0)
+        http_status = response.get("http_status", 200)
+        if ret != 0 or errcode != 0:
+            if SESSION_EXPIRED_ERRCODE in (ret, errcode):
+                self._invalidate_context_token(to, context_token)
+            codes = " ".join(
+                f"{name}={value if isinstance(value, int) else 'invalid'}"
+                for name, value in (
+                    ("ret", ret), ("errcode", errcode), ("http_status", http_status),
+                )
+            )
+            # A gateway error need not mean the downstream send was rejected.
+            outcome = (
+                "delivery_unknown"
+                if not isinstance(http_status, int) or http_status >= 500
+                else "delivery_rejected"
+            )
+            raise DeliveryError(f"wechat sendmessage: {codes}", outcome=outcome)
+        return response
 
     async def _weixin_get_config(self, user_id: str,
                                  context_token: str = "") -> dict:
@@ -361,21 +477,22 @@ class WeixinTransport(Transport):
             return
 
         text = _extract_text(msg.get("item_list", []))
-        if not text:
-            log.info("WeChat: non-text message from %s, skipping", from_user)
-            return
-
-        # Cache context_token for replies
-        context_token = msg.get("context_token", "")
-        if context_token:
-            self._context_tokens[from_user] = context_token
-
         # Learn the owner's WeChat ID from the first allowed message
-        if self._owner_weixin_id is None:
+        if self._owner_weixin_id is None and text:
             self._owner_weixin_id = from_user
             log.info("WeChat: owner ID learned: %s", from_user)
             from mochi.db import set_skill_config
             set_skill_config("_transport:wechat", "owner_weixin_id", from_user)
+
+        context_token = msg.get("context_token", "")
+        if (
+            self._owner_weixin_id is not None
+            and isinstance(context_token, str) and context_token
+        ):
+            self._remember_context_token(from_user, context_token)
+        if not text:
+            log.info("WeChat: non-text message from %s, skipping", from_user)
+            return
 
         # System command: /restart (owner only)
         if text.strip() == "/restart":
@@ -728,6 +845,8 @@ class WeixinTransport(Transport):
                             errcode,
                         )
                         self._session_expired = True
+                        for user, token in list(self._context_tokens.items()):
+                            self._invalidate_context_token(user, token)
                         return  # supervisor will handle retry
 
                     consecutive_failures += 1

@@ -6,6 +6,7 @@ This is the default transport. Requires TELEGRAM_BOT_TOKEN in .env.
 import asyncio
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from telegram import Update, ReactionTypeEmoji
 from telegram.ext import (
@@ -13,7 +14,9 @@ from telegram.ext import (
     ContextTypes, filters,
 )
 
-from mochi.transport import Transport, IncomingMessage, ImageAttachment
+from mochi.transport import (
+    DeliveryError, Transport, IncomingMessage, ImageAttachment, ensure_delivery_allowed,
+)
 from mochi.transport.utils import split_bubbles as _split_bubbles_util
 from mochi.config import (
     TELEGRAM_BOT_TOKEN, set_owner_user_id,
@@ -153,7 +156,9 @@ class TelegramTransport(Transport):
             await self._app.shutdown()
             log.info("Telegram transport stopped")
 
-    async def send_message(self, user_id: int, text: str) -> bool:
+    async def send_message(
+        self, user_id: int, text: str, *, can_deliver: Callable[[], bool] | None = None,
+    ) -> bool:
         if not self._app:
             log.warning("Telegram not started, cannot send message")
             return False
@@ -167,22 +172,30 @@ class TelegramTransport(Transport):
                     await asyncio.sleep(TG_BUBBLE_DELAY_S)
                 # Respect Telegram 4096 char limit per message
                 for start in range(0, len(bubble), 4096):
+                    ensure_delivery_allowed(can_deliver)
                     await self._app.bot.send_message(
                         chat_id=user_id,
                         text=bubble[start:start + 4096],
                     )
             return True
+        except DeliveryError:
+            raise
         except Exception as e:
             log.error("Failed to send Telegram message: %s", e)
             return False
 
-    async def send_sticker(self, chat_id: int, file_id: str) -> bool:
+    async def send_sticker(
+        self, chat_id: int, file_id: str, *, can_deliver: Callable[[], bool] | None = None,
+    ) -> bool:
         """Send a Telegram sticker by file_id."""
         if not self._app:
             return False
         try:
+            ensure_delivery_allowed(can_deliver)
             await self._app.bot.send_sticker(chat_id=chat_id, sticker=file_id)
             return True
+        except DeliveryError:
+            raise
         except Exception as e:
             log.error("Failed to send sticker: %s", e)
             return False
@@ -359,18 +372,24 @@ class TelegramTransport(Transport):
             wake_up("user_message")
         clear_silent_pause()
 
-    async def send_chat_result(self, chat_id: int, result) -> bool:
+    async def send_chat_result(
+        self, chat_id: int, result, *, can_deliver: Callable[[], bool] | None = None,
+    ) -> bool:
         """Send a ChatResult — text message + any pending stickers."""
         attempted = False
         delivered = True
         if result.text:
             attempted = True
-            delivered = await self.send_message(chat_id, result.text)
+            delivered = await self.send_message(
+                chat_id, result.text, can_deliver=can_deliver,
+            )
             if delivered:
                 result.confirm_delivered()
         for file_id in result.stickers:
             attempted = True
-            sticker_delivered = await self.send_sticker(chat_id, file_id)
+            sticker_delivered = await self.send_sticker(
+                chat_id, file_id, can_deliver=can_deliver,
+            )
             delivered = sticker_delivered and delivered
             import mochi.skills as skill_registry
             sticker_skill = skill_registry.get_skill("sticker")
@@ -379,6 +398,16 @@ class TelegramTransport(Transport):
         if not result.text and attempted and delivered:
             result.confirm_delivered()
         return attempted and delivered
+
+    async def send_chat_result_checked(
+        self, user_id: int, result, *, can_deliver: Callable[[], bool] | None = None,
+    ) -> bool:
+        if not await self.send_chat_result(user_id, result, can_deliver=can_deliver):
+            raise DeliveryError(
+                "telegram: transport did not confirm delivery",
+                outcome="delivery_unknown",
+            )
+        return True
 
     async def _handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.message or not (update.message.text or update.message.photo):

@@ -4,11 +4,12 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from mochi.ai_client import chat
+from mochi.ai_client import ChatResult, chat
 from mochi.core_store import replace_core
 from mochi.db import _connect, get_recent_messages, save_message
 from mochi.heartbeat_runtime import set_schedule_due
 from mochi.main_runtime import DurableChatResult, MainRuntimeEntry
+from mochi.transport import DeliveryError
 from tests.e2e.mock_llm import make_response
 
 
@@ -72,9 +73,16 @@ async def test_free_time_keeps_only_immediate_conversation_context(
 
 
 @pytest.mark.asyncio
-async def test_failed_proactive_delivery_reuses_prepared_result(
+@pytest.mark.parametrize("failure", [
+    False,
+    DeliveryError("wechat: reply context missing", outcome="delivery_unavailable"),
+    DeliveryError("wechat: ret=-1 errcode=42", outcome="delivery_rejected"),
+    TimeoutError(),
+])
+async def test_failed_proactive_delivery_is_terminal(
     mock_llm_factory,
     monkeypatch,
+    failure,
 ):
     import mochi.heartbeat as heartbeat
     import mochi.heartbeat_runtime as runtime
@@ -88,7 +96,7 @@ async def test_failed_proactive_delivery_reuses_prepared_result(
 
     monkeypatch.setattr(observers, "collect_attention_facts", no_observer_change)
     mock = mock_llm_factory([make_response("I was thinking of you.")])
-    deliveries = [False, True]
+    deliveries = 0
     prepared = 0
     budget_checks = 0
 
@@ -96,7 +104,7 @@ async def test_failed_proactive_delivery_reuses_prepared_result(
         nonlocal budget_checks
         budget_checks += 1
         if budget_checks > 1:
-            pytest.fail("prepared transport retry must bypass proactive budget")
+            pytest.fail("a failed proactive turn must not run again")
         return 0
 
     async def prepare(entry):
@@ -104,22 +112,44 @@ async def test_failed_proactive_delivery_reuses_prepared_result(
         prepared += 1
         return await chat(runtime_entry=entry)
 
-    async def deliver(_channel_id, _result):
-        return deliveries.pop(0)
+    async def deliver(_channel_id, _result, **_kwargs):
+        nonlocal deliveries
+        deliveries += 1
+        if isinstance(failure, Exception):
+            raise failure
+        return failure
 
     monkeypatch.setattr(heartbeat, "delivery_wait_seconds", delivery_wait)
     heartbeat.set_main_runtime_callbacks(prepare, deliver, "fake")
     set_schedule_due("free_time", clock["now"])
-    await heartbeat.run_main_runtime_tick(1, now=clock["now"])
+    created = await heartbeat.run_main_runtime_tick(1, now=clock["now"])
     assert get_recent_messages(1) == []
 
     clock["now"] += timedelta(seconds=61)
     await heartbeat.run_main_runtime_tick(1, now=clock["now"])
+    for kind in ("free_time", "attention"):
+        set_schedule_due(kind, clock["now"] + timedelta(days=2))
+    clock["now"] += timedelta(days=1)
+    await heartbeat.run_main_runtime_tick(1, now=clock["now"])
 
     assert prepared == 1
     assert budget_checks == 1
+    assert deliveries == 1
     assert len(mock.call_log) == 1
-    assert get_recent_messages(1)[0]["content"] == "I was thinking of you."
+    assert get_recent_messages(1) == []
+    conn = _connect()
+    row = conn.execute(
+        "SELECT status, outcome, attempt_count, next_attempt_at, last_error "
+        "FROM heartbeat_runs WHERE run_key = ?", (created[0],),
+    ).fetchone()
+    conn.close()
+    assert row["status"] == "failed"
+    assert row["outcome"] == (
+        failure.outcome if isinstance(failure, DeliveryError) else "delivery_unknown"
+    )
+    assert row["attempt_count"] == 1
+    assert row["next_attempt_at"] is None
+    assert row["last_error"]
 
 
 @pytest.mark.asyncio
@@ -138,7 +168,7 @@ async def test_proactive_cooldown_suppresses_instead_of_queuing(
     async def no_observer_change():
         return False
 
-    async def deliver(_channel_id, _result):
+    async def deliver(_channel_id, _result, **_kwargs):
         pytest.fail("suppressed proactive result must not be delivered")
 
     async def prepare(entry):
@@ -194,7 +224,140 @@ async def test_proactive_cooldown_suppresses_instead_of_queuing(
     ).fetchone()
     conn.close()
     assert dict(legacy) == {
-        "status": "delivered",
-        "outcome": "suppressed",
+        "status": "expired",
+        "outcome": "expired",
         "next_attempt_at": None,
     }
+
+
+@pytest.mark.asyncio
+async def test_restart_expires_abandoned_turns_and_ignores_retired_clocks(monkeypatch):
+    import mochi.heartbeat as heartbeat
+    import mochi.heartbeat_runtime as runtime
+    import mochi.observers as observers
+
+    now = datetime(2026, 9, 6, 2, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(runtime, "_utc_now", lambda: now)
+
+    async def no_observer_change():
+        return False
+
+    async def unexpected(*args, **kwargs):
+        pytest.fail("abandoned turns must not re-enter Main or delivery")
+
+    monkeypatch.setattr(observers, "collect_attention_facts", no_observer_change)
+    heartbeat.set_main_runtime_callbacks(unexpected, unexpected, "fake")
+    set_schedule_due("free_time_plan", now - timedelta(days=1))
+    old_result = DurableChatResult(text="Five thirty!", disposition="deliver").to_json()
+    conn = _connect()
+    for status in ("pending", "running", "ready"):
+        conn.execute(
+            "INSERT INTO heartbeat_runs "
+            "(run_key, entry_kind, user_id, channel_id, transport, wake_reason, "
+            "status, result_json, created_at, lease_until, next_attempt_at, "
+            "delivery_started_at, last_error) "
+            "VALUES (?, 'free_time', 1, 100, 'fake', 'periodic', ?, ?, ?, ?, ?, ?, ?)",
+            (
+                status, status, old_result if status == "ready" else None,
+                (now - timedelta(days=1)).isoformat(),
+                (now - timedelta(hours=1)).isoformat() if status == "running" else None,
+                (now + timedelta(days=1)).isoformat(),
+                (now - timedelta(hours=1)).isoformat() if status == "ready" else None,
+                "prior failure",
+            ),
+        )
+    conn.commit()
+    conn.close()
+
+    assert await heartbeat.run_main_runtime_tick(1, now=now) == []
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT run_key, status, outcome, result_json, next_attempt_at, last_error "
+        "FROM heartbeat_runs ORDER BY run_key"
+    ).fetchall()
+    conn.close()
+    assert len(rows) == 3
+    assert all(row["status"] == "expired" for row in rows)
+    assert all(row["next_attempt_at"] is None for row in rows)
+    assert all(row["last_error"] == "prior failure" for row in rows)
+    ready = next(row for row in rows if row["run_key"] == "ready")
+    assert ready["result_json"] == old_result
+    assert ready["outcome"] == "delivery_unknown"
+    assert get_recent_messages(1) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("interruption", ["sleep", "sleep_wake", "lease"])
+async def test_late_main_result_is_not_delivered(monkeypatch, interruption):
+    import mochi.heartbeat as heartbeat
+    import mochi.heartbeat_runtime as runtime
+    import mochi.observers as observers
+
+    now = datetime(2026, 9, 5, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(runtime, "_utc_now", lambda: now)
+    monkeypatch.setattr(heartbeat, "delivery_wait_seconds", lambda **_: 0)
+
+    async def no_observer_change():
+        return False
+
+    async def prepare(_entry):
+        nonlocal now
+        if interruption == "lease":
+            now += timedelta(seconds=301)
+        else:
+            monkeypatch.setattr(heartbeat, "_state_changed_at", now)
+            if interruption == "sleep":
+                monkeypatch.setattr(heartbeat, "_state", heartbeat.SLEEPING)
+        return ChatResult(text="An old thought")
+
+    async def deliver(*args, **kwargs):
+        pytest.fail("late Main result must not be delivered")
+
+    monkeypatch.setattr(observers, "collect_attention_facts", no_observer_change)
+    heartbeat.set_main_runtime_callbacks(prepare, deliver, "fake")
+    set_schedule_due("free_time", now)
+    created = await heartbeat.run_main_runtime_tick(1, now=now)
+    conn = _connect()
+    row = conn.execute(
+        "SELECT outcome, next_attempt_at FROM heartbeat_runs WHERE run_key = ?",
+        (created[0],),
+    ).fetchone()
+    conn.close()
+    assert row["outcome"] == "expired"
+    assert row["next_attempt_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_delivered_text_survives_sticker_failure(monkeypatch, mock_llm_factory):
+    import mochi.heartbeat as heartbeat
+    import mochi.heartbeat_runtime as runtime
+    import mochi.observers as observers
+
+    now = datetime(2026, 9, 5, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(runtime, "_utc_now", lambda: now)
+    monkeypatch.setattr(heartbeat, "delivery_wait_seconds", lambda **_: 0)
+
+    async def no_observer_change():
+        return False
+
+    async def prepare(entry):
+        result = await chat(runtime_entry=entry)
+        result.stickers = ["sticker"]
+        return result
+
+    delivered = []
+
+    async def deliver(_channel, result, **_kwargs):
+        delivered.append(result)
+        return bool(result.text)
+
+    monkeypatch.setattr(observers, "collect_attention_facts", no_observer_change)
+    mock = mock_llm_factory([make_response("A fresh thought")])
+    heartbeat.set_main_runtime_callbacks(prepare, deliver, "fake")
+    set_schedule_due("free_time", now)
+    await heartbeat.run_main_runtime_tick(1, now=now)
+    now += timedelta(minutes=2)
+    await heartbeat.run_main_runtime_tick(1, now=now)
+    assert len(delivered) == 2
+    assert len(mock.call_log) == 1
+    assert [row["content"] for row in get_recent_messages(1)] == ["A fresh thought"]

@@ -13,6 +13,7 @@ import os
 import signal
 import socket
 import sys
+from collections.abc import Callable
 
 from mochi.admin_access import build_admin_base_url, configure_safe_logging
 from mochi.config import (
@@ -99,6 +100,8 @@ async def main():
     init_db()
     from mochi.db import recover_interrupted_scheduled_runs
     recover_interrupted_scheduled_runs()
+    from mochi.heartbeat_runtime import expire_abandoned_runs
+    expire_abandoned_runs()
     log.info("Database ready")
 
     # Prepare the canonical file-backed Core before any runtime reads it.
@@ -242,9 +245,19 @@ async def main():
         ) -> bool:
             return await _t.send_chat_result(channel_id, result)
 
+        async def deliver_autonomous(
+            channel_id: int,
+            result: ChatResult,
+            *,
+            can_deliver: Callable[[], bool],
+        ) -> bool:
+            return await _t.send_chat_result_checked(
+                channel_id, result, can_deliver=can_deliver,
+            )
+
         set_main_runtime_callbacks(
             prepare_self_reminder,
-            deliver_self_reminder,
+            deliver_autonomous,
             _t.name,
         )
         set_bedtime_callback(enter_bedtime)
