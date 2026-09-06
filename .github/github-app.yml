@@ -4,6 +4,12 @@ instructions: |
   with the smallest complete implementation that solves the current problem.
   Explain product impact and meaningful tradeoffs in plain language.
 
+  Deliver completed changes directly to main by default, without creating feature
+  branches or pull requests unless the owner asks. If the app already provides
+  an isolated worktree branch, use it only as a workspace and deliver to main
+  rather than leaving changes awaiting merge. Fetch main first, preserve
+  concurrent commits, and never force-push main.
+
   Read docs/architecture.md for runtime boundaries and dependency direction.
   Use docs/SKILL_SPEC.md for skill contracts and CONTRIBUTING.md for development
   entry points. Keep architecture.md as the single high-level architecture
