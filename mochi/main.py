@@ -202,8 +202,12 @@ async def main():
     if transport:
         _t = transport  # capture for closure
 
-        async def send_proactive(user_id: int, text: str) -> bool:
-            return await _t.send_message(user_id, text)
+        async def send_proactive(
+            user_id: int, text: str, *, can_deliver: Callable[[], bool],
+        ) -> bool:
+            return await _t.send_chat_result_checked(
+                user_id, ChatResult(text=text), can_deliver=can_deliver,
+            )
 
         async def enter_bedtime(user_id: int, trigger: str) -> bool:
             entry = MainRuntimeEntry.bedtime(
@@ -242,8 +246,12 @@ async def main():
         async def deliver_self_reminder(
             channel_id: int,
             result: ChatResult,
+            *,
+            can_deliver: Callable[[], bool],
         ) -> bool:
-            return await _t.send_chat_result(channel_id, result)
+            return await _t.send_chat_result_checked(
+                channel_id, result, can_deliver=can_deliver,
+            )
 
         async def deliver_autonomous(
             channel_id: int,

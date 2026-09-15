@@ -9,6 +9,7 @@ from mochi.skills.reminder.queries import (
     create_reminder,
     create_self_reminder,
     get_active_reminders,
+    reminder_deadline,
 )
 from mochi.reminder_timer import notify_new_reminder
 
@@ -143,6 +144,13 @@ class ReminderSkill(Skill):
                 remind_at_dt = remind_at_dt.replace(tzinfo=TZ)
 
             remind_at = remind_at_dt.isoformat()
+            expires_at = reminder_deadline(remind_at)
+            if expires_at <= datetime.now(TZ):
+                return SkillResult(
+                    output="Reminder time is already at least five minutes past; "
+                           "choose a current or future time.",
+                    success=False,
+                )
             if kind == "self":
                 rid = create_self_reminder(
                     uid,
@@ -160,6 +168,7 @@ class ReminderSkill(Skill):
                     uid, context.channel_id, message, remind_at,
                 )
                 receipt = f"Reminder #{rid} set for {remind_at}: {message}"
+            receipt += f" Expires at {expires_at.isoformat()}; no delivery after expiry."
             notify_new_reminder()
             return SkillResult(
                 output=receipt, summary=receipt,

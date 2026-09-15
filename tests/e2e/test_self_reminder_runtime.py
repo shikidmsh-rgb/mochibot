@@ -41,7 +41,8 @@ async def test_failed_delivery_reuses_prepared_main_result(
         prepared += 1
         return await chat(runtime_entry=entry)
 
-    async def deliver(_channel_id, _result):
+    async def deliver(_channel_id, _result, *, can_deliver):
+        assert can_deliver()
         return deliveries.pop(0)
 
     set_self_reminder_callbacks(prepare, deliver, "fake")

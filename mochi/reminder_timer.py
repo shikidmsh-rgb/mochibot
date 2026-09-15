@@ -6,7 +6,7 @@ import asyncio
 import heapq
 import logging
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from mochi.config import TZ
 from mochi.db import (
@@ -21,11 +21,15 @@ from mochi.prompt_loader import get_prompt
 from mochi.skills.reminder.queries import (
     begin_delivery,
     claim_reminder,
+    compute_next_occurrence,
     complete_without_delivery,
     complete_reminder_delivery,
+    expire_overdue_reminders,
     get_next_active_lease_expiry,
     get_schedulable_reminders,
     record_reminder_failure,
+    reminder_deadline,
+    reminder_delivery_valid,
     store_delivery_progress,
     store_prepared_result,
     store_prepared_text,
@@ -50,7 +54,7 @@ def _utc_now() -> datetime:
 
 
 def set_send_callback(callback) -> None:
-    """Register ``async callback(user_id, text) -> bool``."""
+    """Register ``async callback(user_id, text, *, can_deliver) -> bool``."""
     global _send_callback
     _send_callback = callback
     notify_new_reminder()
@@ -74,47 +78,13 @@ def notify_new_reminder() -> None:
         _heap_event.set()
 
 
-def _compute_next_occurrence(
-    remind_at: datetime,
-    recurrence: str,
-) -> datetime | None:
-    if not recurrence:
-        return None
-    if recurrence == "daily":
-        return remind_at + timedelta(days=1)
-    if recurrence == "weekdays":
-        next_dt = remind_at + timedelta(days=1)
-        while next_dt.weekday() >= 5:
-            next_dt += timedelta(days=1)
-        return next_dt
-    if recurrence == "weekly":
-        return remind_at + timedelta(weeks=1)
-    if recurrence == "monthly":
-        month = remind_at.month + 1
-        year = remind_at.year
-        if month > 12:
-            month = 1
-            year += 1
-        return remind_at.replace(
-            year=year, month=month, day=min(remind_at.day, 28),
-        )
-    if recurrence.startswith("monthly_on:"):
-        try:
-            target_day = int(recurrence.split(":")[1])
-            month = remind_at.month + 1
-            year = remind_at.year
-            if month > 12:
-                month = 1
-                year += 1
-            return remind_at.replace(
-                year=year, month=month, day=min(target_day, 28),
-            )
-        except (ValueError, IndexError):
-            return None
-    return None
+def _remaining_seconds(claimed: dict) -> float:
+    return (reminder_deadline(claimed["remind_at"]) - _utc_now()).total_seconds()
 
 
-async def _rephrase_reminder(message: str, user_id: int) -> str:
+async def _rephrase_reminder(
+    message: str, user_id: int, *, timeout_seconds: float = 30,
+) -> str:
     """Prepare one durable notification; raw content is a safe fallback."""
     fallback = f"⏰ {message}"
     try:
@@ -135,7 +105,7 @@ async def _rephrase_reminder(message: str, user_id: int) -> str:
                 ],
                 max_tokens=256,
             ),
-            timeout=30,
+            timeout=timeout_seconds,
         )
         log_usage(
             response.prompt_tokens,
@@ -237,7 +207,7 @@ async def _prepare_self_reminder(
         )
         result = await asyncio.wait_for(
             _self_prepare_callback(entry),
-            timeout=_SELF_MAIN_TIMEOUT_SECONDS,
+            timeout=min(_SELF_MAIN_TIMEOUT_SECONDS, _remaining_seconds(claimed)),
         )
         durable = result.to_durable()
     except Exception as exc:
@@ -337,6 +307,9 @@ async def _deliver_self_reminder(
         components.append(("text", remaining.text))
     components.extend(("sticker", item) for item in remaining.stickers)
     for component_kind, value in components:
+        if not reminder_delivery_valid(claimed, now=_utc_now()):
+            await _persist_failure(claimed, "reminder delivery window ended")
+            return False
         component = (
             ChatResult(text=value)
             if component_kind == "text"
@@ -345,6 +318,7 @@ async def _deliver_self_reminder(
         try:
             delivered = await _self_delivery_callback(
                 claimed["channel_id"], component,
+                can_deliver=lambda: reminder_delivery_valid(claimed, now=_utc_now()),
             )
         except Exception as exc:
             await _persist_failure(
@@ -389,6 +363,9 @@ async def _fire_reminder(reminder: dict) -> None:
     )
     if claimed is None:
         return
+    if _remaining_seconds(claimed) <= 0:
+        expire_overdue_reminders(now=_utc_now())
+        return
     kind = claimed.get("kind", "notify")
     if kind == "notify" and _send_callback is None:
         await _persist_failure(
@@ -425,6 +402,7 @@ async def _fire_reminder(reminder: dict) -> None:
     elif not prepared_text:
         prepared_text = await _rephrase_reminder(
             claimed["message"], claimed["user_id"],
+            timeout_seconds=min(30, _remaining_seconds(claimed)),
         )
         if not store_prepared_text(
             claimed["id"], claimed["claimed_at"], prepared_text,
@@ -446,6 +424,7 @@ async def _fire_reminder(reminder: dict) -> None:
         try:
             delivered = await _send_callback(
                 claimed["user_id"], prepared_text,
+                can_deliver=lambda: reminder_delivery_valid(claimed, now=_utc_now()),
             )
         except Exception as exc:
             await _persist_failure(
@@ -465,7 +444,7 @@ async def _fire_reminder(reminder: dict) -> None:
             remind_at = datetime.fromisoformat(claimed["remind_at"])
             if remind_at.tzinfo is None:
                 remind_at = remind_at.replace(tzinfo=TZ)
-            next_occurrence = _compute_next_occurrence(
+            next_occurrence = compute_next_occurrence(
                 remind_at, recurrence,
             )
             if next_occurrence:

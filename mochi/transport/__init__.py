@@ -33,7 +33,7 @@ class DeliveryError(RuntimeError):
 
 def ensure_delivery_allowed(can_deliver: Callable[[], bool] | None) -> None:
     if can_deliver is not None and not can_deliver():
-        raise DeliveryError("autonomous delivery window ended", outcome="expired")
+        raise DeliveryError("delivery window ended", outcome="expired")
 
 
 @dataclass(frozen=True)
