@@ -230,6 +230,12 @@ token without erasing a newer inbound token. Missing context is a local
 unavailable state, not a blind API attempt. Send diagnostics retain numeric
 HTTP/API error codes, never reply tokens or raw response bodies.
 
+WeChat sends each runtime-initiated text result (Free Time, Attention, reminders,
+and silent bedtime) as one message, preserving paragraph breaks and converting
+bubble delimiters to paragraph breaks. Only the transport length limit splits
+that text, and each chunk still requires delivery authorization. Ordinary chat
+keeps conversational bubbles; other transports retain their existing formatting.
+
 ## Free Time and Attention flow
 
 Heartbeat keeps two independent clocks. Free Time is randomized, unassigned

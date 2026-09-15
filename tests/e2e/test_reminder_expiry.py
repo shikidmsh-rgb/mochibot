@@ -170,6 +170,7 @@ async def test_expiry_between_chunks_stops_remaining_sends(
         transport._session = object()
         transport._remember_context_token("owner", "test-context")
         monkeypatch.setattr(weixin, "WEIXIN_BUBBLE_DELAY_S", 0)
+        monkeypatch.setattr(weixin, "WEIXIN_MSG_LIMIT", 20)
         monkeypatch.setattr(transport, "_api_post", sender)
     else:
         transport = telegram.TelegramTransport()
@@ -181,7 +182,7 @@ async def test_expiry_between_chunks_stops_remaining_sends(
     async def deliver(user_id, result, *, can_deliver):
         if isinstance(result, str):
             result = ChatResult(text=result)
-        return await transport.send_chat_result_checked(
+        return await transport.send_proactive_result_checked(
             user_id, result, can_deliver=can_deliver,
         )
 

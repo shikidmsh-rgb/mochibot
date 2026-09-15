@@ -205,7 +205,7 @@ async def main():
         async def send_proactive(
             user_id: int, text: str, *, can_deliver: Callable[[], bool],
         ) -> bool:
-            return await _t.send_chat_result_checked(
+            return await _t.send_proactive_result_checked(
                 user_id, ChatResult(text=text), can_deliver=can_deliver,
             )
 
@@ -221,7 +221,7 @@ async def main():
                 return True
             if not result.text and not result.stickers:
                 return False
-            delivered = await _t.send_chat_result(user_id, result)
+            delivered = await _t.send_proactive_result_checked(user_id, result)
             if delivered:
                 result.confirm_delivered()
             return delivered
@@ -249,7 +249,7 @@ async def main():
             *,
             can_deliver: Callable[[], bool],
         ) -> bool:
-            return await _t.send_chat_result_checked(
+            return await _t.send_proactive_result_checked(
                 channel_id, result, can_deliver=can_deliver,
             )
 
@@ -259,7 +259,7 @@ async def main():
             *,
             can_deliver: Callable[[], bool],
         ) -> bool:
-            return await _t.send_chat_result_checked(
+            return await _t.send_proactive_result_checked(
                 channel_id, result, can_deliver=can_deliver,
             )
 
