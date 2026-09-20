@@ -1,4 +1,4 @@
-"""Stable tool Mod contract, shared with the existing Skill runtime.
+"""Stable personal extension API, shared with the existing Skill runtime.
 
 Keep these public types and helper semantics compatible when internal runtime
 implementations change. Legacy imports from mochi.skills.base remain supported.

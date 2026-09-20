@@ -13,11 +13,66 @@ from tests.e2e.mock_llm import make_response, make_tool_call
 
 
 CAPABILITY = (
-    "`personal_workspace` 是持久的个人工作区：统一读写资料与工具草稿，"
-    "也可运行草稿并启用个人工具。保存、运行、启用是不同的操作。"
+    "你具备自己开发小工具的能力：可以在 `personal_workspace` 中编写、运行调试"
+    "并启用可重复调用的个人扩展，而不只是使用已有工具。"
 )
 FILES_TOOLS = {"browse_workspace", "edit_workspace"}
 WORKSPACE_TOOLS = FILES_TOOLS | {"run_extension", "activate_extension"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("escalation", [True, False])
+@pytest.mark.parametrize("development", [True, False])
+async def test_agent_knows_personal_extensions_before_search_or_unrelated_routing(
+    monkeypatch, mock_llm_factory, escalation, development,
+):
+    """Prove first-request context and availability, not a scripted model's judgment."""
+    import mochi.admin.admin_db as admin_db
+    import mochi.config as config
+    import mochi.skills as registry
+    import mochi.tool_router as router
+    from mochi.personal_workspace import set_development_enabled
+
+    monkeypatch.setattr(config, "TOOL_ROUTER_ENABLED", True)
+    monkeypatch.setattr(config, "TOOL_ESCALATION_ENABLED", escalation)
+    monkeypatch.setattr(admin_db, "list_tier_assignments", lambda: {"lite": "fixture"})
+    routed = []
+
+    async def unrelated_route(*_args, **kwargs):
+        assert "personal_workspace" not in kwargs["catalog"]
+        assert "todo" in kwargs["catalog"]
+        routed.append("todo")
+        return ["todo"]
+
+    monkeypatch.setattr(router, "classify_skills", unrelated_route)
+    set_development_enabled(development)
+    mock = mock_llm_factory([make_response("I can choose an appropriate approach.")])
+    await chat(IncomingMessage(
+        user_id=1, channel_id=100, text="I need a capability I do not have yet.",
+        transport="fake", owner_authorized=False,
+    ))
+
+    assert routed == ["todo"]
+    initial = mock.call_log[0]
+    prompt = initial["messages"][0]["content"]
+    names = {tool["function"]["name"] for tool in initial["tools"]}
+    assert prompt.count(CAPABILITY) == 1
+    assert 'skills: ["personal_workspace"]' in prompt
+    assert 'browse_workspace(action="guide")' in prompt
+    assert "由你根据目的判断；资料不必变成程序" in prompt
+    assert "实际能执行什么，仍取决于当前设置和本轮可用工具" in prompt
+    assert "当 `request_tools` 可用时" in prompt
+    assert "不是向用户申请许可" in prompt
+    assert "manage_todo" in names
+    assert ("request_tools" in names) is escalation
+    assert WORKSPACE_TOOLS.isdisjoint(names)
+    assert all(message["role"] != "tool" for message in initial["messages"])
+    assert "class PersonalSkill" not in prompt
+    available = {
+        tool["function"]["name"]
+        for tool in registry.get_tools_by_names(["personal_workspace"])
+    }
+    assert available == (WORKSPACE_TOOLS if development else FILES_TOOLS)
 
 
 @pytest.mark.asyncio

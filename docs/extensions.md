@@ -1,7 +1,10 @@
-# Personal workspace and extensions
+# Personal extensions and workspace
 
 `personal_workspace` is Main's single entry for persistent documents and personal
-tool source. It does not replace Diary, Core, or memory. Main chooses what to
+tool source. **Personal extensions** are reusable tools authored independently
+of official source, by Main or the owner. Users can describe what they need
+without choosing a package type or knowing extension terminology.
+The workspace does not replace Diary, Core, or memory. Main chooses what to
 write and whether executable behavior is useful; a document does not need to
 become a program. Four on-demand tools are available in conversation and
 eligible autonomous entries:
@@ -52,12 +55,13 @@ but retired tool names are not executable.
 Personal extensions are trusted local Python, not a sandbox. No Admin visit or
 restart is required to author and activate them.
 
-## Tool Mod contract v1
+## Personal extension API v1
 
-A personal executable extension is a **Mod**. This contract currently covers
-ordinary tools only; it does not add Observer sources, MCP connections or
-lifecycle hooks. Existing extension paths, `local_*` IDs, Skill names and tool
-names are unchanged.
+This contract currently covers ordinary tool extensions only; it does not add
+Observer sources, MCP connections or lifecycle hooks. The public import
+`mochi.mod_api.v1`, manifest field `mod_api` and related diagnostic keys retain
+their existing spelling for compatibility. Extension paths, `local_*` IDs,
+Skill names and tool names are unchanged.
 
 A personal ID looks like `local_reading`. Its tool names begin with that ID
 and an underscore, such as `local_reading_add`. Names must not collide with
@@ -131,7 +135,7 @@ behavior. Mutable defaults are fresh per instance:
 | `owner_authorized` | `False`; supplied owner authorization, not a handler claim. |
 | `tool_name` | `""`; tool being called. |
 | `args` | `{}`; invocation arguments. |
-| `observation` | `None`; retained constructor field, not an Observer API for Mods. |
+| `observation` | `None`; retained constructor field, not an Observer API for personal extensions. |
 
 | `SkillResult` field | Default / meaning |
 |---|---|
@@ -159,9 +163,9 @@ Do not use the shared application database or import configuration/storage
 helpers that load live application state. Schema initialization, Observer,
 Diary/prompt/lifecycle hooks and custom dispatch methods are outside this
 version's extension contract. Registry internals and arbitrary private Base
-imports are not public Mod APIs. This boundary is not a Python sandbox:
+imports are not public personal extension APIs. This boundary is not a Python sandbox:
 third-party imports remain allowed, using installed libraries. There is no
-automatic dependency installer, dependency version solver or per-Mod environment.
+automatic dependency installer, dependency version solver or per-extension environment.
 
 Configuration uses existing skill metadata; `get_skill_config` and
 `set_skill_config` manage it in conversation, with an optional Admin card:
@@ -273,7 +277,7 @@ The on-demand guide reports `supported_mod_apis: [1]`.
 An unsupported installed package stays inspectable and disableable while other
 valid packages load. Rejected activation leaves the previous registration
 intact; Main chooses whether to repair the code, retain it, seek a compatible
-Base or abandon the Mod. The runtime does not silently relabel it, fall back to
+Base or abandon the extension. The runtime does not silently relabel it, fall back to
 previous code or automate a repair workflow.
 
 ## Recovery and limits
@@ -302,7 +306,7 @@ configuration or enable flags, move/recreate package data, rename public tools
 or silently discard v1. No migration is required.
 
 This is a host-contract promise, not a guarantee for arbitrary Base-private
-imports, third-party libraries, remote providers or a Mod's own data-schema
+imports, third-party libraries, remote providers or an extension's own data-schema
 changes. The Python baseline remains the repository's supported baseline
 (currently Python 3.11+). Base dependency/runtime changes must be checked against
 the v1 commitment, but not every installed library or external service can be

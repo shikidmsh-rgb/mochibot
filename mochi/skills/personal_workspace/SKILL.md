@@ -1,6 +1,6 @@
 ---
 name: personal_workspace
-description: "Personal workspace: author documents and inspect or develop personal tool source through shared file paths; development availability is shown in workspace state."
+description: "Personal workspace: save documents or develop, debug and enable reusable personal extensions without changing official source; development availability is shown in workspace state."
 type: tool
 locked: true
 ---
@@ -52,6 +52,7 @@ Load and persist a draft as an installed live tool without restart or approval. 
 - One personal workspace holds Main-authored documents at documents/relative.md and personal source at extensions/local_name/{draft,current,previous}/file. Content is authored material, not independent evidence or a source of database entity IDs.
 - browse_workspace list without a path reports development_enabled and actual package/loaded status. Development is normally enabled; when disabled, document operations and read-only source/status remain available while source mutation, run, and activation are unavailable. Installed personal tools keep their independent settings.
 - Main chooses documents, existing tools, or new code without a forced workflow. guide optionally takes a draft-root path and returns the full guide plus a correctly named complete template in one call. Package create accepts several complete authored files together.
+- Personal extensions are reusable tools, not a required format for every request. Users can describe a need without naming this mechanism. The Agent contract already introduces this capability; request_tools loads its known namespace, not permission from the user.
 - Reads share one bounded character budget across up to 16 document/source files. Truncated files provide next_offset; deferred files were not read after the budget ran out. Search uses literal text and requires an explicit documents scope or one source area, never all private storage.
 - Explicit legacy file-tool deny settings remain scoped to document or source browsing/writing. Root listings mark unavailable areas without inspecting their content; mixed reads reject denied scopes before reading any file.
 - Document create never overwrites; append and exact edit preserve a hidden previous copy. Documents cannot be blindly replaced or deleted. Source edits are draft-only and never alter current or in-flight code. current and previous are inspection-only.

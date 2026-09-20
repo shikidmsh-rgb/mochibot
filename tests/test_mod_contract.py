@@ -496,6 +496,8 @@ def test_guide_and_template_use_public_v1_and_existing_discovery():
     guide = output(call("browse_workspace", action="guide", path="extensions/local_guided/draft"))
     assert guide["supported_mod_apis"] == [1] and guide["development_enabled"]
     assert "mochi.mod_api.v1" in guide["guide"]
+    assert "## Personal extension API v1" in guide["guide"]
+    assert "Tool Mod contract" not in guide["guide"]
     template = guide["template"]
     assert template["SKILL.md"].count("mod_api: 1") == 1
     for filename in ("handler.py", "smoke.py"):

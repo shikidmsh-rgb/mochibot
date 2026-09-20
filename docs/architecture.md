@@ -31,6 +31,9 @@ setup, not broad provider or multi-user infrastructure.
   personal workspace gives Main on-demand inspection, authoring, execution, and
   live activation tools; Main remains the sole author and judge of its work.
   Development is visible to Main from startup and needs no separate authorization.
+  The always-loaded Agent contract explains self-development and the known
+  workspace entry independently of routing; the on-demand guide supplies API
+  details. This awareness does not load extra tools or override entry boundaries.
   The persisted development toggle disables source mutation/run/activation,
   not documents, read-only inspection or installed tools.
   Activation loads an immutable candidate with its configuration and own data,

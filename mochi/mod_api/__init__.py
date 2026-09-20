@@ -1,1 +1,1 @@
-"""Versioned public interfaces for personal Mochi Mods."""
+"""Versioned public interfaces for personal Mochi extensions."""

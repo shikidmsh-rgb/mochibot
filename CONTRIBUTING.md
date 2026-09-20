@@ -13,7 +13,7 @@ MochiBot 目前处于早期 alpha 阶段，欢迎贡献！
 
 完整规范：**[docs/SKILL_SPEC.md](docs/SKILL_SPEC.md)** | 模板：**[docs/skill_template/](docs/skill_template/)**
 
-如果是让 Main 自己开发、不随官方源码发布的个人工具，使用
+如果是让 Main 自己开发、不随官方源码发布的个人扩展，使用
 [个人工作区](docs/extensions.md) 和内置 `personal_workspace` Skill，不要把个人代码写入 `mochi/skills/`。
 开发默认开启，无需单独授权；Main 使用 `browse_workspace`、
 `edit_workspace`、`run_extension`、`activate_extension` 统一读写资料与代码并自主开发，

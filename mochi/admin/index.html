@@ -1590,19 +1590,19 @@ function renderPersonalSkills(skills) {
   const personal = skills.filter(s => s.source === 'personal' || s.name === 'personal_workspace');
   let html = `<div class="card" id="personal-skills"><div class="settings-section-head">
     <div><div class="settings-section-title">个人工作区</div>
-    <div class="settings-section-copy">资料与工具草稿统一读写；运行与启用仍是独立操作</div></div></div>
-    <p style="font-size:12px;color:var(--text-soft);margin-bottom:12px">开发默认开启，无需单独授权或重启。Main 运行可信的本地 Python，可访问本机文件和外部服务；这不是安全沙箱。关闭开发不影响资料读写、代码查看或已有个人工具。</p>`;
+    <div class="settings-section-copy">保存资料，也能让 Mochi 自己开发小工具（个人扩展）</div></div></div>
+    <p style="font-size:12px;color:var(--text-soft);margin-bottom:12px">直接描述需求，Mochi 可以开发、调试并启用个人扩展。开发默认开启，无需另行授权或重启。扩展运行可信的本地 Python，可访问本机文件和外部服务；这不是安全沙箱。关闭开发不影响资料功能、代码查看或已安装扩展的独立开关。</p>`;
   for (const s of personal) {
     const workspace = s.name === 'personal_workspace';
     const enabled = workspace ? s.development_enabled : !s.admin_disabled;
-    const state = workspace ? (enabled ? '资料可用 · 开发开启' : '资料可用 · 开发关闭')
+    const state = workspace ? (enabled ? '个人扩展开发开启' : '个人扩展开发关闭')
       : s.admin_disabled ? '关闭' : s.load_error && !s.loaded ? '加载失败'
       : s.config_missing.length ? '缺少配置' : s.loaded ? '可用'
       : s.activation_required ? '需要激活' : '尚未加载';
     html += `<div style="padding:12px 0;border-top:1px solid var(--border)">
       <div style="display:flex;align-items:center;gap:12px">
         <label class="toggle"><input type="checkbox" data-skill-toggle="${workspace?'development':esc(s.name)}" ${enabled?'checked':''}><span class="slider"></span></label>
-        <strong>${workspace ? '开发与执行（不影响资料）' : esc(s.name)}</strong>
+        <strong>${workspace ? '开发个人扩展（不影响资料）' : esc(s.name)}</strong>
         <span class="badge ${s.enabled?'badge-ok':'badge-gray'}">${esc(state)}</span>
         ${s.source === 'personal' && s.loaded?'<span class="badge badge-info">已加载</span>':''}
       </div>
@@ -1624,7 +1624,7 @@ function renderPersonalSkills(skills) {
     html += '</div>';
   }
   if (personal.some(s => s.activation_required)) {
-    html += '<p style="font-size:12px;margin-top:12px">仅有草稿的工具需要 Mochi 调用 activate_extension 激活；启用已有安装版本会直接尝试加载。草稿编辑不影响正在使用的代码。</p>';
+    html += '<p style="font-size:12px;margin-top:12px">仅有草稿的个人扩展需要由 Mochi 激活；启用已有安装版本会直接尝试加载。草稿编辑不影响正在使用的代码。</p>';
   }
   return html + '</div>';
 }

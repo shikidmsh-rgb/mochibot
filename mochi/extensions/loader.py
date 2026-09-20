@@ -88,7 +88,7 @@ def _require_mod_api(content: str) -> None:
     if info["status"] == "unsupported":
         raise ExtensionError(
             "unsupported_mod_api",
-            f"Mod API {info['declared']} is not supported; this Base supports "
+            f"Personal extension API {info['declared']} is not supported; this Base supports "
             f"{', '.join(str(version) for version in SUPPORTED_MOD_APIS)}. "
             "Adapt the code to a supported contract or use a compatible Base; "
             "changing the version label alone does not adapt the code.",

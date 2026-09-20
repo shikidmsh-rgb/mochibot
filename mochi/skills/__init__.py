@@ -633,7 +633,7 @@ def get_capability_context_for_tools(
         )
         if include_requestable_tools and on_demand_not_loaded:
             block += (
-                f"\n(可通过 request_tools 申请的按需工具: "
+                f"\n(可通过 request_tools 加载的按需工具: "
                 f"{', '.join(on_demand_not_loaded)})"
             )
         context_parts.append(block)
@@ -651,7 +651,7 @@ def get_capability_context_for_tools(
             seen_skills.add(skill_name)
             context_parts.append(
                 f"### {skill.name}\n{skill.capability_context}\n"
-                f"(可通过 request_tools 申请: {', '.join(namespace.tool_names)})"
+                f"(可通过 request_tools 加载: {', '.join(namespace.tool_names)})"
             )
 
     return "\n\n".join(context_parts) if context_parts else ""
