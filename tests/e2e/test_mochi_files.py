@@ -12,9 +12,9 @@ from mochi.transport import IncomingMessage
 from tests.e2e.mock_llm import make_response, make_tool_call
 
 
-CAPABILITY = (
-    "你具备自己开发小工具的能力：可以在 `personal_workspace` 中编写、运行调试"
-    "并启用可重复调用的个人扩展，而不只是使用已有工具。"
+WORKSPACE_POINTER = (
+    "`personal_workspace` 是保存资料和自行开发个人扩展的入口；"
+    "用法、规范与模板见工具说明及 `browse_workspace` 的 `guide`。"
 )
 FILES_TOOLS = {"browse_workspace", "edit_workspace"}
 WORKSPACE_TOOLS = FILES_TOOLS | {"run_extension", "activate_extension"}
@@ -56,13 +56,7 @@ async def test_agent_knows_personal_extensions_before_search_or_unrelated_routin
     initial = mock.call_log[0]
     prompt = initial["messages"][0]["content"]
     names = {tool["function"]["name"] for tool in initial["tools"]}
-    assert prompt.count(CAPABILITY) == 1
-    assert 'skills: ["personal_workspace"]' in prompt
-    assert 'browse_workspace(action="guide")' in prompt
-    assert "由你根据目的判断；资料不必变成程序" in prompt
-    assert "实际能执行什么，仍取决于当前设置和本轮可用工具" in prompt
-    assert "当 `request_tools` 可用时" in prompt
-    assert "不是向用户申请许可" in prompt
+    assert prompt.count(WORKSPACE_POINTER) == 1
     assert "manage_todo" in names
     assert ("request_tools" in names) is escalation
     assert WORKSPACE_TOOLS.isdisjoint(names)
@@ -141,7 +135,7 @@ async def test_personal_workspace_document_vertical_contract(
         for item in mock.call_log[0]["messages"]
         if isinstance(item.get("content"), str)
     )
-    assert initial_prompt.count(CAPABILITY) == 1
+    assert initial_prompt.count(WORKSPACE_POINTER) == 1
     assert "你有一片持久的私人 Markdown 空间" not in initial_prompt
     assert "old_text" not in initial_prompt
     assert "上一版本" not in initial_prompt
