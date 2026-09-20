@@ -96,7 +96,7 @@
 
 > **想加一个新 Skill？** 在 `mochi/skills/` 下新建文件夹，放入 `SKILL.md` + `handler.py`，重启 bot 就会自动注册。详见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
-> **个人工具不必改官方源码。** 使用 `data/extensions/` 下的外置扩展；第一版支持普通工具及自己的文件数据，不支持 Observer、共享数据库迁移或自动安装依赖。文件不会被官方更新覆盖，但未来接口或依赖变化仍可能需要修复。
+> **个人工具不必改官方源码。** 使用 `data/extensions/` 下的工具型 Mod，通过 `mochi.mod_api.v1` 和 `SKILL.md` 中的 `mod_api: 1` 使用稳定的公开契约；旧格式与旧导入继续兼容，无需迁移。官方更新保留个人代码、配置和数据，Base 内部重构应保持 v1 行为兼容；任意第三方依赖和外部服务变化不在此保证内。目前不支持 Observer、共享数据库迁移或自动安装依赖，详见[个人扩展规范](docs/extensions.md)。
 
 ---
 

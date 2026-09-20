@@ -150,6 +150,7 @@ def activate_extension(name: str) -> dict:
         "tools": sorted(skill.tool_names()),
         "request_tools": {"skills": [name]},
         "message": "Active now. Request this namespace for subsequent provider rounds; no restart is needed.",
+        "mod_api": dict(skill._mod_api),
         "state_changed": True,
     }
 
@@ -658,7 +659,7 @@ def get_capability_context_for_tools(
 
 def get_skill_info_all() -> list[dict]:
     """Return live skills and metadata-only personal packages for management."""
-    from mochi.extensions import store
+    from mochi.extensions import loader, store
 
     disabled = _get_disabled_skills()
     packages = {p["name"]: p for p in store.list_extensions()}
@@ -681,6 +682,23 @@ def get_skill_info_all() -> list[dict]:
             configuration = s
         admin_disabled = s.name in disabled
         auto_disabled = bool(config_missing) or not loaded
+        mod_api = {}
+        if s.external:
+            active_api = getattr(s, "_mod_api", None) if loaded else None
+            mod_api["active"] = dict(active_api) if active_api is not None else None
+            package = packages.get(s.name, {})
+            for area, present in (
+                ("draft", package.get("has_draft")), ("current", package.get("installed")),
+            ):
+                if not present:
+                    continue
+                try:
+                    mod_api[area] = loader.inspect_mod_api(store.extension_root(s.name) / area)
+                except (OSError, ValueError) as exc:
+                    mod_api[area] = {
+                        "declared": None, "effective": None,
+                        "status": "unavailable", "error": str(exc)[:1000],
+                    }
         result.append({
             **packages.get(s.name, {}),
             "name": s.name,
@@ -712,6 +730,7 @@ def get_skill_info_all() -> list[dict]:
             "loaded": loaded,
             "load_error": load_error,
             "activation_required": s.external and not loaded,
+            **({"mod_api": mod_api} if s.external else {}),
             **(
                 {"development_enabled": "development" not in disabled}
                 if s.name == "personal_workspace" else {}

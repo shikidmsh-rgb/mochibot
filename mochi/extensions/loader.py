@@ -25,7 +25,74 @@ _BASE_METHODS = (
 )
 _UNSUPPORTED_HOOKS = ("prompt_section", "observe", "observer", "Observer")
 _SCALARS = {"string", "integer", "number", "boolean"}
+SUPPORTED_MOD_APIS = (1,)
 log = logging.getLogger(__name__)
+
+
+def _mod_api(content: str) -> dict:
+    front = re.match(r"^---\s*\n(.*?)\n---", content, re.S)
+    declarations = []
+    block = ""
+    # Match the existing front-matter block rules, including indented metadata,
+    # without parsing tool schemas that a future API may define differently.
+    for line in front.group(1).strip().splitlines() if front else []:
+        stripped = line.strip()
+        if stripped in {"config:", "requires:", "sense:", "sub_skills:"}:
+            block = stripped[:-1]
+            continue
+        if block:
+            nested = (
+                (line.startswith("    ") and ":" in stripped)
+                or (line.startswith("  ") and stripped.endswith(":"))
+            ) if block == "config" else (
+                line.startswith("  ") and (block == "sense" or ":" in stripped)
+            )
+            if nested:
+                continue
+            block = ""
+        key, separator, value = stripped.partition(":")
+        if separator and key.strip() == "mod_api":
+            declarations.append(value.strip())
+    if not declarations:
+        return {"declared": None, "effective": 1, "status": "legacy"}
+    invalid = {
+        "declared": None, "effective": None, "status": "invalid",
+        "error": "mod_api must be declared once as a positive decimal integer.",
+    }
+    if len(declarations) != 1:
+        return invalid
+    value = declarations[0].strip()
+    if not re.fullmatch(r"[1-9][0-9]*", value):
+        return invalid
+    try:
+        version = int(value)
+    except ValueError:
+        return invalid
+    return {
+        "declared": version, "effective": version,
+        "status": "supported" if version in SUPPORTED_MOD_APIS else "unsupported",
+    }
+
+
+def inspect_mod_api(package_dir: Path) -> dict:
+    """Inspect only the bounded declaration, including incompatible packages."""
+    package_dir = store._safe_path(package_dir)
+    content = store._read_bytes(package_dir / "SKILL.md").decode("utf-8")
+    return _mod_api(content)
+
+
+def _require_mod_api(content: str) -> None:
+    info = _mod_api(content)
+    if info["status"] == "invalid":
+        raise ExtensionError("invalid_mod_api", info["error"])
+    if info["status"] == "unsupported":
+        raise ExtensionError(
+            "unsupported_mod_api",
+            f"Mod API {info['declared']} is not supported; this Base supports "
+            f"{', '.join(str(version) for version in SUPPORTED_MOD_APIS)}. "
+            "Adapt the code to a supported contract or use a compatible Base; "
+            "changing the version label alone does not adapt the code.",
+        )
 
 
 def _validate_tools(extension_id: str, tools: list[dict]) -> None:
@@ -112,6 +179,7 @@ def validate_package(extension_id: str, package_dir: Path) -> dict:
     missing = {"__init__.py", "handler.py", "SKILL.md"} - names
     if missing:
         raise ExtensionError("incomplete_package", f"Missing required files: {', '.join(sorted(missing))}")
+    parsed = read_metadata(extension_id, package_dir)
     for item in files:
         if item["path"].endswith(".py"):
             try:
@@ -121,7 +189,7 @@ def validate_package(extension_id: str, package_dir: Path) -> dict:
                 )
             except (SyntaxError, ValueError) as exc:
                 raise ExtensionError("invalid_python", f"Invalid Python in {item['path']}: {exc}") from exc
-    return read_metadata(extension_id, package_dir)
+    return parsed
 
 
 def read_metadata(extension_id: str, package_dir: Path) -> dict:
@@ -139,6 +207,7 @@ def read_metadata(extension_id: str, package_dir: Path) -> dict:
     front = re.match(r"^---\s*\n(.*?)\n---", content, re.S)
     if not front:
         raise ExtensionError("invalid_metadata", "SKILL.md requires Markdown front matter with the extension name.")
+    _require_mod_api(content)
     metadata = {}
     for key, value in re.findall(r"^([a-z_]+):\s*([^\n]*)", front.group(1), re.M):
         if key in metadata:
@@ -283,6 +352,7 @@ def load_from_path(
                 raise ExtensionError("unsupported_hooks", f"External skills cannot replace {name} on the instance.")
         if skill.skill_type != "tool" or skill.has_observer or skill.diary_tags or skill.locked or skill.sub_skills:
             raise ExtensionError("unsupported_hooks", "Handler cannot enable lifecycle hooks outside its ordinary tool metadata.")
+        skill._mod_api = inspect_mod_api(package_dir)
         return skill
     except BaseException:
         _clear_namespace(namespace)

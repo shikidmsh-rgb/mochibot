@@ -52,7 +52,12 @@ but retired tool names are not executable.
 Personal extensions are trusted local Python, not a sandbox. No Admin visit or
 restart is required to author and activate them.
 
-## Package contract
+## Tool Mod contract v1
+
+A personal executable extension is a **Mod**. This contract currently covers
+ordinary tools only; it does not add Observer sources, MCP connections or
+lifecycle hooks. Existing extension paths, `local_*` IDs, Skill names and tool
+names are unchanged.
 
 A personal ID looks like `local_reading`. Its tool names begin with that ID
 and an underscore, such as `local_reading_add`. Names must not collide with
@@ -67,26 +72,96 @@ path="extensions/local_reading/draft", files=[...])` accepts file entries with
 standard files use the neutral template, not an inferred implementation.
 Source receipts include `draft_path`; use that same path for run and activation.
 
-`SKILL.md` defines the name, description, `type: tool`, configuration, and
+`SKILL.md` is the single manifest. Its front matter defines the name,
+`mod_api: 1`, description, `type: tool`, configuration, and
 ordinary tool schemas using the existing Markdown parameter tables. Tools use
-`resident`, `routed`, or `on_demand`. Capability Context describes the capability's
-effects and real constraints, not a compulsory sequence for Main.
+`resident`, `routed`, or `on_demand`; parameters support scalars and string arrays.
+Capability Context describes the capability's effects and real constraints, not
+a compulsory sequence for Main.
 
-`handler.py` defines one local subclass of
-`mochi.skills.base.Skill` and implements `async execute(context)`.
-Use `SkillContext.args`, `SkillResult`, relative imports of your own helpers,
-`self.config`, and the injected `self.data_dir`. Store persistent files or a
+```yaml
+---
+name: local_reading
+mod_api: 1
+description: Personal reading tools.
+type: tool
+---
+```
+
+Declare `mod_api` once as a positive decimal integer. Missing `mod_api` means
+**legacy v1**, supported without rewriting source, migrating data or requiring
+reactivation. Explicit `1` selects v1. Other positive integer versions fail with
+`unsupported_mod_api`, reporting the required and supported versions; malformed
+or duplicate declarations fail with `invalid_mod_api`. Do not change the version
+label alone to "repair" incompatible code.
+
+### Public Python API
+
+New `handler.py` files define one local subclass of `Skill` and implement
+`async execute(context)` through this import surface:
+
+```python
+from mochi.mod_api.v1 import Skill, SkillContext, SkillResult
+
+
+class PersonalSkill(Skill):
+    async def execute(self, context: SkillContext) -> SkillResult:
+        return SkillResult(output=str(context.args["text"]))
+```
+
+These are the same classes as the supported legacy
+`from mochi.skills.base import Skill, SkillContext, SkillResult` imports, not a
+second runtime. Importing the public API does not initialize application
+configuration, the database or runtime services.
+Use `SkillContext.args`, normal `SkillResult` constructors, relative imports of
+your own helpers, `self.config`, and the injected `self.data_dir`. Store persistent files or a
 private SQLite database under `self.data_dir`; it survives code replacement.
-The handler returns `SkillResult(success=False, output=...)` for known failures
-and reports actual state changes with `state_changed=True`.
 Regular constructors also receive the injected configuration and data directory;
 custom object allocation (`__new__`) is not supported.
+
+The existing context/result constructor fields and defaults are part of v1.
+Additional optional fields may be added while preserving existing constructor
+behavior. Mutable defaults are fresh per instance:
+
+| `SkillContext` field | Default / meaning |
+|---|---|
+| `trigger` | Required invocation kind; ordinary live tools receive `"tool_call"`; smoke scripts may use `"script"`. |
+| `user_id`, `channel_id` | `0`; caller identifiers. |
+| `transport`, `actor` | `""`; supplied caller transport and actor. |
+| `owner_authorized` | `False`; supplied owner authorization, not a handler claim. |
+| `tool_name` | `""`; tool being called. |
+| `args` | `{}`; invocation arguments. |
+| `observation` | `None`; retained constructor field, not an Observer API for Mods. |
+
+| `SkillResult` field | Default / meaning |
+|---|---|
+| `output` | `""`; result text or a useful failure diagnostic. |
+| `success` | `True`; use `False` for a known failure. |
+| `summary`, `entity_refs` | `""`, `[]`; deterministic receipt text and stable references for actual results. |
+| `state_changed` | `False`; report known durable changes truthfully. |
+| `error_code`, `retryable` | `""`, `None`; optional machine-readable failure and retry facts. |
+| `content_source` | `""`; provenance of returned content, not an authority grant. |
+| `actions` | `[]`; retained result payload, not permission to add Observer or delivery hooks. |
+| `execution_started`, `state_change_unknown` | `False`, `False`; execution/uncertainty facts described below. |
+
+Handlers author outputs, receipts and known outcome facts; the runtime owns
+dispatch, execution evidence and audit-record creation. `Skill.run()` sets
+`execution_started=True` after entering the handler, including when it returns
+a known failure. An unhandled exception becomes a failed result with
+`error_code="skill_exception"`, `retryable=False`, and
+`state_change_unknown=True`; that uncertainty is not a rollback claim.
+A rejection before entering the handler has no handler execution evidence.
+Do not manufacture evidence by setting `execution_started`, inventing receipt
+references or returning success prose. Handler-authored fields describe the
+outcome; they do not create independent proof of execution or external effects.
 
 Do not use the shared application database or import configuration/storage
 helpers that load live application state. Schema initialization, Observer,
 Diary/prompt/lifecycle hooks and custom dispatch methods are outside this
-version's extension contract. There is no automatic dependency installation:
-use Python's standard library or already installed libraries.
+version's extension contract. Registry internals and arbitrary private Base
+imports are not public Mod APIs. This boundary is not a Python sandbox:
+third-party imports remain allowed, using installed libraries. There is no
+automatic dependency installer, dependency version solver or per-Mod environment.
 
 Configuration uses existing skill metadata; `get_skill_config` and
 `set_skill_config` manage it in conversation, with an optional Admin card:
@@ -117,8 +192,19 @@ one `paths` array; create a small complete package in one write call. Later edit
 can replace one exact occurrence in a draft file.
 
 `run_extension(path="extensions/local_reading/draft")` defaults to `smoke.py`.
-The template's smoke script loads the
-actual candidate with temporary extension data and calls its real `Skill.run()`.
+The template's smoke script uses the public helper:
+
+```python
+from mochi.mod_api.v1 import SkillContext, run_candidate
+
+skill = run_candidate(extension_id, package_dir, data_dir, config={"KEY": "sample"})
+```
+
+`package_dir` and `data_dir` are `Path` objects. The helper returns the loaded
+`Skill`, using typed schema defaults plus the optional explicit configuration
+dictionary, never live database/environment credentials. It neither activates
+nor registers a tool. The template loads the actual candidate with disposable
+extension data supplied by the runner and calls its real `Skill.run()`.
 It checks `SkillResult.success`, not merely whether Python starts. Modify its
 arguments and expectations along with your handler. Main authors these
 expectations; the harness does not decide whether your feature meets the goal.
@@ -131,6 +217,9 @@ and no failed command is automatically replayed.
 
 Drafts persist across turns. Existing tool budgets still apply, and no hidden
 loop resumes development after the turn ends.
+The candidate helper enforces API compatibility before importing the package.
+Directly running an explicitly selected draft script remains trusted Python
+execution, not a blanket API-version gate or proof the package can be activated.
 
 ## Activation and use
 
@@ -141,6 +230,9 @@ validates registration and tool ownership. Only then does it persist the
 installed `current` version, retain one `previous` version, and swap the live
 registry. A disabled extension must be enabled separately. Structural and load
 checks do not judge whether Main's implementation meets its goal.
+Activation, startup loading, explicit live enabling and the candidate helper
+all reject an unsupported or invalid API declaration before importing either
+`__init__.py` or `handler.py`.
 
 Failure leaves the previous registry intact, but imports or constructors may
 already have changed extension data or external services. There is no rollback
@@ -163,6 +255,25 @@ availability. Enabling an installed package attempts a live load; a draft alone
 still needs activation. A failed load reports the error and the saved enable
 flag rather than claiming success.
 
+Personal package receipts include a `mod_api` object with separately labeled
+`draft` and `current` entries for areas that exist, plus `active` metadata when
+loaded (`null` otherwise). Each entry reports `declared`, `effective`, and
+`status`: `legacy`, `supported`, `unsupported`, or `invalid`, with diagnostics
+when needed. Management reports unreadable metadata as `unavailable` with an
+error, rather than claiming an unsupported version. Legacy v1 has
+`declared: null`, `effective: 1`; explicit v1 has
+`declared: 1`, `effective: 1`. `active` describes the loaded snapshot, not editable
+disk metadata. An incompatible draft does not make a working current tool
+unsupported. API support remains separate from `loaded`, `load_error`,
+`activation_required`, missing configuration and semantic usefulness.
+The on-demand guide reports `supported_mod_apis: [1]`.
+
+An unsupported installed package stays inspectable and disableable while other
+valid packages load. Rejected activation leaves the previous registration
+intact; Main chooses whether to repair the code, retain it, seek a compatible
+Base or abandon the Mod. The runtime does not silently relabel it, fall back to
+previous code or automate a repair workflow.
+
 ## Recovery and limits
 
 Loading errors are visible in conversation management and Admin; an extension
@@ -177,7 +288,24 @@ While stopped, you may restore the previous code copy and restart. Restoring
 code never rolls back data or external actions, and does not guarantee older
 code understands newer data. There is no automatic rollback.
 
-Official updates do not replace personal code or data. They can still change
-interfaces or dependencies, so a future update may require repairing an
-extension. This feature does not add MCP, OpenClaw skill compatibility, automatic
-file-watching reload, background self-learning, or restart coordination.
+### Compatibility across Base updates
+
+Base maintains the v1 public API, documented `SKILL.md` semantics,
+configuration/data identity and supported loading/execution behavior, including
+legacy imports and versionless v1 packages. Internal refactors must preserve
+that behavior or adapt behind the public API, even if a later API is added.
+A supported-v1 compatibility break is a Base regression to fix, not an expected
+repair task for Main. Updates must not rewrite personal source, reset saved
+configuration or enable flags, move/recreate package data, rename public tools
+or silently discard v1. No migration is required.
+
+This is a host-contract promise, not a guarantee for arbitrary Base-private
+imports, third-party libraries, remote providers or a Mod's own data-schema
+changes. The Python baseline remains the repository's supported baseline
+(currently Python 3.11+). Base dependency/runtime changes must be checked against
+the v1 commitment, but not every installed library or external service can be
+promised unchanged. Existing third-party imports remain usable; new templates
+need no extra dependency installation.
+
+This feature does not add MCP, OpenClaw skill compatibility, automatic
+file-watching reload, background self-learning or restart coordination.

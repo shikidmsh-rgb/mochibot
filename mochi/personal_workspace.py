@@ -125,7 +125,7 @@ def _packages(name: str = "") -> list[dict]:
         "name", "description", "type", "tools", "enabled", "admin_disabled",
         "auto_disabled", "loaded", "load_error", "activation_required",
         "has_draft", "installed", "has_previous", "error", "publish_error",
-        "publish_cleanup_error", "config_missing",
+        "publish_cleanup_error", "config_missing", "mod_api",
     }
     result = []
     for info in get_skill_info_all():

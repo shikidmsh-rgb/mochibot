@@ -9,7 +9,7 @@ from pathlib import Path
 
 from mochi import mochi_files_store as documents
 from mochi import personal_workspace as workspace
-from mochi.extensions import runner, store, template
+from mochi.extensions import loader, runner, store, template
 from mochi.skills.base import Skill, SkillContext, SkillResult
 
 _GUIDE = Path(__file__).resolve().parents[3] / "docs" / "extensions.md"
@@ -132,6 +132,7 @@ class PersonalWorkspaceSkill(Skill):
                 "action": "guide", "guide": _GUIDE.read_text(encoding="utf-8"),
                 "draft_path": target.draft_path, "template": template.files(target.name),
                 "run_script": "smoke.py", "development_enabled": workspace.development_enabled(),
+                "supported_mod_apis": list(loader.SUPPORTED_MOD_APIS),
             }
         return {"action": "report", "draft_path": target.draft_path, **runner.read_last_run(target.name)}
 

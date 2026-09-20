@@ -52,9 +52,14 @@ Dependency direction is transport/heartbeat -> Main -> skills and persistence.
 Skills do not import transports or orchestration.
 
 Personal extensions are trusted in-process Python tools, not a sandbox. Their
-supported interface is the existing Skill context/result, injected configuration,
-and an extension-owned data directory; shared database, Observer, prompt, and
-lifecycle hooks are not part of this interface. Development scripts run bounded
+versioned boundary is `mochi.mod_api.v1`: the existing Skill context/result,
+injected configuration, an extension-owned data directory and the import-light
+candidate helper. `SKILL.md` declares `mod_api: 1`; versionless packages and
+legacy imports remain supported without migration. Base preserves this host
+contract across internal refactors, not arbitrary private imports or dependency
+versions. The canonical authoring contract is [extensions.md](extensions.md).
+Shared database, Observer, MCP, prompt and lifecycle hooks are outside this
+interface. Development scripts run bounded
 subprocesses against disposable copies, without a second Main runtime or an
 automatic continuation loop. Main decides how to build, test, and activate;
 there is no required workflow or verification-success gate. Owner management

@@ -13,6 +13,7 @@ def files(extension_id: str) -> dict[str, str]:
         "SKILL.md": dedent(f"""\
             ---
             name: {extension_id}
+            mod_api: 1
             description: "Personal echo example; returns the supplied text."
             type: tool
             ---
@@ -33,7 +34,7 @@ def files(extension_id: str) -> dict[str, str]:
               security sandbox. Code can access host files, configuration and networks.
             """),
         "handler.py": dedent(f"""\
-            from mochi.skills.base import Skill, SkillContext, SkillResult
+            from mochi.mod_api.v1 import Skill, SkillContext, SkillResult
 
 
             class PersonalSkill(Skill):
@@ -58,8 +59,7 @@ def files(extension_id: str) -> dict[str, str]:
             from pathlib import Path
             from tempfile import TemporaryDirectory
 
-            from mochi.extensions.worker import run_candidate
-            from mochi.skills.base import SkillContext
+            from mochi.mod_api.v1 import SkillContext, run_candidate
 
 
             async def smoke(data_dir: Path) -> None:
