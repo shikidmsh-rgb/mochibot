@@ -84,8 +84,9 @@ def _call(name, args):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("extra_runs", [0, 2])
 async def test_main_finishes_development_and_uses_tool_without_owner_handoff(
-    monkeypatch, mock_llm_factory,
+    monkeypatch, mock_llm_factory, extra_runs,
 ):
     import mochi.config as config
 
@@ -110,6 +111,7 @@ async def test_main_finishes_development_and_uses_tool_without_owner_handoff(
             "old_text": "books.append(title.upper())", "new_text": "books.append(title)",
         }),
         _call("run_extension", {"path": DRAFT}),
+        *[_call("run_extension", {"path": DRAFT}) for _ in range(extra_runs)],
         _call("activate_extension", {"path": DRAFT}),
         _call("request_tools", {"skills": [NAME]}),
         _call("local_reading_log", {"action": "add", "title": "The Hobbit"}),
@@ -121,12 +123,12 @@ async def test_main_finishes_development_and_uses_tool_without_owner_handoff(
         "record The Hobbit and show me the result.",
     ))
     assert reply.text
-    assert len(agent.call_log) == 11
+    assert len(agent.call_log) == 11 + extra_runs
     assert "personal_workspace" in agent.call_log[0]["messages"][0]["content"]
     assert "edit_workspace" not in {t["function"]["name"] for t in agent.call_log[0]["tools"]}
     assert "edit_workspace" in {t["function"]["name"] for t in agent.call_log[1]["tools"]}
-    assert "local_reading_log" not in {t["function"]["name"] for t in agent.call_log[7]["tools"]}
-    assert "local_reading_log" in {t["function"]["name"] for t in agent.call_log[8]["tools"]}
+    assert "local_reading_log" not in {t["function"]["name"] for t in agent.call_log[7 + extra_runs]["tools"]}
+    assert "local_reading_log" in {t["function"]["name"] for t in agent.call_log[8 + extra_runs]["tools"]}
     assert "AssertionError" in str(agent.call_log[4]["messages"])
     assert "Reading tool add/list passed" in str(agent.call_log[6]["messages"])
     assert registry.get_skill(NAME) is not None
@@ -139,7 +141,7 @@ async def test_main_finishes_development_and_uses_tool_without_owner_handoff(
     assert authored["arguments"]["files"] == "[REDACTED]"
     assert all("books.append" not in r["result_summary"] for r in records)
     attempts = get_tool_executions_for_turn(authored["turn_id"])
-    assert len(attempts) == 8
+    assert len(attempts) == 8 + extra_runs
     assert all(r["tool_name"] != "toggle_skill" for r in attempts)
     assert {r["turn_id"] for r in records} == {authored["turn_id"]}
     assert any(r["tool_name"] == "run_extension" and r["status"] == "failed" for r in attempts)

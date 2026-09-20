@@ -326,10 +326,10 @@ AI_CHAT_MAX_COMPLETION_TOKENS = _env_int("AI_CHAT_MAX_COMPLETION_TOKENS", 4096)
 DEFAULT_TOOL_LOOP_MAX_ROUNDS = 16
 TOOL_LOOP_MAX_ROUNDS = _env_int("TOOL_LOOP_MAX_ROUNDS", DEFAULT_TOOL_LOOP_MAX_ROUNDS)
 TOOL_LOOP_TOTAL_TOOL_LIMIT = max(
-    0, min(_env_int("TOOL_LOOP_TOTAL_TOOL_LIMIT", 8), 8),
+    0, _env_int("TOOL_LOOP_TOTAL_TOOL_LIMIT", 24),
 )
 TOOL_LOOP_PER_TOOL_LIMIT = max(
-    0, min(_env_int("TOOL_LOOP_PER_TOOL_LIMIT", 3), 3),
+    0, _env_int("TOOL_LOOP_PER_TOOL_LIMIT", 3),
 )
 
 # ═══════════════════════════════════════════════════════════════════════════

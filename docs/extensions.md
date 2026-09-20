@@ -215,8 +215,10 @@ script can still access other files or services: temporary inputs and a
 subprocess are not containment. Failure or timeout does not prove zero effects,
 and no failed command is automatically replayed.
 
-Drafts persist across turns. Existing tool budgets still apply, and no hidden
-loop resumes development after the turn ends.
+Drafts persist across turns. Workspace tools share the ordinary-call budget
+(24 by default) without positive per-tool caps. The provider-round budget
+(16 by default) and script time/output bounds still apply; explicit lower total
+budgets remain effective. No hidden loop resumes development after the turn ends.
 The candidate helper enforces API compatibility before importing the package.
 Directly running an explicitly selected draft script remains trusted Python
 execution, not a blanket API-version gate or proof the package can be activated.

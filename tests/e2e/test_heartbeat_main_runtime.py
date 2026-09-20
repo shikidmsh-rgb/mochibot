@@ -34,8 +34,13 @@ async def test_free_time_keeps_only_immediate_conversation_context(
     monkeypatch,
 ):
     import mochi.ai_client as ai_client
+    import mochi.tool_execution as tool_execution
 
     replace_core("CORE_MARKER", source="test")
+    monkeypatch.setattr(
+        tool_execution, "recent_operations_context",
+        lambda *args: pytest.fail("Free Time must not inject execution records"),
+    )
     monkeypatch.setattr(
         ai_client,
         "_retrieve_memories_for_turn",

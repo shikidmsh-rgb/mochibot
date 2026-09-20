@@ -90,29 +90,39 @@ async def test_midturn_disable_updates_schemas_and_blocks_stale_execution():
     assert receipt["ok"] and _names(additions) == EXECUTION_TOOLS
 
 
-def test_pooled_file_allowances_preserve_total_and_other_tool_limits():
+@pytest.mark.parametrize("tool", sorted(FILE_TOOLS | EXECUTION_TOOLS))
+def test_workspace_iterations_share_total_without_a_per_name_cap(tool):
     budget = ToolLoopBudget()
-    for _ in range(6):
-        assert budget.claim_tool("edit_workspace", total_limit=8, per_tool_limit=3) is None
+    for _ in range(23):
+        assert budget.claim_tool(tool, total_limit=24, per_tool_limit=3) is None
+    assert budget.claim_tool("activate_extension", total_limit=24, per_tool_limit=3) is None
     assert budget.claim_tool(
-        "edit_workspace", total_limit=8, per_tool_limit=3,
-    )["code"] == "per_tool_limit_reached"
-    assert budget.claim_tool("run_extension", total_limit=8, per_tool_limit=3) is None
-    assert budget.claim_tool("activate_extension", total_limit=8, per_tool_limit=3) is None
-    assert budget.claim_tool(
-        "browse_workspace", total_limit=8, per_tool_limit=3,
+        "browse_workspace", total_limit=24, per_tool_limit=3,
     )["code"] == "tool_call_limit_reached"
+    assert budget.ordinary_attempts == 24
 
+
+def test_explicit_total_and_non_workspace_limits_remain_effective():
     limited = ToolLoopBudget()
-    assert limited.claim_tool("browse_workspace", total_limit=8, per_tool_limit=1) is None
-    assert limited.claim_tool("browse_workspace", total_limit=8, per_tool_limit=1) is None
+    assert limited.claim_tool("local_example_search", total_limit=8, per_tool_limit=1) is None
     assert limited.claim_tool(
-        "browse_workspace", total_limit=8, per_tool_limit=1,
+        "local_example_search", total_limit=8, per_tool_limit=1,
     )["code"] == "per_tool_limit_reached"
-    assert limited.claim_tool("run_extension", total_limit=8, per_tool_limit=1) is None
+    for _ in range(7):
+        assert limited.claim_tool("run_extension", total_limit=8, per_tool_limit=1) is None
     assert limited.claim_tool(
         "run_extension", total_limit=8, per_tool_limit=1,
-    )["code"] == "per_tool_limit_reached"
+    )["code"] == "tool_call_limit_reached"
+
+
+@pytest.mark.parametrize("tool", ["edit_workspace", "local_example_search"])
+@pytest.mark.parametrize("total,per_tool", [(0, 3), (24, 0)])
+def test_zero_budget_still_disables_all_ordinary_calls(tool, total, per_tool):
+    budget = ToolLoopBudget()
+    assert budget.claim_tool(
+        tool, total_limit=total, per_tool_limit=per_tool,
+    )["started"] is False
+    assert budget.ordinary_attempts == 0
 
 
 @pytest.mark.asyncio

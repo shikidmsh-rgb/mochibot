@@ -106,6 +106,16 @@ output contracts.
    after delivery is confirmed; only then can a complete ordinary conversation
    wake summary and memory extraction.
 
+The existing execution ledger supplies bounded receipts for the completed turns
+visible in Main's conversation context, independent of message wording or routing.
+Receipts include read-only, failed and unfinished calls as well as successful
+writes; non-success records do not assert the absence of side effects.
+They stay inside the same user, reset epoch and runtime-entry history
+boundary. Tool-provided summaries are data, not instructions or proof that the
+user's overall task is complete. Only compact summaries and operation identifiers
+are carried, rather than replaying full outputs or arguments. Main retains
+judgment about what to do next.
+
 ## Model and provider boundary
 
 The product has exactly two model roles. **Main** owns every personality-bearing
@@ -152,7 +162,12 @@ immutable code snapshot. Subsequent provider rounds refresh tools already
 authorized for the turn; newly added names still require `request_tools`.
 Authoring, activation, and use can therefore complete within one conversation
 turn, without a restart or an extra autonomous workflow. The default provider
-round budget is 16; ordinary-tool, per-tool, and request limits remain 8, 3, and 4.
+round budget is 16; the shared ordinary-tool budget defaults to 24, other tools'
+per-name budget to 3, and request budget to 4. Personal workspace tools use the
+shared total without positive per-name caps, allowing iterative authoring and
+debugging. Explicit call-limit settings are honored rather than silently clamped
+to the defaults; zero still disables ordinary calls. These are resource ceilings,
+not new authorization or continuation steps.
 
 Explicit owner requests to change sleep/wake hours, timezone, or the daily
 Free Time/Attention limit route `manage_agent_settings` into Main's turn.

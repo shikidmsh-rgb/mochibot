@@ -902,11 +902,25 @@ def finish_tool_execution(execution_id: int, *, status: str,
 def get_recent_tool_executions(user_id: int, *, hours: int = 24,
                                limit: int = 3,
                                skill_names: list[str] | None = None,
-                               state_changes_only: bool = True) -> list[dict]:
-    """Return recent real tool facts for contextual follow-up resolution."""
-    cutoff = (datetime.now(TZ) - timedelta(hours=max(1, hours))).isoformat()
-    conditions = ["user_id = ?", "started_at >= ?", "status = 'success'"]
-    params: list = [user_id, cutoff]
+                               state_changes_only: bool = True,
+                               turn_ids: list[str] | None = None,
+                               include_failures: bool = False) -> list[dict]:
+    """Read same-user execution facts, scoped to visible turns when supplied."""
+    conditions = ["user_id = ?"]
+    params: list = [user_id]
+    if turn_ids is not None:
+        selected = list(dict.fromkeys(turn_ids))[-10:]
+        if not selected:
+            return []
+        placeholders = ",".join("?" for _ in selected)
+        conditions.append(f"turn_id IN ({placeholders})")
+        params.extend(selected)
+    else:
+        cutoff = (datetime.now(TZ) - timedelta(hours=max(1, hours))).isoformat()
+        conditions.append("started_at >= ?")
+        params.append(cutoff)
+    if not include_failures:
+        conditions.append("status = 'success'")
     if state_changes_only:
         conditions.append("state_changed = 1")
     if skill_names:

@@ -882,7 +882,7 @@ async def chat(
         ""
         if not prompt_policy.recent_operations
         else await asyncio.to_thread(
-            recent_operations_context, user_id, text, routed_skill_names,
+            recent_operations_context, user_id, history,
         )
     )
 

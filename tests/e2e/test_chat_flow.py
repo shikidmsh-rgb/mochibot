@@ -345,11 +345,17 @@ class TestToolCallReminder:
         assert executions[0]["state_changed"] is True
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("followup", [
+        "把刚才那个改成后天",
+        "Continue finishing the original task.",
+    ])
     async def test_followup_gets_real_receipt_without_replayed_tool_protocol(
-        self, mock_llm_factory, monkeypatch,
+        self, mock_llm_factory, monkeypatch, followup,
     ):
+        import mochi.ai_client as ai_client
         import mochi.config as config
         monkeypatch.setattr(config, "TOOL_ESCALATION_ENABLED", True)
+        monkeypatch.setattr(ai_client, "_schedule_continuous_memory", lambda _user: None)
         mock = mock_llm_factory([
             make_response(tool_calls=[
                 make_tool_call("request_tools", {"skills": ["reminder"]}),
@@ -365,12 +371,13 @@ class TestToolCallReminder:
             make_response("Okay, I'll change it."),
         ])
 
-        await chat(_msg("Remind me to submit the report"))
-        await chat(_msg("把刚才那个改成后天"))
+        first = await chat(_msg("Remind me to submit the report"))
+        first.confirm_delivered()
+        await chat(_msg(followup))
 
         followup_messages = mock.call_log[3]["messages"]
         system_prompt = followup_messages[0]["content"]
-        assert "最近已确认的系统操作" in system_prompt
+        assert "Recent tool execution records" in system_prompt
         assert "Reminder #" in system_prompt
         assert "Submit report" in system_prompt
         assert all(message["role"] != "tool" for message in followup_messages)

@@ -20,6 +20,9 @@ _WORKSPACE_ALIASES = frozenset({
     "mochi_files", "development", "browse_mochi_files", "save_mochi_file",
     "inspect_extension", "write_extension",
 })
+_WORKSPACE_TOOLS = frozenset({
+    "browse_workspace", "edit_workspace", "run_extension", "activate_extension",
+})
 
 
 REQUEST_TOOLS_DEF = {
@@ -112,10 +115,10 @@ class ToolLoopBudget:
         total_limit: int,
         per_tool_limit: int,
     ) -> dict | None:
-        if tool_name in {"browse_workspace", "edit_workspace"}:
-            per_tool_limit *= 2
         current = self.per_tool_attempts.get(tool_name, 0)
-        if current >= per_tool_limit:
+        if per_tool_limit <= 0 or (
+            tool_name not in _WORKSPACE_TOOLS and current >= per_tool_limit
+        ):
             return {
                 "ok": False,
                 "code": "per_tool_limit_reached",
