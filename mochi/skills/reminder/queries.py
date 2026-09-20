@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 
 from mochi.config import TZ
@@ -9,6 +10,8 @@ from mochi.db import _connect
 
 
 ACTIVE_STATUSES = ("pending", "running", "ready")
+REMINDER_MAX_LATENESS = timedelta(minutes=5)
+log = logging.getLogger(__name__)
 
 
 def _now() -> datetime:
@@ -33,6 +36,117 @@ def _iso(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat()
 
 
+def reminder_deadline(remind_at: str) -> datetime:
+    scheduled = _as_utc(remind_at)
+    if scheduled is None:
+        raise ValueError(f"Invalid reminder time: {remind_at!r}")
+    return scheduled + REMINDER_MAX_LATENESS
+
+
+def compute_next_occurrence(
+    remind_at: datetime,
+    recurrence: str,
+) -> datetime | None:
+    if not recurrence:
+        return None
+    if recurrence == "daily":
+        return remind_at + timedelta(days=1)
+    if recurrence == "weekdays":
+        next_dt = remind_at + timedelta(days=1)
+        while next_dt.weekday() >= 5:
+            next_dt += timedelta(days=1)
+        return next_dt
+    if recurrence == "weekly":
+        return remind_at + timedelta(weeks=1)
+    if recurrence == "monthly" or recurrence.startswith("monthly_on:"):
+        target_day = (
+            int(recurrence.split(":")[1])
+            if recurrence.startswith("monthly_on:")
+            else remind_at.day
+        )
+        month = remind_at.month + 1
+        year = remind_at.year
+        if month > 12:
+            month = 1
+            year += 1
+        return remind_at.replace(
+            year=year, month=month, day=min(target_day, 28),
+        )
+    return None
+
+
+def _expire_reminder(conn, reminder: dict, now: datetime) -> bool:
+    try:
+        deadline = reminder_deadline(reminder["remind_at"])
+        recurrence = reminder.get("recurrence")
+        next_due = None
+        if deadline <= now and recurrence:
+            due = datetime.fromisoformat(reminder["remind_at"])
+            if due.tzinfo is None:
+                due = due.replace(tzinfo=TZ)
+            next_due = compute_next_occurrence(due, recurrence)
+            if next_due is None:
+                raise ValueError(f"Invalid recurrence: {recurrence!r}")
+            while next_due is not None and reminder_deadline(next_due.isoformat()) <= now:
+                next_due = compute_next_occurrence(next_due, recurrence)
+    except (ValueError, TypeError, IndexError) as exc:
+        conn.execute(
+            "UPDATE reminders SET status = 'failed', fired = 1, "
+            "outcome = 'invalid_schedule', handled_at = ?, last_error = ?, "
+            "claimed_at = NULL, lease_until = NULL, next_attempt_at = NULL "
+            "WHERE id = ? AND status IN ('pending', 'running', 'ready')",
+            (_iso(now), str(exc), reminder["id"]),
+        )
+        log.error("Reminder #%d has an invalid schedule: %s", reminder["id"], exc)
+        return True
+    if deadline > now:
+        return False
+    # Retain the claim token solely for late preparation/send receipts.
+    # The terminal status still denies every new claim and transport chunk.
+    cursor = conn.execute(
+        "UPDATE reminders SET status = 'expired', fired = 1, outcome = 'expired', "
+        "handled_at = ?, lease_until = NULL, next_attempt_at = NULL "
+        "WHERE id = ? AND status IN ('pending', 'running', 'ready')",
+        (_iso(now), reminder["id"]),
+    )
+    if cursor.rowcount != 1:
+        return False
+    if next_due is not None:
+        conn.execute(
+            "INSERT INTO reminders "
+            "(user_id, channel_id, message, remind_at, recurrence, kind, "
+            "context, source, transport, status, fired) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0)",
+            (
+                reminder["user_id"], reminder["channel_id"],
+                reminder["message"], next_due.isoformat(), recurrence,
+                reminder["kind"], reminder["context"], reminder["source"],
+                reminder["transport"],
+            ),
+        )
+    log.warning(
+        "Reminder #%d expired: scheduled for %s",
+        reminder["id"], reminder["remind_at"],
+    )
+    return True
+
+
+def expire_overdue_reminders(*, now: datetime | None = None) -> None:
+    now = (now or _now()).astimezone(timezone.utc)
+    conn = _connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        rows = conn.execute(
+            "SELECT * FROM reminders WHERE kind IN ('notify', 'self') "
+            "AND status IN ('pending', 'running', 'ready')",
+        ).fetchall()
+        for row in rows:
+            _expire_reminder(conn, dict(row), now)
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _effective_at(reminder: dict, now: datetime) -> datetime | None:
     remind_at = _as_utc(reminder.get("remind_at"))
     retry_at = _as_utc(reminder.get("next_attempt_at"))
@@ -42,7 +156,9 @@ def _effective_at(reminder: dict, now: datetime) -> datetime | None:
         if lease_until and lease_until > now:
             return None
     candidates = [value for value in (remind_at, retry_at) if value is not None]
-    return max(candidates) if candidates else None
+    if not candidates:
+        return None
+    return min(max(candidates), reminder_deadline(reminder["remind_at"]))
 
 
 def create_reminder(
@@ -156,6 +272,7 @@ def get_schedulable_reminders(
 ) -> list[dict]:
     """Return active reminders ordered by next durable wake-up time."""
     now = (now or _now()).astimezone(timezone.utc)
+    expire_overdue_reminders(now=now)
     conn = _connect()
     try:
         rows = conn.execute(
@@ -188,14 +305,14 @@ def get_next_active_lease_expiry(
     conn = _connect()
     try:
         rows = conn.execute(
-            "SELECT lease_until FROM reminders "
+            "SELECT lease_until, remind_at FROM reminders "
             "WHERE kind IN ('notify', 'self') "
             "AND status IN ('running', 'ready') AND lease_until IS NOT NULL"
         ).fetchall()
     finally:
         conn.close()
     expiries = [
-        expiry for row in rows
+        min(expiry, reminder_deadline(row["remind_at"])) for row in rows
         if (expiry := _as_utc(row["lease_until"])) is not None
         and expiry > now
     ]
@@ -227,6 +344,9 @@ def claim_reminder(
         status = reminder.get("status")
         if status not in ACTIVE_STATUSES:
             conn.rollback()
+            return None
+        if _expire_reminder(conn, reminder, now):
+            conn.commit()
             return None
         effective_at = _effective_at(reminder, now)
         if effective_at is None or effective_at > now:
@@ -267,8 +387,10 @@ def store_prepared_text(
     conn = _connect()
     try:
         cursor = conn.execute(
-            "UPDATE reminders SET status = 'ready', prepared_text = ?, "
-            "last_error = NULL WHERE id = ? AND status = 'running' "
+            "UPDATE reminders SET "
+            "status = CASE WHEN status = 'expired' THEN status ELSE 'ready' END, "
+            "prepared_text = ?, last_error = NULL "
+            "WHERE id = ? AND status IN ('running', 'expired') "
             "AND claimed_at = ?",
             (text, reminder_id, claimed_at),
         )
@@ -286,9 +408,11 @@ def store_prepared_result(
     conn = _connect()
     try:
         cursor = conn.execute(
-            "UPDATE reminders SET status = 'ready', result_json = ?, "
-            "outcome = 'ready', last_error = NULL "
-            "WHERE id = ? AND kind = 'self' AND status = 'running' "
+            "UPDATE reminders SET "
+            "outcome = CASE WHEN status = 'expired' THEN outcome ELSE 'ready' END, "
+            "status = CASE WHEN status = 'expired' THEN status ELSE 'ready' END, "
+            "result_json = ?, last_error = NULL "
+            "WHERE id = ? AND kind = 'self' AND status IN ('running', 'expired') "
             "AND claimed_at = ?",
             (result_json, reminder_id, claimed_at),
         )
@@ -313,11 +437,14 @@ def complete_without_delivery(
     conn = _connect()
     try:
         cursor = conn.execute(
-            "UPDATE reminders SET status = 'delivered', fired = 1, "
-            "result_json = ?, outcome = ?, handled_at = ?, delivered_at = ?, "
+            "UPDATE reminders SET fired = 1, result_json = ?, "
+            "outcome = CASE WHEN status = 'expired' THEN outcome ELSE ? END, "
+            "handled_at = CASE WHEN status = 'expired' THEN handled_at ELSE ? END, "
+            "delivered_at = CASE WHEN status = 'expired' THEN delivered_at ELSE ? END, "
+            "status = CASE WHEN status = 'expired' THEN status ELSE 'delivered' END, "
             "claimed_at = NULL, lease_until = NULL, next_attempt_at = NULL, "
             "last_error = NULL WHERE id = ? AND kind = 'self' "
-            "AND status = 'running' AND claimed_at = ?",
+            "AND status IN ('running', 'expired') AND claimed_at = ?",
             (
                 result_json, outcome, handled_iso, handled_iso,
                 reminder_id, claimed_at,
@@ -331,14 +458,16 @@ def complete_without_delivery(
 
 def begin_delivery(reminder_id: int, claimed_at: str) -> int | None:
     """Advance the best-effort cursor before crossing the transport boundary."""
+    now = _now()
+    expire_overdue_reminders(now=now)
     conn = _connect()
     try:
         cursor = conn.execute(
             "UPDATE reminders SET delivery_cursor = delivery_cursor + 1, "
             "delivery_started_at = ? "
             "WHERE id = ? AND status = 'ready' AND claimed_at = ? "
-            "AND delivery_started_at IS NULL",
-            (_iso(_now()), reminder_id, claimed_at),
+            "AND delivery_started_at IS NULL AND lease_until > ?",
+            (_iso(now), reminder_id, claimed_at, _iso(now)),
         )
         if cursor.rowcount != 1:
             conn.rollback()
@@ -353,6 +482,22 @@ def begin_delivery(reminder_id: int, claimed_at: str) -> int | None:
         conn.close()
 
 
+def reminder_delivery_valid(claimed: dict, *, now: datetime | None = None) -> bool:
+    now = now or _now()
+    if now >= reminder_deadline(claimed["remind_at"]):
+        return False
+    conn = _connect()
+    try:
+        return conn.execute(
+            "SELECT 1 FROM reminders WHERE id = ? AND status = 'ready' "
+            "AND claimed_at = ? AND delivery_started_at IS NOT NULL "
+            "AND lease_until > ?",
+            (claimed["id"], claimed["claimed_at"], _iso(now)),
+        ).fetchone() is not None
+    finally:
+        conn.close()
+
+
 def store_delivery_progress(
     reminder_id: int,
     claimed_at: str,
@@ -362,7 +507,7 @@ def store_delivery_progress(
     try:
         cursor = conn.execute(
             "UPDATE reminders SET result_json = ? "
-            "WHERE id = ? AND kind = 'self' AND status = 'ready' "
+            "WHERE id = ? AND kind = 'self' AND status IN ('ready', 'expired') "
             "AND claimed_at = ? AND delivery_started_at IS NOT NULL",
             (result_json, reminder_id, claimed_at),
         )
@@ -379,13 +524,13 @@ def record_reminder_failure(
     *,
     now: datetime | None = None,
 ) -> datetime | None:
-    """Release a lease with bounded exponential backoff."""
+    """Retry only within the original five-minute delivery window."""
     now = (now or _now()).astimezone(timezone.utc)
     conn = _connect()
     try:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
-            "SELECT attempt_count, prepared_text, result_json FROM reminders "
+            "SELECT * FROM reminders "
             "WHERE id = ? AND claimed_at = ? "
             "AND status IN ('running', 'ready')",
             (reminder_id, claimed_at),
@@ -393,9 +538,15 @@ def record_reminder_failure(
         if row is None:
             conn.rollback()
             return None
+        if _expire_reminder(conn, dict(row), now):
+            conn.commit()
+            return None
         attempt_count = int(row["attempt_count"] or 0) + 1
         delay = min(60 * (2 ** min(attempt_count - 1, 6)), 3600)
-        retry_at = now + timedelta(seconds=delay)
+        # A wake at the deadline expires the row; it never sends another retry.
+        retry_at = min(
+            now + timedelta(seconds=delay), reminder_deadline(row["remind_at"]),
+        )
         retry_status = (
             "ready" if row["prepared_text"] or row["result_json"] else "pending"
         )
@@ -425,7 +576,18 @@ def complete_reminder_delivery(
     delivered_at = (delivered_at or _now()).astimezone(timezone.utc)
     conn = _connect()
     try:
-        if next_remind_at:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT status FROM reminders WHERE id = ? AND claimed_at = ? "
+            "AND status IN ('ready', 'expired') AND delivery_started_at IS NOT NULL",
+            (reminder_id, claimed_at),
+        ).fetchone()
+        if row is None:
+            conn.rollback()
+            return False
+        # Expiry blocks new sends, not receipts for an already-started send.
+        # An expired recurring occurrence already has its successor.
+        if next_remind_at and row["status"] != "expired":
             cursor = conn.execute(
                 "UPDATE reminders SET status = 'pending', fired = 0, "
                 "remind_at = ?, claimed_at = NULL, lease_until = NULL, "
@@ -443,7 +605,7 @@ def complete_reminder_delivery(
                 "delivered_at = ?, handled_at = ?, outcome = 'delivered', "
                 "claimed_at = NULL, lease_until = NULL, next_attempt_at = NULL, "
                 "last_error = NULL, delivery_started_at = NULL "
-                "WHERE id = ? AND status = 'ready' AND claimed_at = ?",
+                "WHERE id = ? AND status IN ('ready', 'expired') AND claimed_at = ?",
                 (
                     delivered_iso, delivered_iso,
                     reminder_id, claimed_at,

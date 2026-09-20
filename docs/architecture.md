@@ -238,12 +238,23 @@ outbox. SQLite claims and leases prevent concurrent workers, while the external
 send boundary remains at-least-once because transport and SQLite cannot commit
 atomically.
 
+Both reminder kinds expire five minutes after their scheduled time. Startup,
+claims, preparation timeouts, retries, and each outgoing transport chunk honor
+that original deadline. Expired reminders retain their prepared content and
+execution evidence but cannot re-enter Main or send, even after restart or
+transport recovery. A request issued before expiry can still finish afterward;
+its receipt is recorded, but no further chunk may start. Already completed tool
+effects are not undone. Legacy
+recurring reminders retain the expired occurrence and schedule only the next
+unexpired occurrence, without replaying missed dates.
+
 Autonomous Free Time/Attention delivery is single-attempt: unavailable transport,
 explicit rejection, and uncertain delivery are terminal, separately audited
 outcomes. No prepared text or tool loop is replayed on a later heartbeat or
 restart. An abandoned turn expires, retaining its result and execution evidence.
 The next clock creates a new present-time situation, not a retry of an old one.
-Explicit reminders retain their independent durable retry behavior.
+Explicit reminders retain independent durable retries within their five-minute
+delivery window.
 
 WeChat persists the owner's latest reply context using the existing encrypted
 configuration storage, scoped to the bot credentials, endpoint, and recipient.
@@ -251,6 +262,12 @@ Restart restores that context; a session rejection invalidates the matching
 token without erasing a newer inbound token. Missing context is a local
 unavailable state, not a blind API attempt. Send diagnostics retain numeric
 HTTP/API error codes, never reply tokens or raw response bodies.
+
+WeChat sends each runtime-initiated text result (Free Time, Attention, reminders,
+and silent bedtime) as one message, preserving paragraph breaks and converting
+bubble delimiters to paragraph breaks. Only the transport length limit splits
+that text, and each chunk still requires delivery authorization. Ordinary chat
+keeps conversational bubbles; other transports retain their existing formatting.
 
 ## Free Time and Attention flow
 
@@ -273,7 +290,8 @@ the transport owns delivery. A Main skip does not resolve observer facts.
 Heartbeat stores the prepared result before delivery for audit, not as a retry
 outbox. Only the current tick's newly created turns can run; retired clock kinds
 are not materialized. Each unsent bubble/chunk requires the current lease and
-awake situation; ordinary replies and reminders do not inherit this gate.
+awake situation; ordinary replies do not inherit this gate, and reminders use their own deadline
+rather than the awake-state gate.
 History and proactive delivery logs are written only after confirmed text
 delivery, even if a later sticker fails. SQLite cannot commit atomically with an
 external transport: a crash can leave delivery uncertain, but does not authorize

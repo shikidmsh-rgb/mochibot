@@ -145,3 +145,84 @@ async def test_autonomous_guard_stops_remaining_chunks_only(monkeypatch, name):
     sender.return_value = {}
     assert await transport.send_chat_result(1, ChatResult(text=text))
     assert sender.await_count > 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("delimiter", ["|||", "\n\n"])
+async def test_wechat_proactive_text_is_one_message_without_losing_paragraphs(
+    monkeypatch, delimiter,
+):
+    import mochi.transport.weixin as weixin
+
+    transport = WeixinTransport()
+    transport.restore_owner_id("owner")
+    transport._session = object()
+    transport._remember_context_token("owner", "test-token")
+    api = AsyncMock(return_value={})
+    monkeypatch.setattr(transport, "_api_post", api)
+    monkeypatch.setattr(weixin, "WEIXIN_BUBBLE_DELAY_S", 0)
+    paragraphs = [f"Paragraph number {i}." for i in range(12)]
+    result = ChatResult(text=delimiter.join(paragraphs))
+
+    assert await transport.send_proactive_result_checked(1, result)
+    api.assert_awaited_once()
+    assert api.call_args.args[1]["msg"]["item_list"][0]["text_item"]["text"] == (
+        "\n\n".join(paragraphs)
+    )
+
+    api.reset_mock()
+    assert await transport.send_chat_result(
+        1, ChatResult(text=delimiter.join(paragraphs[:2])),
+    )
+    assert api.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_wechat_proactive_length_chunks_preserve_content_and_deadline(monkeypatch):
+    import mochi.transport.weixin as weixin
+
+    transport = WeixinTransport()
+    transport.restore_owner_id("owner")
+    transport._session = object()
+    transport._remember_context_token("owner", "test-token")
+    monkeypatch.setattr(weixin, "WEIXIN_MSG_LIMIT", 20)
+    api = AsyncMock(return_value={})
+    monkeypatch.setattr(transport, "_api_post", api)
+    text = "First paragraph here.|||Second paragraph here.\n\nLast paragraph here."
+    assert await transport.send_proactive_result_checked(1, ChatResult(text=text))
+    chunks = [
+        call.args[1]["msg"]["item_list"][0]["text_item"]["text"]
+        for call in api.call_args_list
+    ]
+    assert len(chunks) > 1
+    assert all(len(chunk) <= 20 for chunk in chunks)
+    assert "".join(chunks) == text.replace("|||", "\n\n")
+
+    active = True
+
+    async def first_chunk(*args, **kwargs):
+        nonlocal active
+        active = False
+        return {}
+
+    api.reset_mock()
+    api.side_effect = first_chunk
+    with pytest.raises(DeliveryError) as stopped:
+        await transport.send_proactive_result_checked(
+            1, ChatResult(text=text), can_deliver=lambda: active,
+        )
+    assert stopped.value.outcome == "expired"
+    assert api.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_other_transports_keep_proactive_formatting(monkeypatch):
+    from mochi.transport.telegram import TelegramTransport
+
+    transport = TelegramTransport()
+    send = AsyncMock(return_value=True)
+    monkeypatch.setattr(transport, "send_chat_result_checked", send)
+    result = ChatResult(text="First bubble here.|||Second bubble here.")
+    guard = lambda: True
+    assert await transport.send_proactive_result_checked(1, result, can_deliver=guard)
+    send.assert_awaited_once_with(1, result, can_deliver=guard)

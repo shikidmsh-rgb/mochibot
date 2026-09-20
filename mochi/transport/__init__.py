@@ -33,7 +33,7 @@ class DeliveryError(RuntimeError):
 
 def ensure_delivery_allowed(can_deliver: Callable[[], bool] | None) -> None:
     if can_deliver is not None and not can_deliver():
-        raise DeliveryError("autonomous delivery window ended", outcome="expired")
+        raise DeliveryError("delivery window ended", outcome="expired")
 
 
 @dataclass(frozen=True)
@@ -107,6 +107,14 @@ class Transport(ABC):
                 outcome="delivery_unknown",
             )
         return True
+
+    async def send_proactive_result_checked(
+        self, user_id: int, result, *, can_deliver: Callable[[], bool] | None = None,
+    ) -> bool:
+        """Deliver a runtime-initiated result using transport-specific formatting."""
+        return await self.send_chat_result_checked(
+            user_id, result, can_deliver=can_deliver,
+        )
 
     @property
     @abstractmethod

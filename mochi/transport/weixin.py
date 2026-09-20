@@ -265,11 +265,14 @@ class WeixinTransport(Transport):
     async def _send_text_checked(
         self, weixin_id: str, text: str, context_token: str,
         *, can_deliver: Callable[[], bool] | None = None,
+        single_message: bool = False,
     ) -> bool:
         text = clean_reply_markers(text)
+        if single_message:
+            text = text.replace("|||", "\n\n").strip()
         if not text:
             raise DeliveryError("wechat: empty text", outcome="delivery_unavailable")
-        bubbles = split_bubbles(text)
+        bubbles = [text] if single_message else split_bubbles(text)
         for i, bubble in enumerate(bubbles):
             if i > 0:
                 await asyncio.sleep(WEIXIN_BUBBLE_DELAY_S)
@@ -296,6 +299,7 @@ class WeixinTransport(Transport):
     async def send_chat_result_checked(
         self, user_id: int, result, *, context_token: str | None = None,
         can_deliver: Callable[[], bool] | None = None,
+        single_message: bool = False,
     ) -> bool:
         if not self._session or not self._owner_weixin_id or not result.text:
             raise DeliveryError(
@@ -309,10 +313,18 @@ class WeixinTransport(Transport):
         )
         delivered = await self._send_text_checked(
             self._owner_weixin_id, result.text, token, can_deliver=can_deliver,
+            single_message=single_message,
         )
         if delivered:
             result.confirm_delivered()
         return delivered
+
+    async def send_proactive_result_checked(
+        self, user_id: int, result, *, can_deliver: Callable[[], bool] | None = None,
+    ) -> bool:
+        return await self.send_chat_result_checked(
+            user_id, result, can_deliver=can_deliver, single_message=True,
+        )
 
     # ── HTTP API layer ───────────────────────────────────────────────────
 
