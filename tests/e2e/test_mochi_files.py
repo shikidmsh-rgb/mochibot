@@ -12,10 +12,7 @@ from mochi.transport import IncomingMessage
 from tests.e2e.mock_llm import make_response, make_tool_call
 
 
-WORKSPACE_POINTER = (
-    "`personal_workspace` 是保存资料和自行开发个人扩展的入口；"
-    "用法、规范与模板见工具说明及 `browse_workspace` 的 `guide`。"
-)
+WORKSPACE_POINTER = "`personal_workspace` 是保存资料和自行开发个人扩展的入口。"
 FILES_TOOLS = {"browse_workspace", "edit_workspace"}
 WORKSPACE_TOOLS = FILES_TOOLS | {"run_extension", "activate_extension"}
 

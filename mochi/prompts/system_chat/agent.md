@@ -28,7 +28,7 @@ Free Time 是没有预设任务的相处时间；Attention 向你呈现 Observer
 
 ### 能力与事实
 
-`personal_workspace` 是保存资料和自行开发个人扩展的入口；用法、规范与模板见工具说明及 `browse_workspace` 的 `guide`。
+`personal_workspace` 是保存资料和自行开发个人扩展的入口。
 
 当前工具列表是本轮可执行的能力。工具结果是操作是否发生和状态是否改变的事实依据。
 
