@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterable
 
-from mochi.skills.base import SkillResult
+from mochi.skills.base import Skill, SkillResult
 from mochi.tool_execution import model_result_for
 
 
@@ -17,6 +17,7 @@ class AvailableTool:
     name: str
     definition_json: str
     source: str
+    binding: Skill | None = field(default=None, compare=False, repr=False)
 
     def definition(self) -> dict:
         return json.loads(self.definition_json)
@@ -53,6 +54,27 @@ class ToolAvailability:
             if entry.name == tool_name:
                 return entry.source
         return None
+
+    def binding_for(self, tool_name: str) -> Skill | None:
+        return next((entry.binding for entry in self.entries if entry.name == tool_name), None)
+
+    def refresh_extensions(self, transport: str = "") -> "ToolAvailability":
+        """Refresh already authorized names between rounds, never during one."""
+        from mochi import skills, tool_policy
+
+        entries = []
+        for entry in self.entries:
+            if entry.binding is None:
+                entries.append(entry)
+                continue
+            if skills.get_tool_skill(entry.name) != entry.binding.name:
+                continue
+            definitions = tool_policy.filter_tools(
+                skills.get_tools_by_tool_names([entry.name], transport=transport),
+            )
+            refreshed = ToolAvailability.from_definitions(definitions, source=entry.source)
+            entries.extend(refreshed.entries)
+        return ToolAvailability(tuple(entries))
 
     def parameters_for(self, tool_name: str) -> dict | None:
         """Return a fresh copy of the current round's argument schema."""
@@ -105,10 +127,14 @@ class ToolAvailability:
                 )
             except (TypeError, ValueError):
                 continue
+            from mochi import skills
+
+            skill = skills.get_skill(skills.get_tool_skill(name) or "")
             additions.append(AvailableTool(
                 name=name,
                 definition_json=definition_json,
                 source=source,
+                binding=skill if skill is not None and skill.external else None,
             ))
             existing.add(name)
         if not additions:

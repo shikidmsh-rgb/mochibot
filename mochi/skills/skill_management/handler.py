@@ -182,11 +182,15 @@ class SkillManagementSkill(Skill):
 
         lines = []
         for s in infos:
-            if s["auto_disabled"]:
-                missing = ", ".join(s["config_missing"])
-                status = f"AUTO_OFF (缺: {missing})"
+            if s.get("load_error"):
+                status = "LOAD_ERROR"
             elif s["admin_disabled"]:
                 status = "OFF"
+            elif not s.get("loaded", True):
+                status = "NOT_LOADED"
+            elif s["auto_disabled"]:
+                missing = ", ".join(s["config_missing"])
+                status = f"AUTO_OFF (缺: {missing})"
             else:
                 status = "ON"
 
@@ -195,19 +199,22 @@ class SkillManagementSkill(Skill):
             lines.append(
                 f"• {s['name']} [{status}] — {s['description']}\n"
                 f"  type={s['type']}, tools: {tools_str}{config_tag}"
+                + ("\n  草稿可由 Mochi 使用 activate_extension 启用，无需重启。" if s.get("activation_required") else "")
+                + (f"\n  {s['load_error']}" if s.get("load_error") else "")
             )
 
         return SkillResult(
-            output=f"Registered skills ({len(infos)}):\n\n" + "\n\n".join(lines),
+            output=f"Skills ({len(infos)}):\n\n" + "\n\n".join(lines),
         )
 
     # ── toggle_skill ─────────────────────────────────────────
 
     def _toggle_skill(self, skill_name: str, enabled: bool) -> SkillResult:
-        from mochi.skills import get_skill, refresh_capability_summary
+        from mochi.extensions.store import ExtensionError
+        from mochi.skills import get_skill_for_management, load_installed_extension, refresh_capability_summary
         from mochi.db import get_disabled_skills, set_skill_enabled
 
-        skill = get_skill(skill_name)
+        skill = get_skill_for_management(skill_name)
         if not skill:
             return SkillResult(output=f"Unknown skill: '{skill_name}'", success=False)
 
@@ -222,27 +229,46 @@ class SkillManagementSkill(Skill):
         if enabled and getattr(skill, "_config_missing", []):
             missing = ", ".join(skill._config_missing)
             return SkillResult(
-                output=f"无法启用 '{skill_name}' — 缺少必要配置: {missing}。请先配置后重启。",
+                output=f"无法启用 '{skill_name}' — 缺少必要配置: {missing}。请先补齐配置。",
                 success=False,
             )
 
         was_enabled = skill_name not in get_disabled_skills()
         set_skill_enabled(skill_name, enabled)
+        load_error = ""
+        unknown_effects = False
+        loaded = True
+        if enabled and skill.external:
+            try:
+                loaded = load_installed_extension(skill_name)
+            except ExtensionError as exc:
+                loaded = False
+                load_error = str(exc)
+                unknown_effects = exc.state_change_unknown
         refresh_capability_summary()
         action = "已启用" if enabled else "已禁用"
+        effect = (
+            f"加载失败：{load_error}" if load_error
+            else "尚无已安装工具；Mochi 可使用 activate_extension 启用草稿，无需重启。"
+            if not loaded
+            else "立即生效。"
+        )
         return SkillResult(
-            output=f"技能 '{skill_name}' {action}，立即生效。",
+            output=f"技能 '{skill_name}' {action}，{effect}",
+            success=not bool(load_error),
+            error_code="extension_load_failed" if load_error else "",
+            state_change_unknown=unknown_effects,
             state_changed=was_enabled != enabled,
         )
 
     # ── get_skill_config ─────────────────────────────────────
 
     def _get_skill_config(self, skill_name: str) -> SkillResult:
-        from mochi.skills import get_skill
+        from mochi.skills import get_skill_configuration
         from mochi.db import get_skill_config
         from mochi.skill_config_resolver import _env_key
 
-        skill = get_skill(skill_name)
+        skill = get_skill_configuration(skill_name)
         if not skill:
             return SkillResult(output=f"Unknown skill: '{skill_name}'", success=False)
 
@@ -252,7 +278,7 @@ class SkillManagementSkill(Skill):
 
         db_overrides = get_skill_config(skill_name)
         # Keys that should be masked (internal or typically secret)
-        secret_keys = {f.key for f in schema if f.internal}
+        secret_keys = {f.key for f in schema if f.internal or f.secret}
         secret_keys |= set(getattr(skill, "requires_config", []))
 
         lines = [f"Config for '{skill_name}':\n"]
@@ -276,7 +302,7 @@ class SkillManagementSkill(Skill):
             lines.append(
                 f"• {field.key} = {display} (source: {source}, type: {field.type})\n"
                 f"  {field.description}\n"
-                f"  default: {field.default}"
+                f"  default: {'***' if field.key in secret_keys and field.default else field.default}"
             )
 
         return SkillResult(output="\n\n".join(lines))
@@ -284,7 +310,7 @@ class SkillManagementSkill(Skill):
     # ── set_skill_config ─────────────────────────────────────
 
     def _set_skill_config(self, skill_name: str, key: str, value: str) -> SkillResult:
-        from mochi.skills import get_skill, refresh_capability_summary
+        from mochi.skills import get_skill_configuration, refresh_skill_configuration
         from mochi.db import (
             delete_skill_config,
             get_skill_config,
@@ -292,7 +318,7 @@ class SkillManagementSkill(Skill):
         )
         from mochi.skill_config_resolver import _cast
 
-        skill = get_skill(skill_name)
+        skill = get_skill_configuration(skill_name)
         if not skill:
             return SkillResult(output=f"Unknown skill: '{skill_name}'", success=False)
 
@@ -303,34 +329,35 @@ class SkillManagementSkill(Skill):
                 output=f"技能 '{skill_name}' 没有配置项 '{key}'。可用: {valid_keys}",
                 success=False,
             )
+        field = schema_map[key]
+        secret = field.secret or field.internal or key in skill.requires_config
 
         # Empty value = clear DB override
         if not value:
             changed = key in get_skill_config(skill_name)
             delete_skill_config(skill_name, key)
             skill.refresh_config()
-            new_val = skill.config.get(key)
-            refresh_capability_summary()
+            new_val = "***" if secret else skill.config.get(key)
+            refresh_skill_configuration(skill_name)
             return SkillResult(
                 output=f"已清除 '{skill_name}.{key}' 的自定义值，当前使用: {new_val}",
                 state_changed=changed,
             )
 
         # Validate type
-        field = schema_map[key]
         try:
             _cast(value, field.type)
         except (ValueError, TypeError):
             return SkillResult(
-                output=f"值 '{value}' 不符合类型 '{field.type}'。",
+                output=f"配置值不符合类型 '{field.type}'。",
                 success=False,
             )
 
         changed = get_skill_config(skill_name).get(key) != value
         set_skill_config(skill_name, key, value)
         skill.refresh_config()
-        new_val = skill.config.get(key)
-        refresh_capability_summary()
+        new_val = "***" if secret else skill.config.get(key)
+        refresh_skill_configuration(skill_name)
         return SkillResult(
             output=f"已设置 '{skill_name}.{key}' = {new_val}（已保存到数据库，立即生效）",
             state_changed=changed,

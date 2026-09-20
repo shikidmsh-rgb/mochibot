@@ -20,6 +20,16 @@ setup, not broad provider or multi-user infrastructure.
 - **Skills** (`mochi/skills/`) contain feature behavior and deterministic tool
   operations. Transports and heartbeat call them only through Main or the skill
   registry.
+- **Personal extensions** (`mochi/extensions/`) own code under the Git-ignored
+  `data/extensions/` directory, outside official source. The default-enabled
+  development skill gives Main on-demand inspection, authoring, execution, and
+  live activation tools; Main remains the sole author and judge of its work.
+  Development is visible to Main from startup and needs no separate authorization.
+  The ordinary skill toggle can disable it; explicit disabled settings persist.
+  Activation loads an immutable candidate with its configuration and own data,
+  validates tool ownership, persists current code with one previous version,
+  then swaps the registry. Failure preserves the old registry; trusted candidate
+  code may already have affected data or external services.
 - **Observers** (`mochi/observers/`) are read-only factual producers. Each
   source projects only bounded, provenance-safe unresolved facts; omission on
   a later successful source scan resolves them. Their cached safe views expose
@@ -33,6 +43,21 @@ setup, not broad provider or multi-user infrastructure.
 
 Dependency direction is transport/heartbeat -> Main -> skills and persistence.
 Skills do not import transports or orchestration.
+
+Personal extensions are trusted in-process Python tools, not a sandbox. Their
+supported interface is the existing Skill context/result, injected configuration,
+and an extension-owned data directory; shared database, Observer, prompt, and
+lifecycle hooks are not part of this interface. Development scripts run bounded
+subprocesses against disposable copies, without a second Main runtime or an
+automatic continuation loop. Main decides how to build, test, and activate;
+there is no required workflow or verification-success gate. Owner management
+through conversation or Admin can inspect and disable failed packages from
+metadata without importing them. Code lives in `draft`, `current`, and `previous`;
+extension-owned `data` survives replacement. Live instances use temporary
+immutable copies, so draft edits or activation cannot change in-flight code.
+Startup loads enabled installed current versions; ordinary rediscovery does not
+import newly restored code. Explicit activation or enable/load can load code
+live. One previous code copy supports manual recovery, not data rollback.
 
 Mochi Files is separate from Core, Memory, KG, Diary, and SQLite. Its two
 on-demand tools are available only to Main tool calls and are never used by
@@ -99,11 +124,19 @@ come from execution contracts, never by interpreting result prose.
 Tool metadata uses `resident`, `routed`, or `on_demand`. Resident tools enter
 the turn directly; the Lite pre-router sees only routed skills; and
 `request_tools` may add enabled, configured, transport-compatible routed or
-on-demand tools for a later provider round. It never authorizes another call in
+on-demand tools for a later provider round, including newly activated personal
+resident tools that were absent at turn startup. It never authorizes another call in
 the same provider response and never mutates the global registry. `locked`
 controls only whether the owner may disable a skill. Concrete deny rules, rate
 limits, state-change facts, recoverability, and receipts remain execution
 contracts rather than an abstract risk taxonomy.
+
+After live extension activation, in-flight calls finish on their existing
+immutable code snapshot. Subsequent provider rounds refresh tools already
+authorized for the turn; newly added names still require `request_tools`.
+Authoring, activation, and use can therefore complete within one conversation
+turn, without a restart or an extra autonomous workflow. The default provider
+round budget is 16; ordinary-tool, per-tool, and request limits remain 8, 3, and 4.
 
 Explicit owner requests to change sleep/wake hours, timezone, or the daily
 Free Time/Attention limit route `manage_agent_settings` into Main's turn.

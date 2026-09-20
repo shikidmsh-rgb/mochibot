@@ -16,7 +16,7 @@ from mochi.db import init_db
 # ── Database isolation ──
 
 @pytest.fixture(autouse=True)
-def fresh_db(tmp_path, monkeypatch):
+def fresh_db(tmp_path, monkeypatch, extension_state):
     """Fresh SQLite database for each test."""
     db_path = tmp_path / "e2e_test.db"
     import mochi.db as db_module
@@ -85,7 +85,7 @@ def mock_llm_factory(monkeypatch):
 # ── Skill discovery (session-scoped is not safe with monkeypatch, use module) ──
 
 @pytest.fixture(autouse=True)
-def discover_skills():
+def discover_skills(fresh_db):
     """Discover skills once — they register globally and persist."""
     import mochi.skills as skill_registry
     if not skill_registry.get_tools():

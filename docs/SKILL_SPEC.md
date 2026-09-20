@@ -2,6 +2,14 @@
 
 Skill 是自包含的功能模块。本文档涵盖创建一个 skill 所需的全部内容。
 
+本文主要描述随官方源码发布的内置 Skill。Main 自己开发、独立保存的个人工具请使用
+[个人扩展规范](extensions.md)：同样使用 `SKILL.md` 和 `handler.py`，但放在
+`data/extensions/` 下，使用注入的配置与独立数据目录，不使用共享数据库或 Observer 等内部接口。
+个人开发默认开启，Main 从启动起就能发现此能力，无需单独授权；普通技能开关仍可关闭它。
+Main 自主使用 `inspect_extension`、`write_extension`、`run_extension` 和
+`activate_extension`，无需 Admin 或重启；新工具经 `request_tools` 进入后续 provider round，
+可在同一轮对话继续使用。下文的源码目录和重启步骤面向内置 Skill。
+
 ## 快速开始
 
 ```bash

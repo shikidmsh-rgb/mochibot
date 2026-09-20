@@ -1074,6 +1074,7 @@ async def chat(
         return "" if reply == "[SKIP]" else reply
 
     for round_num in range(max_tool_rounds):
+        availability = availability.refresh_extensions(transport)
         round_availability = availability
         for _attempt in range(2):
             try:
@@ -1138,7 +1139,7 @@ async def chat(
             ]
         messages.append(assistant_msg)
 
-        pending_definitions: list[dict] = []
+        next_availability = round_availability
         for tc in response.tool_calls:
             if not response.tool_calls_complete:
                 messages.append({
@@ -1203,7 +1204,9 @@ async def chat(
                         round_availability,
                         transport=transport,
                     )
-                pending_definitions.extend(additions)
+                next_availability = next_availability.with_definitions(
+                    additions, source=f"request_round_{round_num + 1}",
+                )
                 result_text = json.dumps(request_result, ensure_ascii=False)
                 messages.append({
                     "role": "tool",
@@ -1294,6 +1297,8 @@ async def chat(
             skill_name = (
                 "memory"
                 if is_weekly_tool
+                else round_availability.binding_for(tc["name"]).name
+                if round_availability.binding_for(tc["name"]) is not None
                 else skill_registry.get_tool_skill(tc["name"]) or ""
             )
             execution_id = start_tool_execution(
@@ -1326,6 +1331,7 @@ async def chat(
                         user_id=user_id, channel_id=channel_id,
                         transport=transport,
                         actor="main",
+                        bound_skill=round_availability.binding_for(tc["name"]),
                         owner_authorized=(
                             message.owner_authorized
                             if message is not None
@@ -1371,11 +1377,7 @@ async def chat(
                 "content": model_result_for(result),
             })
 
-        if pending_definitions:
-            availability = availability.with_definitions(
-                pending_definitions,
-                source=f"request_round_{round_num + 1}",
-            )
+        availability = next_availability
 
     # If we exhausted tool rounds, return whatever we have
     reply = STICKER_RE.sub("", response.content or "").strip()

@@ -1391,11 +1391,12 @@ async function loadSettings() {
   const generation = ++_settingsRequestGeneration;
   const el = document.getElementById('settings-content');
   try {
-    const [s, botStatus, tiers, prefs] = await Promise.all([
+    const [s, botStatus, tiers, prefs, skillData] = await Promise.all([
       api('GET', '/status'),
       api('GET', '/bot/status').catch(() => ({running: false})),
       api('GET', '/tiers'),
       api('GET', '/preferences'),
+      api('GET', '/skills'),
     ]);
     if (generation !== _settingsRequestGeneration) return;
     const hasMainModel = Boolean(tiers.main?.assigned_name && tiers.main?.supported && tiers.main?.api_key_set);
@@ -1562,6 +1563,7 @@ async function loadSettings() {
         <span style="font-size:11px;color:var(--text-soft);margin-left:8px">约一分钟内生效</span></div>
     </div>`;
 
+    html += renderPersonalSkills(skillData.skills);
     el.innerHTML = html;
     if (_wxQrPollTimer && _wxQrActiveContent) {
       const canvas = document.getElementById('wx-qr-canvas');
@@ -1583,6 +1585,82 @@ async function loadSettings() {
     el.innerHTML = `<div class="card" style="color:var(--danger)">❌ ${esc(e.message)}</div>`;
   }
 }
+
+function renderPersonalSkills(skills) {
+  const personal = skills.filter(s => s.source === 'personal' || s.name === 'development');
+  let html = `<div class="card" id="personal-skills"><div class="settings-section-head">
+    <div><div class="settings-section-title">开发与个人工具</div>
+    <div class="settings-section-copy">Mochi 默认可以自己编写、调试并启用工具，无需单独授权或重启</div></div></div>
+    <p style="font-size:12px;color:var(--text-soft);margin-bottom:12px">开发默认开启，可在此关闭或查看状态。Main 运行可信的本地 Python，可访问本机文件和外部服务；这不是安全沙箱。关闭开发不会关闭已有个人工具。</p>`;
+  for (const s of personal) {
+    const state = s.admin_disabled ? '关闭' : s.load_error && !s.loaded ? '加载失败'
+      : s.config_missing.length ? '缺少配置' : s.loaded ? '可用'
+      : s.activation_required ? '需要激活' : '尚未加载';
+    html += `<div style="padding:12px 0;border-top:1px solid var(--border)">
+      <div style="display:flex;align-items:center;gap:12px">
+        <label class="toggle"><input type="checkbox" data-skill-toggle="${esc(s.name)}" ${s.admin_disabled?'':'checked'}><span class="slider"></span></label>
+        <strong>${s.name === 'development' ? 'Mochi 开发工具' : esc(s.name)}</strong>
+        <span class="badge ${s.enabled?'badge-ok':'badge-gray'}">${esc(state)}</span>
+        ${s.source === 'personal' && s.loaded?'<span class="badge badge-info">已加载</span>':''}
+      </div>
+      <div style="font-size:12px;color:var(--text-soft);margin-top:6px">${esc(s.description)}</div>`;
+    if (s.load_error) html += `<div style="font-size:12px;color:var(--danger);margin-top:6px;overflow-wrap:anywhere">${esc(s.load_error)}</div>`;
+    if (s.source === 'personal') {
+      html += `<div style="font-size:12px;margin-top:6px">工具：${esc(s.tools.join(', ') || '尚未注册')}</div>`;
+      for (const field of s.config_schema) {
+        const secret = field.secret || (s.config_required || s.requires_config).includes(field.key);
+        html += `<div data-extension-field style="display:flex;align-items:center;gap:8px;margin-top:8px">
+          <label style="min-width:120px;font-size:12px">${esc(field.key)}</label>
+          <input class="form-input" type="${secret?'password':'text'}" autocomplete="off"
+            aria-label="${esc(s.name + ' ' + field.key)}"
+            placeholder="${s.config_status[field.key]?'已配置；输入新值替换':'尚未配置'}">
+          <button class="btn btn-ghost btn-sm" data-skill-config-save="${esc(s.name)}" data-config-key="${esc(field.key)}">保存</button></div>
+          <div style="font-size:11px;color:var(--text-soft)">${esc(field.description)} · 留空保存会清除自定义值</div>`;
+      }
+    }
+    html += '</div>';
+  }
+  if (personal.some(s => s.activation_required)) {
+    html += '<p style="font-size:12px;margin-top:12px">仅有草稿的工具需要 Mochi 调用 activate_extension 激活；启用已有安装版本会直接尝试加载。草稿编辑不影响正在使用的代码。</p>';
+  }
+  return html + '</div>';
+}
+
+document.getElementById('settings-content').addEventListener('change', async e => {
+  const input = e.target.closest('[data-skill-toggle]');
+  if (!input) return;
+  const name = input.dataset.skillToggle;
+  input.disabled = true;
+  try {
+    const result = await api('PUT', '/skills/' + encodeURIComponent(name) + '/enabled', {enabled: input.checked});
+    showToast(result.enabled && result.activation_required ? '已启用；草稿仍需 Mochi 激活' : '工具开关已更新');
+    await loadSettings();
+  } catch (error) {
+    showToast(error.message);
+    await loadSettings();
+  } finally {
+    input.disabled = false;
+  }
+});
+
+document.getElementById('settings-content').addEventListener('click', async e => {
+  const button = e.target.closest('[data-skill-config-save]');
+  if (!button) return;
+  const input = button.closest('[data-extension-field]').querySelector('input');
+  button.disabled = true;
+  try {
+    await api('PUT', '/skills/' + encodeURIComponent(button.dataset.skillConfigSave) + '/config', {
+      key: button.dataset.configKey, value: input.value,
+    });
+    input.value = '';
+    showToast('配置已保存');
+    await loadSettings();
+  } catch (error) {
+    showToast('保存失败：' + error.message);
+  } finally {
+    button.disabled = false;
+  }
+});
 
 function toggleProactivePreference() {
   const enabled = document.getElementById('pref-proactive-enabled')?.checked;

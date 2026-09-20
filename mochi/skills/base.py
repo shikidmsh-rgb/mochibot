@@ -14,6 +14,7 @@ import re
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from pathlib import Path
 
 log = logging.getLogger(__name__)
 
@@ -112,6 +113,7 @@ class ConfigField:
     default: str        # always str — cast by resolver
     description: str = ""
     internal: bool = False  # hidden from admin UI when True
+    secret: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +141,7 @@ def _flush_config_entry(
         default=props["default"],
         description=props.get("description", ""),
         internal=props.get("internal", "").lower() in ("true", "yes", "1"),
+        secret=props.get("secret", "").lower() in ("true", "yes", "1"),
     ))
 
 
@@ -578,9 +581,12 @@ class Skill(ABC):
         self._config_schema_typed: list[ConfigField] = []  # v3 typed schema
         self.sub_skills: dict[str, str] = {}
         self.locked: bool = False                     # cannot be disabled
-        self.config: dict = {}                       # resolved config values
+        # Preserve context injected before a personal extension's constructor.
+        self.config: dict = dict(getattr(self, "config", {}))
         self.diary_status_order: int = 50            # diary panel ordering (lower = higher)
         self.exclude_transports: list[str] = []      # transports where this skill is unavailable
+        self.external: bool = getattr(self, "external", False)
+        self.data_dir: Path | None = getattr(self, "data_dir", None)
 
     @property
     def name(self) -> str:
@@ -637,7 +643,7 @@ class Skill(ABC):
             self._config_schema_typed = raw_schema
             # Also populate dict-based for backward compat
             self.config_schema = [
-                {"key": f.key, "type": f.type, "secret": False,
+                {"key": f.key, "type": f.type, "secret": f.secret,
                  "default": f.default, "description": f.description,
                  "internal": f.internal}
                 for f in raw_schema
@@ -652,6 +658,7 @@ class Skill(ABC):
                     default=d.get("default", ""),
                     description=d.get("description", ""),
                     internal=bool(d.get("internal", False)),
+                    secret=bool(d.get("secret", False)),
                 )
                 for d in raw_schema
                 if d.get("key")
@@ -686,6 +693,8 @@ class Skill(ABC):
         # 1. Resolved config dict (populated by framework)
         if key in self.config:
             return str(self.config[key])
+        if self.external:
+            return ""
 
         # 2. DB override (per-skill)
         try:

@@ -18,8 +18,27 @@ UTC = timezone.utc
 _skills_discovered = False
 
 
+@pytest.fixture
+def extension_state(tmp_path, monkeypatch):
+    from mochi.extensions import store
+
+    monkeypatch.setattr(store, "ROOT", tmp_path / "extensions")
+    monkeypatch.setattr(skill_registry, "_external_discovered", False)
+    monkeypatch.setattr(skill_registry, "_external_errors", {})
+    yield
+    external = {
+        name for name, skill in skill_registry.all_skills().items() if skill.external
+    }
+    for name in external:
+        skill_registry._skills.pop(name, None)
+    for tool, owner in list(skill_registry._tool_map.items()):
+        if owner in external:
+            skill_registry._tool_map.pop(tool)
+    skill_registry._capability_summary.clear()
+
+
 @pytest.fixture(autouse=True)
-def fresh_db(tmp_path, monkeypatch):
+def fresh_db(tmp_path, monkeypatch, extension_state):
     """Fresh SQLite database for each test."""
     global _skills_discovered
     db_path = tmp_path / "unit_test.db"

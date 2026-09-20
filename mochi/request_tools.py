@@ -205,7 +205,7 @@ def build_catalog(transport: str = "") -> RequestCatalog:
         requestable_definitions = tuple(
             definition
             for definition in visible_definitions
-            if _tool_load(definition) != "resident"
+            if _tool_load(definition) != "resident" or skill.external
         )
         if not requestable_definitions:
             continue
@@ -275,6 +275,7 @@ def resolve_request(
         elif (
             exact in catalog.tool_loads
             and catalog.tool_loads[exact] == "resident"
+            and exact in availability.names
         ):
             if exact not in seen_resident_tools:
                 already_loaded.append({

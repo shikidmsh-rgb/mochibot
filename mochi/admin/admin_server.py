@@ -956,6 +956,87 @@ if HAS_FASTAPI:
             set_system_override(key, str(value))
         return {"ok": True, "updated": list(normalized)}
 
+    @app.get("/api/skills", dependencies=[Depends(_verify_token)])
+    async def api_get_skills():
+        from mochi.skills import get_skill_info_all
+
+        infos = get_skill_info_all()
+        for info in infos:
+            info["config_schema"] = [
+                {
+                    **field,
+                    "default": "" if field.get("secret") or field["key"] in info["config_required"]
+                    else field.get("default", ""),
+                }
+                for field in info["config_schema"] if not field.get("internal")
+            ]
+        return {"skills": infos}
+
+    @app.put("/api/skills/{name}/enabled", dependencies=[Depends(_verify_token)])
+    async def api_set_skill_enabled(name: str, request: Request):
+        from mochi.db import set_skill_enabled
+        from mochi.extensions.store import ExtensionError
+        from mochi.skills import (
+            get_skill, get_skill_for_management, load_installed_extension,
+            refresh_capability_summary,
+        )
+
+        body = await request.json()
+        if not isinstance(body, dict) or type(body.get("enabled")) is not bool:
+            raise HTTPException(400, "enabled must be a boolean")
+        skill = get_skill_for_management(name)
+        if skill is None:
+            raise HTTPException(404, "Unknown skill")
+        enabled = body["enabled"]
+        if skill.locked and not enabled:
+            raise HTTPException(400, "This built-in skill cannot be disabled")
+        set_skill_enabled(name, enabled)
+        if enabled and skill.external:
+            try:
+                load_installed_extension(name)
+            except ExtensionError as exc:
+                refresh_capability_summary()
+                return JSONResponse(status_code=409, content={
+                    "ok": False, "enabled": enabled, "loaded": False,
+                    "activation_required": True, "load_error": str(exc),
+                    "error": f"启用开关已保存，但工具加载失败：{exc}",
+                })
+        refresh_capability_summary()
+        loaded = get_skill(name) is not None
+        return {
+            "ok": True, "enabled": enabled, "loaded": loaded,
+            "activation_required": skill.external and not loaded,
+        }
+
+    @app.put("/api/skills/{name}/config", dependencies=[Depends(_verify_token)])
+    async def api_set_skill_config(name: str, request: Request):
+        from mochi.db import delete_skill_config, set_skill_config
+        from mochi.skill_config_resolver import _cast
+        from mochi.skills import get_skill_configuration, refresh_skill_configuration
+
+        skill = get_skill_configuration(name)
+        if skill is None:
+            raise HTTPException(404, "Unknown skill")
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise HTTPException(400, "Expected a configuration object")
+        key, value = body.get("key"), body.get("value")
+        if not isinstance(key, str) or not isinstance(value, str):
+            raise HTTPException(400, "key and value must be strings")
+        field = next((f for f in skill._config_schema_typed if f.key == key and not f.internal), None)
+        if field is None:
+            raise HTTPException(400, "Unknown configuration field")
+        if value:
+            try:
+                _cast(value, field.type)
+            except (ValueError, TypeError):
+                raise HTTPException(400, f"Expected configuration type {field.type}")
+            set_skill_config(name, key, value)
+        else:
+            delete_skill_config(name, key)
+        refresh_skill_configuration(name)
+        return {"ok": True, "key": key}
+
     # ── Generic .env writer ───────────────────────────────────────────────
 
     @app.put("/api/env", dependencies=[Depends(_verify_token)])

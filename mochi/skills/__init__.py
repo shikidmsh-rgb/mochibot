@@ -57,6 +57,201 @@ _SKILLS_DIR = Path(__file__).parent
 _skills: dict[str, Skill] = {}           # name → skill instance
 _tool_map: dict[str, str] = {}           # tool_name → skill_name
 _prompt_hooks: dict[str, Skill] = {}     # skill_name → skill (has prompt_section)
+_external_discovered = False
+_external_errors: dict[str, str] = {}
+
+
+class _ExtensionMetadata(Skill):
+    """Read-only management metadata, never registered for execution."""
+
+    async def execute(self, context: SkillContext) -> SkillResult:
+        raise RuntimeError("Extension metadata is not executable")
+
+
+def _validate_registration(skill: Skill, *, replace: bool = False) -> list[str]:
+    existing = _skills.get(skill.name)
+    if existing and (existing.external or skill.external) and not (
+        replace and existing.external and skill.external
+    ):
+        raise ValueError(f"Duplicate skill name '{skill.name}'")
+    tool_names = [tool["function"]["name"] for tool in skill.get_tools()]
+    if len(tool_names) != len(set(tool_names)):
+        raise ValueError(f"Duplicate tool names in '{skill.name}'")
+    for tool_name in tool_names:
+        owner = _tool_map.get(tool_name)
+        if owner and owner != skill.name:
+            raise ValueError(
+                f"Duplicate tool name '{tool_name}' in skills "
+                f"'{owner}' and '{skill.name}'"
+            )
+        if tool_name in {"request_tools", "enter_bedtime"}:
+            raise ValueError(f"Reserved framework tool '{tool_name}'")
+    return tool_names
+
+
+def _register_skill(skill: Skill, *, replace: bool = False) -> None:
+    """Publish a complete registration only after checking ownership."""
+    tool_names = _validate_registration(skill, replace=replace)
+    if replace:
+        for name, owner in list(_tool_map.items()):
+            if owner == skill.name:
+                del _tool_map[name]
+    _skills[skill.name] = skill
+    _tool_map.update(dict.fromkeys(tool_names, skill.name))
+    if not skill.external and callable(getattr(skill, "prompt_section", None)):
+        _prompt_hooks[skill.name] = skill
+
+
+def _load_external(name: str, *, activate: bool = False) -> Skill:
+    from mochi.extensions import loader, store
+    from mochi.skill_config_resolver import resolve_skill_config
+
+    entered_code = False
+    try:
+        with store._operation():
+            if name in _get_disabled_skills():
+                raise store.ExtensionError("extension_disabled", "Enable this extension before activating it.")
+            root = store.extension_root(name)
+            package = root / ("draft" if activate else "current")
+            metadata = _ExtensionMetadata()
+            metadata.external = True
+            metadata._populate_from_md(loader.read_metadata(name, package))
+            config = resolve_skill_config(name, metadata._config_schema_typed)
+            metadata.config = config
+            missing = get_missing_config(metadata)
+            if activate and missing:
+                raise store.ExtensionError("missing_config", f"Configure these keys before activation: {', '.join(missing)}")
+            loader.validate_package(name, package)
+            entered_code = True
+            skill = loader.load_snapshot(name, package, data_dir=root / "data", config=config)
+            _validate_registration(skill, replace=True)
+            if activate:
+                store.publish(name, Path(skill.__module_file__).parent)
+            _register_skill(skill, replace=True)
+            _external_errors.pop(name, None)
+    except Exception as exc:
+        if name not in _skills:
+            _external_errors[name] = str(exc)
+        log.exception("Personal extension %s failed: %s", name, exc)
+        raise store.ExtensionError(
+            getattr(exc, "code", "extension_load_failed"),
+            f"{exc}. The running registration has not been replaced.",
+            state_changed=bool(getattr(exc, "state_changed", False)),
+            state_change_unknown=entered_code or bool(getattr(exc, "state_change_unknown", False)),
+        ) from exc
+    refresh_capability_summary()
+    return skill
+
+
+def activate_extension(name: str) -> dict:
+    skill = _load_external(name, activate=True)
+    return {
+        "name": name, "active": True, "persisted": True,
+        "tools": sorted(skill.tool_names()),
+        "request_tools": {"skills": [name]},
+        "message": "Active now. Request this namespace for subsequent provider rounds; no restart is needed.",
+        "state_changed": True,
+    }
+
+
+def load_installed_extension(name: str) -> bool:
+    """Load enabled installed code explicitly; a draft alone is not activation."""
+    from mochi.extensions import store
+
+    if get_skill(name) is not None:
+        return True
+    package = next((p for p in store.list_extensions() if p["name"] == name), None)
+    if not package or not package["installed"]:
+        return False
+    _load_external(name)
+    return True
+
+
+def _discover_external() -> list[str]:
+    global _external_discovered
+    if _external_discovered:
+        return []
+    _external_discovered = True
+
+    from mochi.extensions import store
+
+    disabled = _get_disabled_skills()
+    registered = []
+    for package in store.list_extensions():
+        name = package["name"]
+        if name in disabled or not package["installed"]:
+            continue
+        try:
+            _load_external(name)
+        except store.ExtensionError:
+            continue
+        else:
+            registered.append(name)
+            log.info("Registered personal extension: %s", name)
+    return registered
+
+
+def get_skill_for_management(name: str) -> Skill | None:
+    """Read metadata for an unloaded package without importing its handler."""
+    if name in _skills:
+        return _skills[name]
+    from mochi.extensions import loader, store
+    from mochi.skill_config_resolver import resolve_skill_config
+
+    package = next((p for p in store.list_extensions() if p["name"] == name), None)
+    if package is None:
+        return None
+    skill = _ExtensionMetadata()
+    skill._name = name
+    skill.external = True
+    skill.description = "Personal extension"
+    try:
+        root = store.extension_root(name)
+        area = "current" if package["installed"] else "draft"
+        parsed = loader.read_metadata(name, root / area)
+        skill._skill_md = parsed
+        skill._populate_from_md(parsed)
+        skill.config = resolve_skill_config(name, skill._config_schema_typed)
+    except (OSError, ValueError) as exc:
+        skill._skill_md = {"tools": []}
+        skill._metadata_error = str(exc)
+    return skill
+
+
+def get_skill_configuration(name: str) -> Skill | None:
+    """Expose draft configuration without changing live execution metadata."""
+    skill = get_skill_for_management(name)
+    if skill is None or not skill.external:
+        return skill
+    from mochi.extensions import loader, store
+    from mochi.skill_config_resolver import resolve_skill_config
+
+    try:
+        draft = store._area(name, "draft", required=False)
+        if not draft.is_dir():
+            return skill
+        view = _ExtensionMetadata()
+        view.external = True
+        view._populate_from_md(loader.read_metadata(name, draft))
+    except (OSError, ValueError) as exc:
+        log.warning("Draft configuration unavailable for %s; using installed metadata: %s", name, exc)
+        return skill
+    typed = {field.key: field for field in skill._config_schema_typed}
+    typed.update({field.key: field for field in view._config_schema_typed})
+    fields = {field["key"]: field for field in skill.config_schema}
+    fields.update({field["key"]: field for field in view.config_schema})
+    view._config_schema_typed = list(typed.values())
+    view.config_schema = list(fields.values())
+    view.requires_config = sorted(set(skill.requires_config) | set(view.requires_config))
+    view.config = resolve_skill_config(name, view._config_schema_typed)
+    return view
+
+
+def refresh_skill_configuration(name: str) -> None:
+    skill = get_skill(name)
+    if skill is not None:
+        skill.refresh_config()
+    refresh_capability_summary()
 
 
 def init_all_skill_schemas() -> None:
@@ -69,6 +264,8 @@ def init_all_skill_schemas() -> None:
     from mochi.db import _connect
 
     for name, skill in _skills.items():
+        if skill.external:
+            continue
         try:
             conn = _connect()
             skill.init_schema(conn)
@@ -147,23 +344,7 @@ def discover() -> list[str]:
             else:
                 skill._config_missing = []
 
-            _skills[skill.name] = skill
-
-            # Map every declared tool name to exactly one owning skill.
-            for tool in skill.get_tools():
-                tool_name = tool.get("function", {}).get("name", "")
-                if tool_name:
-                    existing_owner = _tool_map.get(tool_name)
-                    if existing_owner and existing_owner != skill.name:
-                        raise ValueError(
-                            f"Duplicate tool name '{tool_name}' in skills "
-                            f"'{existing_owner}' and '{skill.name}'"
-                        )
-                    _tool_map[tool_name] = skill.name
-
-            # Register prompt section hook if skill provides one
-            if hasattr(skill, 'prompt_section') and callable(skill.prompt_section):
-                _prompt_hooks[skill.name] = skill
+            _register_skill(skill)
 
             registered.append(skill.name)
             log.info("Registered skill: %s (type=%s, tools=%s, triggers=%s)",
@@ -177,6 +358,7 @@ def discover() -> list[str]:
             if isinstance(e, ValueError):
                 raise
 
+    registered.extend(_discover_external())
     log.info("Skill discovery complete: %d skills registered", len(registered))
     refresh_capability_summary()
     return registered
@@ -320,9 +502,10 @@ skill_for_tool = get_tool_skill
 async def dispatch(tool_name: str, args: dict, user_id: int = 0,
                    channel_id: int = 0, transport: str = "",
                    actor: str = "",
-                   owner_authorized: bool = False) -> SkillResult:
+                   owner_authorized: bool = False,
+                   bound_skill: Skill | None = None) -> SkillResult:
     """Dispatch a tool call to the appropriate skill."""
-    skill_name = _tool_map.get(tool_name)
+    skill_name = bound_skill.name if bound_skill else _tool_map.get(tool_name)
     if not skill_name:
         return SkillResult(
             output=f"Unknown tool: {tool_name}",
@@ -339,7 +522,7 @@ async def dispatch(tool_name: str, args: dict, user_id: int = 0,
             retryable=False,
         )
 
-    skill = _skills.get(skill_name)
+    skill = bound_skill or _skills.get(skill_name)
     if not skill:
         return SkillResult(
             output=f"Skill not found: {skill_name}",
@@ -348,6 +531,10 @@ async def dispatch(tool_name: str, args: dict, user_id: int = 0,
             retryable=False,
         )
 
+    if not skill.handles(tool_name):
+        return SkillResult(output=f"Unknown tool: {tool_name}", success=False, error_code="unknown_tool")
+    if bound_skill is not None:
+        skill.refresh_config()
     if get_missing_config(skill):
         return SkillResult(
             output=f"Skill '{skill_name}' is unavailable (missing config).",
@@ -470,14 +657,32 @@ def get_capability_context_for_tools(
 
 
 def get_skill_info_all() -> list[dict]:
-    """Return metadata for all registered skills (for admin display)."""
+    """Return live skills and metadata-only personal packages for management."""
+    from mochi.extensions import store
+
     disabled = _get_disabled_skills()
+    packages = {p["name"]: p for p in store.list_extensions()}
+    skills = dict(_skills)
+    for name in packages.keys() - skills.keys():
+        metadata = get_skill_for_management(name)
+        if metadata:
+            skills[name] = metadata
     result = []
-    for s in _skills.values():
+    for s in skills.values():
+        loaded = s.name in _skills
+        load_error = (
+            _external_errors.get(s.name)
+            or packages.get(s.name, {}).get("error")
+            or getattr(s, "_metadata_error", "")
+        )
         config_missing = get_missing_config(s)
+        configuration = get_skill_configuration(s.name) if s.external else s
+        if configuration is None:
+            configuration = s
         admin_disabled = s.name in disabled
-        auto_disabled = bool(config_missing)
+        auto_disabled = bool(config_missing) or not loaded
         result.append({
+            **packages.get(s.name, {}),
             "name": s.name,
             "description": s.description,
             "type": s.skill_type,
@@ -486,22 +691,27 @@ def get_skill_info_all() -> list[dict]:
             "tools": [t["function"]["name"] for t in s.get_tools()] if s.get_tools() else [],
             "has_capability_context": bool(s.capability_context),
             "requires_config": getattr(s, "requires_config", []),
+            "config_required": configuration.requires_config,
             "enabled": not admin_disabled and not auto_disabled,
             "admin_disabled": admin_disabled,
             "auto_disabled": auto_disabled,
             "config_status": {
-                **{key: bool(os.getenv(key) or s.config.get(key))
-                   for key in getattr(s, "requires_config", [])},
-                **{entry["key"]: entry["key"] in s.config and bool(s.config[entry["key"]])
-                   for entry in s.config_schema},
+                **{key: bool(os.getenv(key) or configuration.config.get(key))
+                   for key in configuration.requires_config},
+                **{entry["key"]: bool(configuration.config.get(entry["key"]))
+                   for entry in configuration.config_schema},
             },
             "has_observer": s.has_observer,
             "locked": getattr(s, "locked", False),
             "diary_tags": s.diary_tags,
             "config_missing": config_missing,
-            "config_schema": s.config_schema,
+            "config_schema": configuration.config_schema,
             "sub_skills": s.sub_skills,
             "exclude_transports": s.exclude_transports,
+            "source": "personal" if s.external else "bundled",
+            "loaded": loaded,
+            "load_error": load_error,
+            "activation_required": s.external and not loaded,
         })
     return result
 

@@ -53,10 +53,12 @@ def sanitize_arguments(tool_name: str, args: dict) -> dict:
         sanitized = {}
     if tool_name == "set_skill_config" and "value" in sanitized:
         sanitized["value"] = "[REDACTED]"
-    if tool_name == "save_mochi_file":
-        for key in ("content", "old_text", "new_text"):
+    if tool_name in {"save_mochi_file", "write_extension"}:
+        for key in ("content", "old_text", "new_text", "skill_md", "handler_py", "smoke_py"):
             if key in sanitized:
                 sanitized[key] = "[REDACTED]"
+    if tool_name == "run_extension" and "arguments" in sanitized:
+        sanitized["arguments"] = "[REDACTED]"
     if tool_name == "browse_mochi_files" and "query" in sanitized:
         sanitized["query"] = "[REDACTED]"
     return sanitized
