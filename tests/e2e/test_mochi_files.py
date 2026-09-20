@@ -1,4 +1,4 @@
-"""Vertical discovery, execution, and audit contract for Mochi Files."""
+"""Personal workspace document flow, provenance, and privacy receipts."""
 
 from __future__ import annotations
 
@@ -13,13 +13,15 @@ from tests.e2e.mock_llm import make_response, make_tool_call
 
 
 CAPABILITY = (
-    "`mochi_files` 是持久的 Markdown 文件空间，可按需读写完整作品与资料。"
+    "`personal_workspace` 是持久的个人工作区：统一读写资料与工具草稿，"
+    "也可运行草稿并启用个人工具。保存、运行、启用是不同的操作。"
 )
-FILES_TOOLS = {"browse_mochi_files", "save_mochi_file"}
+FILES_TOOLS = {"browse_workspace", "edit_workspace"}
+WORKSPACE_TOOLS = FILES_TOOLS | {"run_extension", "activate_extension"}
 
 
 @pytest.mark.asyncio
-async def test_mochi_files_request_tools_vertical_contract(
+async def test_personal_workspace_document_vertical_contract(
     tmp_path, monkeypatch, mock_llm_factory,
 ):
     import mochi.config as config
@@ -32,33 +34,34 @@ async def test_mochi_files_request_tools_vertical_contract(
     finished_text = "只有 Main 写下的完整正文 #123"
     mock = mock_llm_factory([
         make_response(tool_calls=[
-            make_tool_call("request_tools", {"skills": ["mochi_files"]}),
+            make_tool_call("request_tools", {"skills": ["personal_workspace"]}),
         ]),
         make_response(tool_calls=[
-            make_tool_call("save_mochi_file", {
+            make_tool_call("edit_workspace", {
                 "action": "create",
-                "path": "letters/first.md",
+                "path": "documents/letters/first.md",
                 "content": authored_text,
             }),
         ]),
         make_response(tool_calls=[
-            make_tool_call("save_mochi_file", {
+            make_tool_call("edit_workspace", {
                 "action": "edit",
-                "path": "letters/first.md",
+                "path": "documents/letters/first.md",
                 "old_text": "秘密草稿",
                 "new_text": "完整正文 #123",
             }),
         ]),
         make_response(tool_calls=[
-            make_tool_call("browse_mochi_files", {
+            make_tool_call("browse_workspace", {
                 "action": "search",
+                "path": "documents",
                 "query": "完整正文",
             }),
         ]),
         make_response(tool_calls=[
-            make_tool_call("browse_mochi_files", {
+            make_tool_call("browse_workspace", {
                 "action": "read",
-                "path": "letters/first.md",
+                "path": "documents/letters/first.md",
             }),
         ]),
         make_response("写好了，也重新打开确认过。"),
@@ -69,7 +72,7 @@ async def test_mochi_files_request_tools_vertical_contract(
         channel_id=100,
         text="写一封信并收好",
         transport="fake",
-        owner_authorized=True,
+        owner_authorized=False,
     )
     reply = await chat(message)
     assert reply.text
@@ -77,7 +80,7 @@ async def test_mochi_files_request_tools_vertical_contract(
     initial_names = {
         tool["function"]["name"] for tool in mock.call_log[0]["tools"]
     }
-    assert FILES_TOOLS.isdisjoint(initial_names)
+    assert WORKSPACE_TOOLS.isdisjoint(initial_names)
     initial_prompt = "\n".join(
         item.get("content", "")
         for item in mock.call_log[0]["messages"]
@@ -88,21 +91,21 @@ async def test_mochi_files_request_tools_vertical_contract(
     assert "old_text" not in initial_prompt
     assert "上一版本" not in initial_prompt
     assert "### mochi_files" not in initial_prompt
+    assert "### development" not in initial_prompt
 
     second_names = {
         tool["function"]["name"] for tool in mock.call_log[1]["tools"]
     }
-    assert second_names - initial_names == FILES_TOOLS
+    assert second_names - initial_names == WORKSPACE_TOOLS
     request_receipt = next(
         json.loads(item["content"])
         for item in mock.call_log[1]["messages"]
         if item.get("role") == "tool"
         and "loaded" in item.get("content", "")
     )
-    assert request_receipt["loaded"] == [{
-        "skill": "mochi_files",
-        "tools": ["browse_mochi_files", "save_mochi_file"],
-    }]
+    assert len(request_receipt["loaded"]) == 1
+    assert request_receipt["loaded"][0]["skill"] == "personal_workspace"
+    assert set(request_receipt["loaded"][0]["tools"]) == WORKSPACE_TOOLS
 
     read_receipt = next(
         json.loads(item["content"])
@@ -125,7 +128,7 @@ async def test_mochi_files_request_tools_vertical_contract(
     assert {item["tool_name"] for item in files_executions} == FILES_TOOLS
     save_executions = [
         item for item in files_executions
-        if item["tool_name"] == "save_mochi_file"
+        if item["tool_name"] == "edit_workspace"
     ]
     assert len(save_executions) == 2
     for execution in save_executions:
@@ -145,7 +148,7 @@ async def test_mochi_files_request_tools_vertical_contract(
     )
     search_execution = next(
         item for item in files_executions
-        if item["tool_name"] == "browse_mochi_files"
+        if item["tool_name"] == "browse_workspace"
         and item["action"] == "search"
     )
     assert search_execution["arguments"]["query"] == "[REDACTED]"
@@ -154,11 +157,63 @@ async def test_mochi_files_request_tools_vertical_contract(
     from mochi.skills import dispatch
 
     denied = await dispatch(
-        "browse_mochi_files",
-        {"action": "read", "path": "letters/first.md"},
+        "browse_workspace",
+        {"action": "read", "path": "documents/letters/first.md"},
         user_id=1,
         actor="lite",
     )
     assert denied.success is False
     assert denied.error_code == "main_only"
     assert authored_text not in denied.output
+
+
+@pytest.mark.asyncio
+async def test_plain_medical_notebook_can_be_saved_without_code_or_health_facts(
+    tmp_path, monkeypatch, mock_llm_factory,
+):
+    """Mechanics only: scripted choices are not evidence of model preference."""
+    import mochi.config as config
+    import mochi.mochi_files_store as files_store
+    from mochi.extensions import store
+
+    monkeypatch.setattr(config, "TOOL_ESCALATION_ENABLED", True)
+    monkeypatch.setattr(files_store, "DATA_DIR", tmp_path / "files_data")
+    path = "documents/health/病历本.md"
+    content = (
+        "# 病历本\n\n尚未记录病情。\n\n"
+        "## 每次记录可补充\n"
+        "- 日期与时间\n- 症状与持续时间\n- 就诊、检查和用药信息（如有）\n"
+    )
+    agent = mock_llm_factory([
+        make_response(tool_calls=[
+            make_tool_call("request_tools", {"skills": ["personal_workspace"]}),
+        ]),
+        make_response(tool_calls=[
+            make_tool_call("edit_workspace", {
+                "action": "create", "path": path, "content": content,
+            }),
+        ]),
+        make_response(tool_calls=[
+            make_tool_call("browse_workspace", {"action": "read", "path": path}),
+        ]),
+        make_response("病历本已建好。你还没有提供具体病情，想先记录哪一次？"),
+    ])
+    result = await chat(IncomingMessage(
+        user_id=1, channel_id=100, text="建立一个病历本，记录我的生病情况",
+        transport="fake", owner_authorized=False,
+    ))
+    assert result.text
+    saved = files_store.DATA_DIR / files_store.ACTIVE_DIRNAME / "health" / "病历本.md"
+    assert saved.read_text(encoding="utf-8") == content
+    records = get_recent_tool_executions(1, limit=10, state_changes_only=False)
+    assert {item["tool_name"] for item in records} == FILES_TOOLS
+    assert len(records) == 2
+    assert not store.list_extensions()
+    receipt = next(
+        json.loads(item["content"])
+        for item in agent.call_log[-1]["messages"]
+        if item.get("role") == "tool"
+        and json.loads(item["content"]).get("source") == "agent_authored_document"
+    )
+    assert json.loads(receipt["result"])["files"][0]["content"] == content
+    assert all(content not in item["result_summary"] for item in records)

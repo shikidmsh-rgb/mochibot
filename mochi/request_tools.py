@@ -16,6 +16,10 @@ MAX_EXACT_REQUESTS = 3
 MAX_QUERY_LENGTH = 200
 MAX_REASON_LENGTH = 120
 MAX_SEARCH_MATCHES = 2
+_WORKSPACE_ALIASES = frozenset({
+    "mochi_files", "development", "browse_mochi_files", "save_mochi_file",
+    "inspect_extension", "write_extension",
+})
 
 
 REQUEST_TOOLS_DEF = {
@@ -81,6 +85,7 @@ class RequestCatalog:
     tool_loads: dict[str, str]
     resident_tools: dict[str, tuple[str, ...]]
     denied_tools: frozenset[str]
+    unavailable_tools: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -107,6 +112,8 @@ class ToolLoopBudget:
         total_limit: int,
         per_tool_limit: int,
     ) -> dict | None:
+        if tool_name in {"browse_workspace", "edit_workspace"}:
+            per_tool_limit *= 2
         current = self.per_tool_attempts.get(tool_name, 0)
         if current >= per_tool_limit:
             return {
@@ -161,6 +168,7 @@ def build_catalog(transport: str = "") -> RequestCatalog:
     tool_loads: dict[str, str] = {}
     resident_tools: dict[str, tuple[str, ...]] = {}
     denied_tools: set[str] = set()
+    unavailable_tools: dict[str, str] = {}
 
     for name, skill in skill_registry.all_skills().items():
         definitions = _normalized_definitions(skill.get_tools())
@@ -181,13 +189,19 @@ def build_catalog(transport: str = "") -> RequestCatalog:
             unavailable[name] = reason
             continue
 
+        available_definitions = _normalized_definitions(skill.available_tools())
+        available_names = {_tool_name(item) for item in available_definitions}
+        unavailable_tools.update({
+            _tool_name(item): "disabled"
+            for item in definitions if _tool_name(item) not in available_names
+        })
         visible_definitions = _normalized_definitions(
-            tool_policy.filter_tools(list(definitions)),
+            tool_policy.filter_tools(list(available_definitions)),
         )
         visible_names = {_tool_name(definition) for definition in visible_definitions}
         denied_tools.update(
             _tool_name(definition)
-            for definition in definitions
+            for definition in available_definitions
             if _tool_name(definition) not in visible_names
         )
         if not visible_definitions:
@@ -223,6 +237,7 @@ def build_catalog(transport: str = "") -> RequestCatalog:
         tool_loads=tool_loads,
         resident_tools=resident_tools,
         denied_tools=frozenset(denied_tools),
+        unavailable_tools=unavailable_tools,
     )
 
 
@@ -249,9 +264,13 @@ def resolve_request(
     seen_unavailable: set[tuple[str, str]] = set()
     unavailable_items: list[dict] = []
     already_loaded: list[dict] = []
+    renamed: list[dict] = []
 
     for request in requested:
         exact = request.strip()
+        if exact in _WORKSPACE_ALIASES:
+            renamed.append({"request": exact, "skill": "personal_workspace"})
+            exact = "personal_workspace"
         namespace = (
             exact
             if exact in catalog.eligible
@@ -264,7 +283,11 @@ def resolve_request(
         if namespace is None:
             unavailable_items.append({"request": exact, "reason": "not_found"})
             continue
-        if exact in catalog.denied_tools:
+        if exact in catalog.unavailable_tools:
+            unavailable_items.append({
+                "request": exact, "reason": catalog.unavailable_tools[exact],
+            })
+        elif exact in catalog.denied_tools:
             unavailable_items.append({"request": exact, "reason": "policy_denied"})
         elif namespace in catalog.unavailable:
             reason = catalog.unavailable[namespace]
@@ -350,6 +373,7 @@ def resolve_request(
         "matches": matches,
         "unavailable": unavailable_items,
         "no_match": bool(query and not query_matched_catalog),
+        **({"renamed": renamed} if renamed else {}),
     }, additions
 
 

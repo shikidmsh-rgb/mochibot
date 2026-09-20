@@ -413,7 +413,7 @@ def get_tools(transport: str = "") -> list[dict]:
             continue
         if transport and transport in skill.exclude_transports:
             continue
-        tools.extend(skill.get_tools())
+        tools.extend(skill.available_tools())
     return tools
 
 
@@ -436,7 +436,7 @@ def get_tools_by_names(
             continue
         if transport and transport in skill.exclude_transports:
             continue
-        for tool in skill.get_tools():
+        for tool in skill.available_tools():
             if loads is not None and tool.get("_load") not in loads:
                 continue
             tools.append(tool)
@@ -480,7 +480,7 @@ def get_tools_by_tool_names(
         definition = next(
             (
                 tool
-                for tool in skill.get_tools()
+                for tool in skill.available_tools()
                 if tool.get("function", {}).get("name") == tool_name
             ),
             None,
@@ -626,7 +626,7 @@ def get_capability_context_for_tools(
 
         on_demand_not_loaded = sorted(
             tool["function"]["name"]
-            for tool in skill.get_tools()
+            for tool in skill.available_tools()
             if tool.get("_load") == "on_demand"
             and tool["function"]["name"] not in tool_set
         )
@@ -688,7 +688,7 @@ def get_skill_info_all() -> list[dict]:
             "type": s.skill_type,
             "multi_turn": s.multi_turn,
             "triggers": s.triggers,
-            "tools": [t["function"]["name"] for t in s.get_tools()] if s.get_tools() else [],
+            "tools": [t["function"]["name"] for t in s.available_tools()],
             "has_capability_context": bool(s.capability_context),
             "requires_config": getattr(s, "requires_config", []),
             "config_required": configuration.requires_config,
@@ -712,6 +712,10 @@ def get_skill_info_all() -> list[dict]:
             "loaded": loaded,
             "load_error": load_error,
             "activation_required": s.external and not loaded,
+            **(
+                {"development_enabled": "development" not in disabled}
+                if s.name == "personal_workspace" else {}
+            ),
         })
     return result
 

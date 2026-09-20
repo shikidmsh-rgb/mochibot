@@ -201,6 +201,11 @@ class SkillManagementSkill(Skill):
                 f"  type={s['type']}, tools: {tools_str}{config_tag}"
                 + ("\n  草稿可由 Mochi 使用 activate_extension 启用，无需重启。" if s.get("activation_required") else "")
                 + (f"\n  {s['load_error']}" if s.get("load_error") else "")
+                + (
+                    f"\n  development={'ON' if s['development_enabled'] else 'OFF'}; "
+                    "documents remain available."
+                    if "development_enabled" in s else ""
+                )
             )
 
         return SkillResult(
@@ -214,6 +219,20 @@ class SkillManagementSkill(Skill):
         from mochi.skills import get_skill_for_management, load_installed_extension, refresh_capability_summary
         from mochi.db import get_disabled_skills, set_skill_enabled
 
+        if type(enabled) is not bool:
+            return SkillResult(
+                output="enabled must be a boolean.", success=False,
+                error_code="invalid_arguments", retryable=False,
+            )
+        if skill_name == "development":
+            from mochi.personal_workspace import set_development_enabled
+
+            changed = set_development_enabled(enabled)
+            return SkillResult(
+                output=f"Personal workspace development {'enabled' if enabled else 'disabled'}; "
+                "documents and installed personal tools are unchanged.",
+                state_changed=changed,
+            )
         skill = get_skill_for_management(skill_name)
         if not skill:
             return SkillResult(output=f"Unknown skill: '{skill_name}'", success=False)

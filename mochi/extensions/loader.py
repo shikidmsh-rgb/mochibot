@@ -20,7 +20,7 @@ from . import store
 from .store import ExtensionError
 
 _BASE_METHODS = (
-    "init_schema", "diary_status", "run", "get_tools", "skill_md",
+    "init_schema", "diary_status", "run", "get_tools", "available_tools", "skill_md",
     "_populate_from_md", "name", "triggers", "tool_names", "handles", "__new__",
 )
 _UNSUPPORTED_HOOKS = ("prompt_section", "observe", "observer", "Observer")

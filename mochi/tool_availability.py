@@ -64,10 +64,11 @@ class ToolAvailability:
 
         entries = []
         for entry in self.entries:
-            if entry.binding is None:
+            owner = skills.get_tool_skill(entry.name)
+            if entry.binding is None and owner is None:
                 entries.append(entry)
                 continue
-            if skills.get_tool_skill(entry.name) != entry.binding.name:
+            if entry.binding is not None and owner != entry.binding.name:
                 continue
             definitions = tool_policy.filter_tools(
                 skills.get_tools_by_tool_names([entry.name], transport=transport),

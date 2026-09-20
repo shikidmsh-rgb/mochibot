@@ -13,7 +13,7 @@ locked: true
 - `set` 用来落实用户在当前对话中提出的调整；成功回执包含实际生效的新值。
 - `list_skills` 和 `get_skill_config` 读取实时注册状态及个人包元数据，不为列举而导入未加载的 Python；损坏或禁用的包也能管理。
 - `toggle_skill` 与 `set_skill_config` 改变后续 provider round 可用的能力；新工具名仍需通过 `request_tools` 请求，不能在同一 provider response 中越过工具快照。
-- `development` 默认开启，无需单独授权或前往 Admin。Main 自己查看规范、编写、运行和实时激活个人工具，不需要 Owner 重启；普通技能开关仍可关闭开发能力。
+- `personal_workspace` 统一读写个人资料与工具草稿，也可运行草稿并实时启用工具。开发默认开启，无需单独授权或前往 Admin；`toggle_skill(skill_name="development", enabled=false)` 只关闭草稿修改、运行和启用，不影响资料读写、代码查看或已安装工具。这是兼容设置开关，不是另一套开发入口。
 - 启用已安装的个人包会直接尝试加载；仅有草稿时回报需要 `activate_extension`。加载失败会明确报错并说明启用开关已保存，不把开关状态当作实际可用状态。
 - 启停或改配置属于用户授权边界：只有用户对具体技能和改动的明确意图才授权写操作。核心技能在执行层无法关闭。
 - 写操作的工具回执包含实际新值与生效状态，失败不会伪装成成功。
@@ -31,7 +31,7 @@ locked: true
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| skill_name | string | yes | 技能名称 |
+| skill_name | string | yes | 技能名称；development 表示个人工作区的开发开关 |
 | enabled | boolean | yes | true=启用, false=禁用 |
 
 ### get_skill_config (on_demand)

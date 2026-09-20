@@ -671,6 +671,10 @@ class Skill(ABC):
         """
         return self.skill_md.get("tools", [])
 
+    def available_tools(self) -> list[dict]:
+        """Return currently eligible definitions without changing tool ownership."""
+        return self.get_tools()
+
     @property
     def triggers(self) -> list:
         """How this skill can be invoked: tool_call, heartbeat, cron, slash."""

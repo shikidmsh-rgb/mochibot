@@ -984,6 +984,17 @@ if HAS_FASTAPI:
         body = await request.json()
         if not isinstance(body, dict) or type(body.get("enabled")) is not bool:
             raise HTTPException(400, "enabled must be a boolean")
+        if name == "development":
+            from mochi.personal_workspace import set_development_enabled
+
+            set_development_enabled(body["enabled"])
+            loaded = get_skill("personal_workspace") is not None
+            return {
+                "ok": True, "enabled": body["enabled"],
+                "workspace": "personal_workspace", "documents_available": loaded,
+                "loaded": loaded,
+                "activation_required": False,
+            }
         skill = get_skill_for_management(name)
         if skill is None:
             raise HTTPException(404, "Unknown skill")

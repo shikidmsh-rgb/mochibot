@@ -46,6 +46,8 @@ def fresh_db(tmp_path, monkeypatch, extension_state):
     monkeypatch.setattr(db_module, "DB_PATH", db_path)
     import mochi.core_store as core_store
     monkeypatch.setattr(core_store, "DATA_DIR", tmp_path / "core_data")
+    import mochi.mochi_files_store as files_store
+    monkeypatch.setattr(files_store, "DATA_DIR", tmp_path / "files_data")
     init_db()
     if not _skills_discovered:
         skill_registry.discover()

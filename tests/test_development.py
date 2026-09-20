@@ -1,8 +1,10 @@
-"""Default development availability, external discovery and management boundaries."""
+"""Personal workspace availability, external discovery and management boundaries."""
 
 import asyncio
 import json
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 from fastapi.testclient import TestClient
@@ -40,8 +42,13 @@ def test_development_defaults_on_and_explicit_disable_persists(monkeypatch):
 
     registry.discover()
     assert "development" not in get_disabled_skills()
-    assert registry.get_tools_by_names(["development"])
-    assert registry.get_skill("development").description.strip('"') in registry.get_capability_summary()
+    assert {tool["function"]["name"] for tool in registry.get_tools_by_names(
+        ["personal_workspace"],
+    )} == {"browse_workspace", "edit_workspace", "run_extension", "activate_extension"}
+    workspace = registry.get_skill("personal_workspace")
+    assert workspace.description.strip('"') in registry.get_capability_summary()
+    assert registry.get_skill("development") is None
+    assert registry.get_skill("mochi_files") is None
     set_skill_config("development", "_enabled", "true")
     assert "development" not in get_disabled_skills()
 
@@ -59,8 +66,13 @@ def test_development_defaults_on_and_explicit_disable_persists(monkeypatch):
     assert "development" in get_disabled_skills()
     _restart()
     assert "development" in get_disabled_skills()
-    assert registry.get_tools_by_names(["development"]) == []
-    assert registry.get_skill("development").description.strip('"') not in registry.get_capability_summary()
+    assert {tool["function"]["name"] for tool in registry.get_tools_by_names(
+        ["personal_workspace"],
+    )} == {"browse_workspace", "edit_workspace"}
+    assert workspace.description.strip('"') in registry.get_capability_summary()
+    info = next(item for item in client.get("/api/skills").json()["skills"]
+                if item["name"] == "personal_workspace")
+    assert info["development_enabled"] is False
     response = client.put("/api/skills/development/enabled", json={"enabled": True})
     assert response.status_code == 200
     _restart()
@@ -233,7 +245,6 @@ async def test_run_report_failure_is_not_a_successful_development_call(monkeypat
     from mochi.extensions import runner
 
     registry.discover()
-    set_skill_enabled("development", True)
 
     async def report_failure(*args, **kwargs):
         return {
@@ -243,7 +254,7 @@ async def test_run_report_failure_is_not_a_successful_development_call(monkeypat
 
     monkeypatch.setattr(runner, "run_extension", report_failure)
     result = await registry.dispatch(
-        "run_extension", {"extension_id": "local_report"}, actor="main",
+        "run_extension", {"path": "extensions/local_report/draft"}, actor="main",
     )
     assert not result.success
     assert result.error_code == "run_report_failed"
@@ -257,21 +268,21 @@ async def test_run_report_failure_is_not_a_successful_development_call(monkeypat
 async def test_main_can_develop_without_owner_authorization():
     registry.discover()
     created = await registry.dispatch(
-        "write_extension", {"action": "create", "extension_id": "local_no_approval"},
+        "edit_workspace", {"action": "create", "path": "extensions/local_no_approval/draft"},
         actor="main", owner_authorized=False,
     )
     assert created.success and created.state_changed
     activated = await registry.dispatch(
-        "activate_extension", {"extension_id": "local_no_approval"},
+        "activate_extension", {"path": "extensions/local_no_approval/draft"},
         actor="main", owner_authorized=False,
     )
     assert activated.success
     set_skill_enabled("development", False)
     denied = await registry.dispatch(
-        "write_extension", {"action": "create", "extension_id": "local_off"},
+        "edit_workspace", {"action": "create", "path": "extensions/local_off/draft"},
         actor="main", owner_authorized=False,
     )
-    assert not denied.success and denied.error_code == "skill_disabled"
+    assert not denied.success and denied.error_code == "development_disabled"
     assert not store.extension_root("local_off").exists()
     restored = SkillManagementSkill()._toggle_skill("development", True)
     assert restored.success and restored.state_changed
@@ -483,14 +494,16 @@ def test_admin_enable_failure_reports_saved_flag_and_real_error(monkeypatch):
 @pytest.mark.asyncio
 async def test_developer_inspects_multiple_files_and_create_accepts_all_source():
     registry.discover()
-    set_skill_enabled("development", True)
     name = "local_authored"
     files = template.files(name)
     authored_handler = files["handler.py"] + "\n# Main-authored helper\n"
     result = await registry.dispatch(
-        "write_extension",
-        {"action": "create", "extension_id": name, "skill_md": files["SKILL.md"],
-         "handler_py": authored_handler, "smoke_py": files["smoke.py"]},
+        "edit_workspace",
+        {"action": "create", "path": f"extensions/{name}/draft", "files": [
+            {"path": "SKILL.md", "content": files["SKILL.md"]},
+            {"path": "handler.py", "content": authored_handler},
+            {"path": "smoke.py", "content": files["smoke.py"]},
+        ]},
         actor="main", user_id=1,
     )
     assert result.success
@@ -498,15 +511,127 @@ async def test_developer_inspects_multiple_files_and_create_accepts_all_source()
         encoding="utf-8",
     ) == authored_handler
     read = await registry.dispatch(
-        "inspect_extension",
-        {"action": "read", "extension_id": name, "paths": ["SKILL.md", "handler.py"]},
+        "browse_workspace",
+        {"action": "read", "paths": [
+            f"extensions/{name}/draft/SKILL.md", f"extensions/{name}/draft/handler.py",
+        ]},
         actor="main",
     )
     assert read.success
     assert "Main-authored helper" in read.output
     denied = await registry.dispatch(
-        "write_extension", {"action": "create", "extension_id": "local_denied"},
+        "edit_workspace", {"action": "create", "path": "extensions/local_denied/draft"},
         actor="lite",
     )
     assert not denied.success
     assert not store.extension_root("local_denied").exists()
+
+
+def test_agent_bridge_uses_real_competing_catalog_with_isolated_storage(tmp_path, monkeypatch):
+    """A fresh process tests isolation without scripted provider/model replies."""
+    output = tmp_path / "bridge"
+    output.mkdir()
+    monkeypatch.setenv("MOCHI_BRIDGE_AMBIENT_SENTINEL", "must-not-reach-runtime")
+    probe = r'''
+import asyncio
+from contextlib import ExitStack
+import json
+import os
+from pathlib import Path
+import sys
+
+sys.dont_write_bytecode = True
+repository = Path.cwd()
+host_data = repository / "data"
+
+def forbid_host_data(event, args):
+    if event not in {"open", "os.listdir", "os.scandir"}:
+        return
+    value = args[0]
+    if not isinstance(value, (str, bytes, os.PathLike)):
+        return
+    path = Path(os.fsdecode(value)).absolute()
+    if path == repository / ".env" or path.is_relative_to(host_data):
+        raise AssertionError("Bridge attempted host data access")
+
+sys.addaudithook(forbid_host_data)
+from tests.e2e.agent_bridge import Bridge, _prepare_runtime
+
+output = Path(sys.argv[1])
+bridge = Bridge(output, "Check catalog mechanics", 30, 60)
+with ExitStack() as stack:
+    _, config = _prepare_runtime(stack, bridge)
+    import mochi.db as db
+    import mochi.core_store as core
+    import mochi.diary as diary
+    import mochi.heartbeat as heartbeat
+    import mochi.mochi_files_store as documents
+    import mochi.observers as observers
+    import mochi.reminder_timer as reminders
+    import mochi.skills as registry
+    import mochi.tool_policy as policy
+    from mochi.extensions import store
+
+    runtime = output / "runtime"
+    assert not os.getenv("MOCHI_BRIDGE_AMBIENT_SENTINEL")
+    assert not os.getenv("MAIN_API_KEY")
+    assert not os.getenv("TELEGRAM_BOT_TOKEN")
+    assert db.DB_PATH == config.DB_PATH == runtime / "mochi.db"
+    assert core.DATA_DIR == runtime / "core_data"
+    assert documents.DATA_DIR == runtime / "files_data"
+    assert store.ROOT == runtime / "extensions"
+    assert diary.diary.path == runtime / "diary.md"
+    assert diary._DATA_DIR == runtime
+    assert heartbeat._STATE_FILE == runtime / ".heartbeat_state"
+    assert not observers._observers
+    assert reminders._send_callback is None and reminders._heap_event is None
+    assert heartbeat._runtime_prepare_callback is None
+    assert "mochi.admin.admin_server" not in sys.modules
+    assert "development" not in db.get_disabled_skills()
+    discovery = bridge.evidence["discovery"]
+    assert discovery["missing_builtin_skills"] == []
+    expected = {
+        "personal_workspace", "workspace", "memory", "habit", "todo",
+        "web_search", "meal", "reminder", "skill_management",
+    }
+    assert expected <= set(discovery["registered_skills"])
+    names = {
+        item["function"]["name"]
+        for item in policy.filter_tools(registry.get_tools(transport="agent_bridge"))
+    }
+    assert {
+        "browse_workspace", "edit_workspace", "run_extension", "activate_extension",
+        "write_diary", "read_diary", "update_core", "recall_memory", "edit_habit",
+        "query_habit", "manage_todo", "web_search", "list_skills",
+    } <= names
+    assert "get_weather" not in names
+    assert discovery["missing_config"]["weather"] == ["WEATHER_CITY"]
+    assert registry.get_skill("development") is None
+    assert registry.get_skill("mochi_files") is None
+
+    async def exercise_storage():
+        for tool, args in [
+            ("write_diary", {"entry": "Bridge isolation test entry"}),
+            ("manage_todo", {"action": "add", "task": "Bridge isolation test task"}),
+            ("edit_workspace", {
+                "action": "create", "path": "documents/probe.md",
+                "content": "Bridge isolation test document",
+            }),
+            ("recall_memory", {"query": "Bridge isolation test"}),
+        ]:
+            result = await registry.dispatch(tool, args, actor="main", user_id=1)
+            assert result.success, (tool, result.error_code, result.output)
+
+    asyncio.run(exercise_storage())
+    assert (runtime / "diary.md").is_file()
+    assert (documents.DATA_DIR / documents.ACTIVE_DIRNAME / "probe.md").is_file()
+    print(json.dumps({"registered": len(discovery["registered_skills"]), "isolated": True}))
+'''
+    completed = subprocess.run(
+        [sys.executable, "-c", probe, str(output)],
+        capture_output=True, text=True, encoding="utf-8", timeout=60,
+    )
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    assert result["isolated"]
+    assert result["registered"] >= 14

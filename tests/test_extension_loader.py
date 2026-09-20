@@ -140,7 +140,7 @@ def test_metadata_scalar_and_string_array_formats(package):
     assert properties["labels"]["items"] == {"type": "string"}
 
 
-@pytest.mark.parametrize("method", ["init_schema", "diary_status", "run", "get_tools", "prompt_section", "observe"])
+@pytest.mark.parametrize("method", ["init_schema", "diary_status", "run", "get_tools", "available_tools", "prompt_section", "observe"])
 def test_hooks_are_rejected_and_failed_namespace_is_cleaned(package, method):
     (package / "handler.py").write_text(
         HANDLER + f"\n    def {method}(self, *args):\n        return None\n", encoding="utf-8",

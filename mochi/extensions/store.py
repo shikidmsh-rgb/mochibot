@@ -19,6 +19,10 @@ MAX_PACKAGE_FILES = 256
 MAX_PACKAGE_ENTRIES = 512
 MAX_READ_CHARS = 12000
 MAX_READ_FILES = 16
+MAX_LIST_RESULTS = 100
+MAX_SEARCH_RESULTS = 20
+MAX_SEARCH_QUERY_CHARS = 512
+MAX_SEARCH_EXCERPT_CHARS = 240
 _AREAS = {"draft", "current", "previous"}
 _ID = re.compile(r"local_[a-z][a-z0-9_]{0,33}\Z")
 _LOCK = threading.RLock()
@@ -173,22 +177,33 @@ def _content_bytes(content: str) -> bytes:
     return data
 
 
-def _atomic_write(path: Path, data: bytes) -> None:
+def _atomic_write(path: Path, data: bytes, *, exclusive: bool = False) -> None:
     path = _safe_path(path)
     if path.exists() and not path.is_file():
         raise ExtensionError("invalid_path", "Only regular files can be written.")
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f"_write_{uuid.uuid4().hex}")
+    committed = False
     try:
         with temporary.open("xb") as stream:
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
         _safe_path(path)
-        os.replace(temporary, path)
+        if exclusive:
+            try:
+                os.link(temporary, path)
+            except FileExistsError as exc:
+                raise ExtensionError("already_exists", "Draft file already exists.") from exc
+        else:
+            os.replace(temporary, path)
+        committed = True
     finally:
-        if temporary.exists():
-            temporary.unlink()
+        try:
+            if temporary.exists():
+                temporary.unlink()
+        except OSError as exc:
+            raise ExtensionError("io_error", str(exc), state_changed=committed) from exc
 
 
 def copy_package(source: Path, destination: Path) -> list[str]:
@@ -287,7 +302,7 @@ def read_files(
         }
 
 
-def _write_draft(package: Path, path: str, content: str) -> dict:
+def _write_draft(package: Path, path: str, content: str, *, exclusive: bool = False) -> dict:
     target = _file_path(package, path)
     data = _content_bytes(content)
     files = inspect_package(package)
@@ -296,16 +311,19 @@ def _write_draft(package: Path, path: str, content: str) -> dict:
     if len(other) + 1 > MAX_PACKAGE_FILES or sum(item["bytes"] for item in other) + len(data) > MAX_PACKAGE_BYTES:
         raise ExtensionError("package_too_large", "Write would exceed the package limit.")
     existed = target.exists()
+    if exclusive and existed:
+        raise ExtensionError("already_exists", "Draft file already exists.")
     new_directories = sum(1 for parent in target.parents if parent.is_relative_to(package) and not parent.exists())
     if sum(1 for _ in package.rglob("*")) + new_directories + (not existed) > MAX_PACKAGE_ENTRIES:
         raise ExtensionError("package_too_large", "Write would exceed the package entry limit.")
-    _atomic_write(target, data)
+    _atomic_write(target, data, exclusive=exclusive)
     return {"path": relative, "bytes": len(data), "created": not existed, "state_changed": True}
 
 
 def scaffold(
     extension_id: str, *, skill_md: str | None = None,
     handler_py: str | None = None, smoke_py: str | None = None,
+    files: dict[str, str] | None = None,
 ) -> dict:
     """Create a new draft, copying current if present; never replace an existing draft."""
     with _operation():
@@ -314,6 +332,18 @@ def scaffold(
         if draft.exists():
             raise ExtensionError("draft_exists", "Draft already exists; use write/edit instead.")
         supplied = {"SKILL.md": skill_md, "handler.py": handler_py, "smoke.py": smoke_py}
+        if files is not None:
+            if not isinstance(files, dict) or len(files) > MAX_PACKAGE_FILES:
+                raise ExtensionError("invalid_files", f"files must contain at most {MAX_PACKAGE_FILES} files.")
+            seen = set()
+            for path, content in files.items():
+                relative = "/".join(_relative(path))
+                key = os.path.normcase(relative)
+                if key in seen or supplied.get(relative) is not None:
+                    raise ExtensionError("invalid_files", "Each scaffold file may be supplied only once.")
+                seen.add(key)
+                _content_bytes(content)
+                supplied[relative] = content
         for value in supplied.values():
             if value is not None:
                 _content_bytes(value)
@@ -325,9 +355,9 @@ def scaffold(
                 copy_package(current, stage)
             else:
                 stage.mkdir(parents=True)
-            from .template import files
+            from .template import files as template_files
 
-            for path, content in files(extension_id).items():
+            for path, content in template_files(extension_id).items():
                 if not _file_path(stage, path).exists():
                     if supplied.get(path) is None:
                         generated[path] = content
@@ -349,6 +379,96 @@ def scaffold(
 def write_file(extension_id: str, path: str, content: str) -> dict:
     with _operation():
         return {"name": extension_id, **_write_draft(_area(extension_id, "draft"), path, content)}
+
+
+def create_file(extension_id: str, path: str, content: str) -> dict:
+    with _operation():
+        return {
+            "name": extension_id,
+            **_write_draft(_area(extension_id, "draft"), path, content, exclusive=True),
+        }
+
+
+def append_file(extension_id: str, path: str, content: str) -> dict:
+    with _operation():
+        _content_bytes(content)
+        package = _area(extension_id, "draft")
+        text = _read_bytes(_file_path(package, path)).decode("utf-8")
+        return {"name": extension_id, **_write_draft(package, path, text + content)}
+
+
+def _page(offset: int, limit: int, maximum: int) -> None:
+    if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= maximum:
+        raise ExtensionError("invalid_range", f"offset must be nonnegative; limit must be from 1 to {maximum}.")
+
+
+def _source_files(extension_id: str, area: str, path: str | None) -> tuple[Path, list[dict]]:
+    package = _area(extension_id, area)
+    tree = inspect_package(package)
+    if path is None:
+        return package, tree
+    target = _file_path(package, path)
+    relative = "/".join(_relative(path))
+    if not target.exists():
+        raise ExtensionError("not_found", "Source scope does not exist.")
+    return package, [
+        item for item in tree
+        if item["path"] == relative or item["path"].startswith(relative + "/")
+    ]
+
+
+def list_files(
+    extension_id: str, *, area: str, path: str | None = None,
+    offset: int = 0, limit: int = MAX_LIST_RESULTS,
+) -> dict:
+    with _operation():
+        _page(offset, limit, MAX_LIST_RESULTS)
+        _, files = _source_files(extension_id, area, path)
+        page = files[offset:offset + limit]
+        end = offset + len(page)
+        return {
+            "files": page, "offset": offset, "count": len(page), "total": len(files),
+            "complete": end >= len(files), "next_offset": end if end < len(files) else None,
+        }
+
+
+def search_files(
+    extension_id: str, query: str, *, area: str, path: str | None = None,
+    offset: int = 0, limit: int = MAX_SEARCH_RESULTS,
+) -> dict:
+    with _operation():
+        _page(offset, limit, MAX_SEARCH_RESULTS)
+        if not isinstance(query, str) or not 1 <= len(query) <= MAX_SEARCH_QUERY_CHARS:
+            raise ExtensionError("invalid_query", f"query must contain 1 to {MAX_SEARCH_QUERY_CHARS} characters.")
+        package, files = _source_files(extension_id, area, path)
+        matches, skipped = [], []
+        total = 0
+        for entry in files:
+            try:
+                text = _read_bytes(_file_path(package, entry["path"])).decode("utf-8")
+            except UnicodeDecodeError:
+                skipped.append(entry["path"])
+                continue
+            start = 0
+            while True:
+                index = text.find(query, start)
+                if index < 0:
+                    break
+                if offset <= total < offset + limit:
+                    excerpt_start = max(0, index - MAX_SEARCH_EXCERPT_CHARS // 2)
+                    matches.append({
+                        "path": entry["path"], "match_start": index, "match_end": index + len(query),
+                        "excerpt_start": excerpt_start,
+                        "excerpt": text[excerpt_start:excerpt_start + MAX_SEARCH_EXCERPT_CHARS],
+                    })
+                total += 1
+                start = index + len(query)
+        end = offset + len(matches)
+        return {
+            "matches": matches, "offset": offset, "count": len(matches), "total_matches": total,
+            "complete": end >= total, "next_offset": end if end < total else None,
+            "skipped_non_text_paths": skipped,
+        }
 
 
 def edit_file(extension_id: str, path: str, old_text: str, new_text: str) -> dict:

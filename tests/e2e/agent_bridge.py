@@ -13,9 +13,12 @@ reserved for autonomous runtime entries in ChatResult.
 
 Only a fresh output-contained runtime is used; .env is never loaded. The shared
 admin_db storage helpers may be imported by Main, but no Admin application,
-transport, scheduler, or model service is started. Built-in tools are restricted
-to development and skill listing/toggling; dynamically registered personal tools
-remain available through the real registry. Development is available by default.
+transport, scheduler, observer, or model service is started. All ordinary built-in
+skills use real discovery, catalog, configuration, transport eligibility, and
+tool policy, including competing Diary, memory, habits, todo, and web tools.
+Personal workspace development is available by default; nothing pre-enables it.
+Missing integration configuration stays missing, and public web search remains
+real network access. No account connection or authentication is fabricated.
 
 This is NOT a sandbox: authored Python runs as the local user, including live
 handlers. Only trusted local agents should use this unauthenticated loopback
@@ -98,6 +101,8 @@ class Bridge:
             "core": str(output / "runtime" / "core_data"),
             "mochi_files": str(output / "runtime" / "files_data"),
             "extensions": str(output / "runtime" / "extensions"),
+            "diary": str(output / "runtime" / "diary.md"),
+            "heartbeat_state": str(output / "runtime" / ".heartbeat_state"),
             "transcript": str(output / "transcript.json"),
             "result": str(output / "result.json"),
         }
@@ -249,18 +254,6 @@ class InteractiveProvider:
         return "external-agent-bridge"
 
 
-class _DiscoveryDirectories:
-    """Restrict discovery before importing any unrelated skill handlers."""
-
-    def __init__(self, root: Path):
-        self.root = root
-
-    def iterdir(self):
-        return iter(self.root / name for name in (
-            "development", "skill_management", "habit",
-        ))
-
-
 def _prepare_runtime(stack: ExitStack, bridge: Bridge):
     if any(name == "mochi" or name.startswith("mochi.") for name in sys.modules):
         raise RuntimeError("Run the bridge in a fresh process, before importing mochi")
@@ -310,35 +303,51 @@ def _prepare_runtime(stack: ExitStack, bridge: Bridge):
     stack.enter_context(patch.object(store, "ROOT", runtime / "extensions"))
     db.init_db()
 
-    import mochi.skills as registry
-    with patch.object(registry, "_SKILLS_DIR", _DiscoveryDirectories(registry._SKILLS_DIR)):
-        registry.discover()
-    registry.init_all_skill_schemas()
-    # Main always queries habits. Keep its empty schema, not its unrelated tools.
-    registry._skills.pop("habit", None)
-    for tool, owner in list(registry._tool_map.items()):
-        if owner == "habit":
-            registry._tool_map.pop(tool)
-    registry._prompt_hooks.pop("habit", None)
-    registry.refresh_capability_summary()
-    if "development" in db.get_disabled_skills():
-        raise RuntimeError("Fresh development state must be enabled by default")
-
-    import mochi.tool_policy as policy
-    ordinary_filter = policy.filter_tools
-
-    def evaluation_tools(definitions):
-        def allowed(definition):
-            name = definition.get("function", {}).get("name")
-            if name in {"request_tools", "list_skills", "toggle_skill"}:
-                return True
-            skill = registry.get_skill(registry.skill_for_tool(name))
-            return bool(skill and (skill.name == "development" or skill.external))
-        return ordinary_filter([item for item in definitions if allowed(item)])
-
-    stack.enter_context(patch.object(policy, "filter_tools", evaluation_tools))
-    import mochi.heartbeat as heartbeat
+    # Heartbeat initializes state during import, before its path can be patched.
+    # Hide only that host file for the import, then use the isolated state file.
+    host_state = Path(config.__file__).resolve().parent.parent / "data" / ".heartbeat_state"
+    ordinary_exists = Path.exists
+    with patch.object(Path, "exists", lambda path: (
+        False if path == host_state else ordinary_exists(path)
+    )):
+        import mochi.heartbeat as heartbeat
+    stack.enter_context(patch.object(heartbeat, "_STATE_FILE", runtime / ".heartbeat_state"))
+    heartbeat.reload_state_after_config_seed()
+    # No bedtime callback/service is registered in this evaluation process.
     stack.enter_context(patch.object(heartbeat, "bedtime_tool_available", return_value=False))
+
+    import mochi.skills as registry
+    registry.discover()
+    registry.init_all_skill_schemas()
+    expected = {
+        entry.name for entry in registry._SKILLS_DIR.iterdir()
+        if entry.is_dir() and not entry.name.startswith("_")
+        and all((entry / filename).is_file()
+                for filename in ("__init__.py", "handler.py", "SKILL.md"))
+    }
+    registered = set(registry.all_skills())
+    missing = sorted(expected - registered)
+    with bridge.lock:
+        bridge.evidence["discovery"] = {
+            "registered_skills": sorted(registered),
+            "missing_builtin_skills": missing,
+            "eligible_tools": sorted(
+                item["function"]["name"]
+                for item in registry.get_tools(transport="agent_bridge")
+            ),
+            "missing_config": {
+                name: registry.get_missing_config(skill)
+                for name, skill in registry.all_skills().items()
+                if registry.get_missing_config(skill)
+            },
+        }
+        bridge._persist()
+    if missing:
+        raise RuntimeError("Ordinary built-in discovery is incomplete; see discovery evidence")
+    from mochi.personal_workspace import development_enabled
+
+    if not development_enabled():
+        raise RuntimeError("Fresh personal workspace development must be enabled by default")
     import mochi.ai_client as ai_client
     provider = InteractiveProvider(bridge)
     stack.enter_context(patch.object(
@@ -425,6 +434,7 @@ def _runtime_worker(bridge: Bridge) -> None:
                     "provider_rounds": config.TOOL_LOOP_MAX_ROUNDS,
                     "ordinary_tools": config.TOOL_LOOP_TOTAL_TOOL_LIMIT,
                     "per_tool_name": config.TOOL_LOOP_PER_TOOL_LIMIT,
+                    "workspace_file_tools": 2 * config.TOOL_LOOP_PER_TOOL_LIMIT,
                     "request_tools": config.TOOL_ESCALATION_MAX_PER_TURN,
                 }
                 bridge._persist()

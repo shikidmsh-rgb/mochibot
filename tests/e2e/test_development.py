@@ -1,4 +1,4 @@
-"""Main discovers, authors, debugs, activates and uses a tool without opt-in."""
+"""Main authors, debugs, activates and uses tools through personal_workspace."""
 
 import json
 
@@ -13,6 +13,7 @@ from tests.e2e.mock_llm import make_response, make_tool_call
 
 
 NAME = "local_reading"
+DRAFT = f"extensions/{NAME}/draft"
 SKILL_MD = """---
 name: local_reading
 description: "Personal reading log"
@@ -74,7 +75,7 @@ asyncio.run(main())
 
 def _message(text):
     return IncomingMessage(
-        user_id=1, channel_id=100, text=text, transport="fake", owner_authorized=True,
+        user_id=1, channel_id=100, text=text, transport="fake", owner_authorized=False,
     )
 
 
@@ -93,19 +94,23 @@ async def test_main_finishes_development_and_uses_tool_without_owner_handoff(
     registry.discover()
     buggy_handler = HANDLER.replace("books.append(title)", "books.append(title.upper())")
     agent = mock_llm_factory([
-        _call("request_tools", {"skills": ["development"]}),
-        _call("inspect_extension", {"action": "guide", "extension_id": NAME}),
-        _call("write_extension", {
-            "action": "create", "extension_id": NAME,
-            "skill_md": SKILL_MD, "handler_py": buggy_handler, "smoke_py": SMOKE,
+        _call("request_tools", {"skills": ["personal_workspace"]}),
+        _call("browse_workspace", {"action": "guide", "path": DRAFT}),
+        _call("edit_workspace", {
+            "action": "create", "path": DRAFT,
+            "files": [
+                {"path": "SKILL.md", "content": SKILL_MD},
+                {"path": "handler.py", "content": buggy_handler},
+                {"path": "smoke.py", "content": SMOKE},
+            ],
         }),
-        _call("run_extension", {"extension_id": NAME}),
-        _call("write_extension", {
-            "action": "edit", "extension_id": NAME, "path": "handler.py",
+        _call("run_extension", {"path": DRAFT}),
+        _call("edit_workspace", {
+            "action": "edit", "path": f"{DRAFT}/handler.py",
             "old_text": "books.append(title.upper())", "new_text": "books.append(title)",
         }),
-        _call("run_extension", {"extension_id": NAME}),
-        _call("activate_extension", {"extension_id": NAME}),
+        _call("run_extension", {"path": DRAFT}),
+        _call("activate_extension", {"path": DRAFT}),
         _call("request_tools", {"skills": [NAME]}),
         _call("local_reading_log", {"action": "add", "title": "The Hobbit"}),
         _call("local_reading_log", {"action": "list"}),
@@ -117,9 +122,9 @@ async def test_main_finishes_development_and_uses_tool_without_owner_handoff(
     ))
     assert reply.text
     assert len(agent.call_log) == 11
-    assert "Develop personal tools" in agent.call_log[0]["messages"][0]["content"]
-    assert "write_extension" not in {t["function"]["name"] for t in agent.call_log[0]["tools"]}
-    assert "write_extension" in {t["function"]["name"] for t in agent.call_log[1]["tools"]}
+    assert "personal_workspace" in agent.call_log[0]["messages"][0]["content"]
+    assert "edit_workspace" not in {t["function"]["name"] for t in agent.call_log[0]["tools"]}
+    assert "edit_workspace" in {t["function"]["name"] for t in agent.call_log[1]["tools"]}
     assert "local_reading_log" not in {t["function"]["name"] for t in agent.call_log[7]["tools"]}
     assert "local_reading_log" in {t["function"]["name"] for t in agent.call_log[8]["tools"]}
     assert "AssertionError" in str(agent.call_log[4]["messages"])
@@ -129,11 +134,9 @@ async def test_main_finishes_development_and_uses_tool_without_owner_handoff(
     assert (store.extension_root(NAME) / "current" / "handler.py").is_file()
 
     records = get_recent_tool_executions(1, limit=20)
-    authored = next(r for r in records if r["tool_name"] == "write_extension"
+    authored = next(r for r in records if r["tool_name"] == "edit_workspace"
                     and r["action"] == "create")
-    assert authored["arguments"]["handler_py"] == "[REDACTED]"
-    assert authored["arguments"]["skill_md"] == "[REDACTED]"
-    assert authored["arguments"]["smoke_py"] == "[REDACTED]"
+    assert authored["arguments"]["files"] == "[REDACTED]"
     assert all("books.append" not in r["result_summary"] for r in records)
     attempts = get_tool_executions_for_turn(authored["turn_id"])
     assert len(attempts) == 8
@@ -151,13 +154,12 @@ async def test_new_activation_cannot_authorize_same_provider_response(monkeypatc
     import mochi.config as config
 
     monkeypatch.setattr(config, "TOOL_ESCALATION_ENABLED", True)
-    set_skill_enabled("development", True)
     name = "local_not_yet"
     store.scaffold(name)
     agent = mock_llm_factory([
-        _call("request_tools", {"skills": ["development"]}),
+        _call("request_tools", {"skills": ["personal_workspace"]}),
         make_response(tool_calls=[
-            make_tool_call("activate_extension", {"extension_id": name}),
+            make_tool_call("activate_extension", {"path": f"extensions/{name}/draft"}),
             make_tool_call(name + "_echo", {"text": "not authorized"}),
         ]),
         _call("request_tools", {"skills": [name]}),
@@ -175,7 +177,6 @@ async def test_round_dispatch_keeps_old_code_and_refreshes_updated_schema(monkey
     from mochi.extensions import template
 
     monkeypatch.setattr(config, "TOOL_ESCALATION_ENABLED", True)
-    set_skill_enabled("development", True)
     name = "local_round"
     files = template.files(name)
     store.scaffold(name)
@@ -183,9 +184,9 @@ async def test_round_dispatch_keeps_old_code_and_refreshes_updated_schema(monkey
     store.write_file(name, "SKILL.md", files["SKILL.md"].replace("| text |", "| value |"))
     store.write_file(name, "handler.py", files["handler.py"].replace('get("text")', 'get("value")'))
     agent = mock_llm_factory([
-        _call("request_tools", {"skills": ["development", name]}),
+        _call("request_tools", {"skills": ["personal_workspace", name]}),
         make_response(tool_calls=[
-            make_tool_call("activate_extension", {"extension_id": name}),
+            make_tool_call("activate_extension", {"path": f"extensions/{name}/draft"}),
             make_tool_call(name + "_echo", {"text": "old round code"}),
         ]),
         _call(name + "_echo", {"value": "new round code"}),
@@ -208,12 +209,11 @@ async def test_new_resident_tool_can_be_requested_mid_turn(monkeypatch, mock_llm
     from mochi.extensions import template
 
     monkeypatch.setattr(config, "TOOL_ESCALATION_ENABLED", True)
-    set_skill_enabled("development", True)
     name = "local_resident"
     store.scaffold(name, skill_md=template.files(name)["SKILL.md"].replace("(on_demand)", "(resident)"))
     agent = mock_llm_factory([
-        _call("request_tools", {"skills": ["development"]}),
-        _call("activate_extension", {"extension_id": name}),
+        _call("request_tools", {"skills": ["personal_workspace"]}),
+        _call("activate_extension", {"path": f"extensions/{name}/draft"}),
         _call("request_tools", {"skills": [name + "_echo" if request_exact_tool else name]}),
         _call(name + "_echo", {"text": "resident now"}),
         make_response("The newly installed tool returned resident now."),
@@ -231,7 +231,6 @@ async def test_requested_then_removed_tool_is_not_advertised_next_round(monkeypa
     from mochi.extensions import template
 
     monkeypatch.setattr(config, "TOOL_ESCALATION_ENABLED", True)
-    set_skill_enabled("development", True)
     name = "local_removed"
     files = template.files(name)
     store.scaffold(name)
@@ -239,10 +238,10 @@ async def test_requested_then_removed_tool_is_not_advertised_next_round(monkeypa
     store.write_file(name, "SKILL.md", files["SKILL.md"].replace(name + "_echo", name + "_new"))
     store.write_file(name, "handler.py", files["handler.py"].replace(name + "_echo", name + "_new"))
     agent = mock_llm_factory([
-        _call("request_tools", {"skills": ["development"]}),
+        _call("request_tools", {"skills": ["personal_workspace"]}),
         make_response(tool_calls=[
             make_tool_call("request_tools", {"skills": [name]}),
-            make_tool_call("activate_extension", {"extension_id": name}),
+            make_tool_call("activate_extension", {"path": f"extensions/{name}/draft"}),
         ]),
         _call("request_tools", {"skills": [name]}),
         _call(name + "_new", {"text": "new tool"}),
@@ -267,20 +266,23 @@ async def test_development_off_and_same_round_request_do_not_authorize_writes(
     set_skill_enabled("development", False)
     registry.discover()
     disabled = mock_llm_factory([
-        _call("request_tools", {"skills": ["development"]}),
+        _call("request_tools", {"skills": ["personal_workspace"]}),
         make_response("Development has been switched off."),
     ])
     await chat(_message("Make a tool."))
     assert not any(
-        tool["function"]["name"] == "write_extension"
+        tool["function"]["name"] in {"run_extension", "activate_extension"}
         for call in disabled.call_log for tool in call["tools"]
     )
+    assert {"browse_workspace", "edit_workspace"} <= {
+        tool["function"]["name"] for tool in disabled.call_log[1]["tools"]
+    }
     set_skill_enabled("development", True)
     mock_llm_factory([
         make_response(tool_calls=[
-            make_tool_call("request_tools", {"skills": ["development"]}),
-            make_tool_call("write_extension", {
-                "action": "create", "extension_id": "local_too_early",
+            make_tool_call("request_tools", {"skills": ["personal_workspace"]}),
+            make_tool_call("edit_workspace", {
+                "action": "create", "path": "extensions/local_too_early/draft",
             }),
         ]),
         make_response("The tool becomes available only after the request round."),

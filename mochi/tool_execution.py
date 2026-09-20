@@ -53,13 +53,13 @@ def sanitize_arguments(tool_name: str, args: dict) -> dict:
         sanitized = {}
     if tool_name == "set_skill_config" and "value" in sanitized:
         sanitized["value"] = "[REDACTED]"
-    if tool_name in {"save_mochi_file", "write_extension"}:
-        for key in ("content", "old_text", "new_text", "skill_md", "handler_py", "smoke_py"):
+    if tool_name in {"save_mochi_file", "write_extension", "edit_workspace"}:
+        for key in ("content", "old_text", "new_text", "skill_md", "handler_py", "smoke_py", "files"):
             if key in sanitized:
                 sanitized[key] = "[REDACTED]"
     if tool_name == "run_extension" and "arguments" in sanitized:
         sanitized["arguments"] = "[REDACTED]"
-    if tool_name == "browse_mochi_files" and "query" in sanitized:
+    if tool_name in {"browse_mochi_files", "browse_workspace"} and "query" in sanitized:
         sanitized["query"] = "[REDACTED]"
     return sanitized
 
@@ -103,7 +103,7 @@ def _compact_summary(tool_name: str, args: dict, result: SkillResult) -> str:
 
 def _entity_refs(skill_name: str, args: dict, result: SkillResult) -> list[str]:
     refs = [str(r) for r in result.entity_refs if r]
-    if skill_name == "mochi_files":
+    if skill_name in {"mochi_files", "personal_workspace"}:
         return refs[:10]
     for key, value in args.items():
         if not key.endswith("_id") or value in (None, ""):

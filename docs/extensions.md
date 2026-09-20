@@ -1,21 +1,56 @@
-# Personal extensions
+# Personal workspace and extensions
 
-Personal extensions add ordinary tools without editing official Mochi source.
-They are trusted Python code, not a sandbox. Development is enabled by default
-and appears in Main's capability summary without separate authorization.
-Main chooses what to build, how to test, and when to activate it, using four
-on-demand tools in conversation or eligible autonomous entries. Admin is an
-optional control and status view; the ordinary skill toggle can disable
-development, and an explicit disabled setting is preserved across restarts.
-No Admin visit or restart is required:
+`personal_workspace` is Main's single entry for persistent documents and personal
+tool source. It does not replace Diary, Core, or memory. Main chooses what to
+write and whether executable behavior is useful; a document does not need to
+become a program. Four on-demand tools are available in conversation and
+eligible autonomous entries:
 
-- `inspect_extension`: the guide, template, package state, source, and run report.
-- `write_extension`: create, write, edit, or remove draft source.
+- `browse_workspace`: list, search, or read documents/source; inspect the guide,
+  complete template, package state, or last run report.
+- `edit_workspace`: create, append, or exact-edit files; replace/remove draft
+  source, or create a complete authored package in one call.
 - `run_extension`: execute a draft script and return real diagnostics.
 - `activate_extension`: load and persist a candidate, then replace live tools.
 
 These are capabilities, not a prescribed workflow. There is no hidden coder,
 mandatory verification-success gate, automatic retry, or continuation loop.
+Saving source does not run it; running source does not activate it.
+
+## Workspace files
+
+Use workspace-relative paths, not host paths:
+
+```text
+documents/health/record.md
+extensions/local_example/draft/handler.py
+extensions/local_example/current/handler.py
+extensions/local_example/previous/handler.py
+```
+
+Document paths map to the existing `data/mochi_files/` Markdown space.
+Extension paths map to existing `data/extensions/` packages. Existing files,
+previous versions, configuration and tool data stay in place; no migration is
+required. `browse_workspace(action="list")` shows the two areas and current
+development state. Multi-file reads share a bounded response. Literal search
+can target documents or an explicitly addressed source area.
+
+Documents support create-without-overwrite, append and exact edits, retaining
+the existing hidden previous copy. They do not support blind replacement or
+deletion. Source mutation affects only drafts; `current` and `previous` are
+read-only. Package-owned data, runtime copies, credentials, official source and
+the shared database are not generic workspace file paths.
+
+Development is enabled by default, without separate authorization. The existing
+`toggle_skill(skill_name="development", enabled=false)` setting disables draft
+mutation, execution and activation, not document operations, read-only source
+inspection, or already installed personal tools. Admin offers the same optional
+setting; explicit disables persist. `development` and `mochi_files` are no longer
+separate skill entries. Exact legacy discovery requests point to the new entry,
+but retired tool names are not executable.
+
+Personal extensions are trusted local Python, not a sandbox. No Admin visit or
+restart is required to author and activate them.
 
 ## Package contract
 
@@ -24,10 +59,13 @@ and an underscore, such as `local_reading_add`. Names must not collide with
 another skill or framework tool.
 
 Each draft contains `__init__.py`, `SKILL.md`, `handler.py`, and usually
-`smoke.py`. `inspect_extension(action="guide")` returns this guide and a complete
-runnable template. `write_extension(action="create")` can receive your complete
-`skill_md`, `handler_py`, and `smoke_py` strings together; omitted files use the
-neutral template, not an implementation inferred from your request.
+`smoke.py`. `browse_workspace(action="guide",
+path="extensions/local_reading/draft")` returns this guide and a complete
+runnable template for that path. `edit_workspace(action="create",
+path="extensions/local_reading/draft", files=[...])` accepts file entries with
+`path` and `content`, such as `SKILL.md`, `handler.py`, and `smoke.py`. Omitted
+standard files use the neutral template, not an inferred implementation.
+Source receipts include `draft_path`; use that same path for run and activation.
 
 `SKILL.md` defines the name, description, `type: tool`, configuration, and
 ordinary tool schemas using the existing Markdown parameter tables. Tools use
@@ -72,11 +110,14 @@ configuration instead of loading production credentials.
 
 ## Authoring and trying the tool
 
-The read and write tools have separate allowances. Inspect several files with
+The unified read and edit tools each pool the former two tools' per-turn
+allowances (six calls each at the default), still within eight total ordinary
+calls. Other tools keep their per-name allowance. Inspect several files with
 one `paths` array; create a small complete package in one write call. Later edits
 can replace one exact occurrence in a draft file.
 
-`run_extension` defaults to `smoke.py`. The template's smoke script loads the
+`run_extension(path="extensions/local_reading/draft")` defaults to `smoke.py`.
+The template's smoke script loads the
 actual candidate with temporary extension data and calls its real `Skill.run()`.
 It checks `SkillResult.success`, not merely whether Python starts. Modify its
 arguments and expectations along with your handler. Main authors these
@@ -93,7 +134,8 @@ loop resumes development after the turn ends.
 
 ## Activation and use
 
-`activate_extension` copies the draft into an immutable runtime snapshot, loads
+`activate_extension(path="extensions/local_reading/draft")` copies the draft
+into an immutable runtime snapshot, loads
 the candidate with its configured values and persistent data directory, and
 validates registration and tool ownership. Only then does it persist the
 installed `current` version, retain one `previous` version, and swap the live

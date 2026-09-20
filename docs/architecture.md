@@ -20,12 +20,19 @@ setup, not broad provider or multi-user infrastructure.
 - **Skills** (`mochi/skills/`) contain feature behavior and deterministic tool
   operations. Transports and heartbeat call them only through Main or the skill
   registry.
+- **Personal workspace** (`mochi/personal_workspace.py`) is Main's single
+  document/source authoring surface, exposed by `personal_workspace`.
+  Its two path prefixes delegate to the existing Markdown and extension stores
+  without moving data or exposing a general host filesystem. Browse/edit are
+  shared; execution and live activation remain explicit separate operations.
+  The existing `workspace` skill continues to own Diary only.
 - **Personal extensions** (`mochi/extensions/`) own code under the Git-ignored
   `data/extensions/` directory, outside official source. The default-enabled
-  development skill gives Main on-demand inspection, authoring, execution, and
+  personal workspace gives Main on-demand inspection, authoring, execution, and
   live activation tools; Main remains the sole author and judge of its work.
   Development is visible to Main from startup and needs no separate authorization.
-  The ordinary skill toggle can disable it; explicit disabled settings persist.
+  The persisted development toggle disables source mutation/run/activation,
+  not documents, read-only inspection or installed tools.
   Activation loads an immutable candidate with its configuration and own data,
   validates tool ownership, persists current code with one previous version,
   then swaps the registry. Failure preserves the old registry; trusted candidate
@@ -37,9 +44,9 @@ setup, not broad provider or multi-user infrastructure.
   consuming Attention state.
 - **Persistence** (`mochi/db.py`) stores conversation, memory, configuration,
   usage, and tool execution facts.
-- **Mochi Files** (`mochi/mochi_files_store.py`) gives sovereign Main a bounded
-  private Markdown space under `data/mochi_files/`. The harness supplies only
-  safe storage operations; Main alone decides whether, what, and how to write.
+- **Document storage** (`mochi/mochi_files_store.py`) retains Main's private
+  Markdown space under `data/mochi_files/`, accessed through the personal
+  workspace. Main alone decides whether, what, and how to write.
 
 Dependency direction is transport/heartbeat -> Main -> skills and persistence.
 Skills do not import transports or orchestration.
@@ -59,12 +66,16 @@ Startup loads enabled installed current versions; ordinary rediscovery does not
 import newly restored code. Explicit activation or enable/load can load code
 live. One previous code copy supports manual recovery, not data rollback.
 
-Mochi Files is separate from Core, Memory, KG, Diary, and SQLite. Its two
-on-demand tools are available only to Main tool calls and are never used by
-Lite, Nightly, scripts, or harness jobs. Browse results are current-turn
-Agent-authored documents, not external truth or automatically recalled context.
+Personal workspace files remain separate from Core, Memory, KG, Diary, and
+SQLite. Workspace tools are available only to Main tool calls, not Lite,
+Nightly, scripts, or harness jobs. Browse results are current-turn agent-authored
+artifacts, not external truth or automatically recalled context.
 Writes use exact UTF-8 Markdown files, fixed quotas, atomic publication, and one
 hidden previous version for append/edit recovery safety.
+The registry retains complete tool ownership separately from current eligibility;
+changing the development setting can hide execution tools without losing their
+registration. Exact legacy discovery names resolve to the single personal entry,
+not parallel callable interfaces.
 
 Main 可通过 resident `look_around` 读取 Observer 已有缓存的安全视图。
 该工具只读，不触发采集、外部请求或 Attention 状态变化；Free Time 默认

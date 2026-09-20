@@ -1587,19 +1587,22 @@ async function loadSettings() {
 }
 
 function renderPersonalSkills(skills) {
-  const personal = skills.filter(s => s.source === 'personal' || s.name === 'development');
+  const personal = skills.filter(s => s.source === 'personal' || s.name === 'personal_workspace');
   let html = `<div class="card" id="personal-skills"><div class="settings-section-head">
-    <div><div class="settings-section-title">开发与个人工具</div>
-    <div class="settings-section-copy">Mochi 默认可以自己编写、调试并启用工具，无需单独授权或重启</div></div></div>
-    <p style="font-size:12px;color:var(--text-soft);margin-bottom:12px">开发默认开启，可在此关闭或查看状态。Main 运行可信的本地 Python，可访问本机文件和外部服务；这不是安全沙箱。关闭开发不会关闭已有个人工具。</p>`;
+    <div><div class="settings-section-title">个人工作区</div>
+    <div class="settings-section-copy">资料与工具草稿统一读写；运行与启用仍是独立操作</div></div></div>
+    <p style="font-size:12px;color:var(--text-soft);margin-bottom:12px">开发默认开启，无需单独授权或重启。Main 运行可信的本地 Python，可访问本机文件和外部服务；这不是安全沙箱。关闭开发不影响资料读写、代码查看或已有个人工具。</p>`;
   for (const s of personal) {
-    const state = s.admin_disabled ? '关闭' : s.load_error && !s.loaded ? '加载失败'
+    const workspace = s.name === 'personal_workspace';
+    const enabled = workspace ? s.development_enabled : !s.admin_disabled;
+    const state = workspace ? (enabled ? '资料可用 · 开发开启' : '资料可用 · 开发关闭')
+      : s.admin_disabled ? '关闭' : s.load_error && !s.loaded ? '加载失败'
       : s.config_missing.length ? '缺少配置' : s.loaded ? '可用'
       : s.activation_required ? '需要激活' : '尚未加载';
     html += `<div style="padding:12px 0;border-top:1px solid var(--border)">
       <div style="display:flex;align-items:center;gap:12px">
-        <label class="toggle"><input type="checkbox" data-skill-toggle="${esc(s.name)}" ${s.admin_disabled?'':'checked'}><span class="slider"></span></label>
-        <strong>${s.name === 'development' ? 'Mochi 开发工具' : esc(s.name)}</strong>
+        <label class="toggle"><input type="checkbox" data-skill-toggle="${workspace?'development':esc(s.name)}" ${enabled?'checked':''}><span class="slider"></span></label>
+        <strong>${workspace ? '开发与执行（不影响资料）' : esc(s.name)}</strong>
         <span class="badge ${s.enabled?'badge-ok':'badge-gray'}">${esc(state)}</span>
         ${s.source === 'personal' && s.loaded?'<span class="badge badge-info">已加载</span>':''}
       </div>
