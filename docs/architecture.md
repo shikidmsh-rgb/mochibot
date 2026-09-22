@@ -108,12 +108,20 @@ output contracts.
    after delivery is confirmed; only then can a complete ordinary conversation
    wake summary and memory extraction.
 
+Main's recent conversation includes bounded, timestamped standalone assistant
+messages only after confirmed delivery, alongside complete ordinary turns.
+These messages do not become user turns or enter Lite summary/extraction batches.
+User isolation and conversation resets apply to both kinds of history.
+
 The existing execution ledger supplies bounded receipts for the completed turns
-visible in Main's conversation context, independent of message wording or routing.
+visible in Main's conversation context, independent of message wording or routing,
+plus the last 24 hours of Free Time, Attention and Self Reminder work. Silent
+operations remain visible without inventing an assistant message or implying
+delivery. These receipts share one count/text budget and respect context resets.
 Receipts include read-only, failed and unfinished calls as well as successful
 writes; non-success records do not assert the absence of side effects.
-They stay inside the same user, reset epoch and runtime-entry history
-boundary. Tool-provided summaries are data, not instructions or proof that the
+They stay inside the same user and reset epoch; Weekly keeps its separate
+curation context. Tool-provided summaries are data, not instructions or proof that the
 user's overall task is complete. Only compact summaries and operation identifiers
 are carried, rather than replaying full outputs or arguments. Main retains
 judgment about what to do next.
@@ -310,12 +318,14 @@ observer fact without moving the Free Time clock. Sleeping and long-silence
 pause gates run before observer or model work.
 
 Both situations enter the standard Main personality and Agent First tool loop.
-Free Time receives only the last two role-true conversation turns and last
-contact age for immediate relationship continuity. It deliberately excludes
-Agenda, Diary, summaries, auto-recall, recent operations, and semantic routing,
+Free Time receives the last two role-true conversation turns, up to five recent
+standalone deliveries, and bounded execution receipts for continuity. Standalone
+history starts with the selected conversation window, or uses the latest five
+deliveries since reset when there are no complete turns; midnight does not clear
+it. Free Time deliberately excludes Agenda, Diary, summaries, auto-recall, and semantic routing,
 so recent conversation remains background rather than an assigned topic.
 Attention receives bounded unresolved facts plus Diary, conversation summary,
-temporal context, and role-true recent history. Both start with resident tools
+temporal context, role-true recent history and execution receipts. Both start with resident tools
 and may request other tools; neither inherits a sticky routed skill.
 
 Observers own factual source state, Main owns meaning/action/expression, and

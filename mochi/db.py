@@ -22,6 +22,8 @@ from mochi.config import (
 from mochi.memory_contract import memory_contents_equal
 
 logger = logging.getLogger(__name__)
+_STANDALONE_HISTORY_LIMIT = 5
+_STANDALONE_HISTORY_CHARS = 2000
 
 
 def _connect() -> sqlite3.Connection:
@@ -904,19 +906,29 @@ def get_recent_tool_executions(user_id: int, *, hours: int = 24,
                                skill_names: list[str] | None = None,
                                state_changes_only: bool = True,
                                turn_ids: list[str] | None = None,
-                               include_failures: bool = False) -> list[dict]:
-    """Read same-user execution facts, scoped to visible turns when supplied."""
+                               include_failures: bool = False,
+                               include_autonomous: bool = False) -> list[dict]:
+    """Read visible-turn receipts, optionally including recent autonomous work."""
     conditions = ["user_id = ?"]
     params: list = [user_id]
+    cutoff = (datetime.now(TZ) - timedelta(hours=max(1, hours))).isoformat()
     if turn_ids is not None:
         selected = list(dict.fromkeys(turn_ids))[-10:]
-        if not selected:
+        scopes = []
+        if selected:
+            placeholders = ",".join("?" for _ in selected)
+            scopes.append(f"turn_id IN ({placeholders})")
+            params.extend(selected)
+        if include_autonomous:
+            scopes.append(
+                "(source IN ('runtime:free_time', 'runtime:attention', "
+                "'runtime:self_reminder') AND julianday(started_at) >= julianday(?))"
+            )
+            params.append(cutoff)
+        if not scopes:
             return []
-        placeholders = ",".join("?" for _ in selected)
-        conditions.append(f"turn_id IN ({placeholders})")
-        params.extend(selected)
+        conditions.append("(" + " OR ".join(scopes) + ")")
     else:
-        cutoff = (datetime.now(TZ) - timedelta(hours=max(1, hours))).isoformat()
         conditions.append("started_at >= ?")
         params.append(cutoff)
     if not include_failures:
@@ -929,8 +941,13 @@ def get_recent_tool_executions(user_id: int, *, hours: int = 24,
             placeholders = ",".join("?" for _ in normalized)
             conditions.append(f"skill_name IN ({placeholders})")
             params.extend(normalized)
-    params.append(max(1, limit))
     conn = _connect()
+    if include_autonomous:
+        reset_at = _current_context_reset(conn, user_id)
+        if reset_at:
+            conditions.append("julianday(started_at) > julianday(?)")
+            params.append(reset_at)
+    params.append(max(1, limit))
     rows = conn.execute(
         "SELECT id, turn_id, tool_call_id, user_id, source, skill_name, "
         "tool_name, action, arguments_json, status, result_summary, "
@@ -1348,8 +1365,9 @@ def get_conversation_context(
     recent_turns: int = 10,
     *,
     include_summary: bool = True,
+    include_standalone: bool = True,
 ) -> dict:
-    """Return role-true recent context plus every not-yet-summarized turn."""
+    """Return recent conversation, delivered standalone replies and overflow."""
     conn = _connect()
     try:
         if include_summary:
@@ -1395,12 +1413,41 @@ def get_conversation_context(
                 flattened.extend((turn["user"], turn["assistant"]))
             return flattened
 
+        recent_messages = _flatten(recent)
+        if include_standalone:
+            paired_ids = {
+                message["id"] for turn in turns
+                for message in (turn["user"], turn["assistant"])
+            }
+            start_id = min(
+                (message["id"] for message in recent_messages), default=0,
+            )
+            standalone = [
+                message for message in messages
+                if message["role"] == "assistant"
+                and message["id"] not in paired_ids
+                and message["id"] >= start_id
+            ][-_STANDALONE_HISTORY_LIMIT:]
+            recent_messages.extend(
+                {
+                    **message,
+                    "standalone": True,
+                    "content": (
+                        message["content"][:_STANDALONE_HISTORY_CHARS - 3] + "..."
+                        if len(message["content"]) > _STANDALONE_HISTORY_CHARS
+                        else message["content"]
+                    ),
+                }
+                for message in standalone
+            )
+            recent_messages.sort(key=lambda message: message["id"])
+
         conn.commit()
         return {
             "summary": summary,
             "through_message_id": through_message_id,
             "overflow": _flatten(overflow),
-            "recent": _flatten(recent),
+            "recent": recent_messages,
             "trailing": trailing,
         }
     finally:

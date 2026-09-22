@@ -17,10 +17,11 @@ def _turn(turn_id, user_id=1):
 
 
 def _execution(turn_id, tool="run_extension", *, user_id=1, status="success",
-               changed=False, summary="script completed; not activated", args=None):
+               changed=False, summary="script completed; not activated", args=None,
+               source="runtime:chat"):
     execution_id = db.start_tool_execution(
         turn_id=turn_id, tool_call_id=f"{turn_id}-{tool}", user_id=user_id,
-        source="runtime:chat", skill_name="personal_workspace", tool_name=tool,
+        source=source, skill_name="personal_workspace", tool_name=tool,
         action=(args or {}).get("action", ""),
         arguments_json=serialized_arguments(tool, args or {}),
     )
@@ -115,6 +116,77 @@ def test_context_reset_hides_old_receipts_without_deleting_them():
     assert "NEW_RECEIPT" in context
     assert "OLD_RECEIPT" not in context
     assert db.get_tool_executions_for_turn("before-reset")
+
+
+def test_autonomous_receipts_include_silent_work_without_inventing_delivery():
+    _execution(
+        "silent", "manage_reminder", source="runtime:free_time",
+        changed=True, summary="Reminder #54 set for tonight at 23:00",
+    )
+    _execution("failed", source="runtime:attention", status="failed", summary="TRY_FAILED")
+    _execution("unfinished", source="runtime:self_reminder", status="running")
+    _execution("unseen-chat", summary="UNSEEN_CHAT")
+    _execution("weekly", source="weekly", summary="WEEKLY")
+    _execution("other", source="runtime:free_time", user_id=2, summary="OTHER_USER")
+
+    context = recent_operations_context(1, [], include_autonomous=True)
+
+    assert "Reminder #54 set for tonight at 23:00" in context
+    assert '"source":"runtime:free_time"' in context
+    assert "TRY_FAILED" in context
+    assert '"status":"running"' in context
+    assert "Execution does not imply a message was delivered." in context
+    assert not any(value in context for value in ("UNSEEN_CHAT", "WEEKLY", "OTHER_USER"))
+    assert db.get_recent_messages(1) == []
+    assert recent_operations_context(1, []) == ""
+
+
+def test_autonomous_receipts_respect_time_reset_and_shared_budget():
+    _execution("old-epoch", source="runtime:free_time", summary="OLD_EPOCH")
+    db.set_context_reset(1)
+    _turn("visible")
+    visible_id = _execution("visible", summary="VISIBLE_OLD")
+    stale_id = _execution("stale", source="runtime:attention", summary="STALE_RUNTIME")
+    with db._connect() as conn:
+        conn.execute(
+            "UPDATE tool_executions SET started_at = '2020-01-01T00:00:00+00:00' "
+            "WHERE id = ?", (stale_id,),
+        )
+    context = recent_operations_context(1, _history(), include_autonomous=True)
+    assert "VISIBLE_OLD" in context
+    assert "OLD_EPOCH" not in context
+    assert "STALE_RUNTIME" not in context
+
+    with db._connect() as conn:
+        conn.execute("DELETE FROM conversation_reset WHERE user_id = 1")
+        conn.execute(
+            "UPDATE tool_executions SET started_at = '2020-01-01T00:00:00+00:00' "
+            "WHERE id = ?", (visible_id,),
+        )
+    assert "VISIBLE_OLD" in recent_operations_context(
+        1, _history(), include_autonomous=True,
+    )
+    for number in range(14):
+        _execution(
+            f"silent-{number}", source="runtime:free_time",
+            summary=f"LATEST_{number:02}",
+        )
+    context = recent_operations_context(
+        1, _history(), include_autonomous=True, max_chars=10000,
+    )
+    assert context.count('{"tool":') == 12
+    assert "LATEST_01" not in context
+    assert "LATEST_13" in context
+    assert len(recent_operations_context(1, _history(), include_autonomous=True)) <= 2400
+
+
+def test_visible_autonomous_receipt_is_not_duplicated():
+    db.save_message(1, "assistant", "delivered", turn_id="autonomous", processed=True)
+    _execution("autonomous", source="runtime:attention", summary="ONE_RECEIPT")
+
+    context = recent_operations_context(1, _history(), include_autonomous=True)
+
+    assert context.count("ONE_RECEIPT") == 1
 
 
 def test_visible_turns_keep_receipts_older_than_a_day():

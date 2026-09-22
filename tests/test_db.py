@@ -6,6 +6,7 @@ every query helper.
 
 import sqlite3
 
+import mochi.db as db
 from mochi.db import (
     delete_memory_items,
     finish_tool_execution,
@@ -56,6 +57,91 @@ def test_reset_boundary_hides_older_conversation():
     assert [m["content"] for m in get_recent_messages(1, since=boundary)] == [
         "after reset"
     ]
+
+
+def _save_turn(name):
+    save_message(1, "user", f"user-{name}", turn_id=name)
+    save_message(1, "assistant", f"assistant-{name}", turn_id=name)
+
+
+def test_context_merges_standalone_deliveries_without_changing_complete_turns():
+    _save_turn("old")
+    save_message(1, "assistant", "outside-window", processed=True)
+    _save_turn("first")
+    first = save_message(1, "assistant", "already-reminded", processed=True)
+    _save_turn("second")
+    second = save_message(1, "assistant", "already-reminded", processed=True)
+    save_message(2, "assistant", "other-user", processed=True)
+    save_message(1, "user", "unanswered", turn_id="pending")
+
+    context = db.get_conversation_context(1, 2, include_summary=False)
+
+    assert [m["content"] for m in context["recent"]] == [
+        "user-first", "assistant-first", "already-reminded",
+        "user-second", "assistant-second", "already-reminded",
+    ]
+    assert [m["id"] for m in context["recent"] if m.get("standalone")] == [
+        first, second,
+    ]
+    assert [m["content"] for m in context["trailing"]] == ["unanswered"]
+    assert db.get_conversation_summary_status(1)["pending_turns"] == 3
+    _, extraction_messages = db.get_memory_extraction_batch(1, 3)
+    assert len(extraction_messages) == 6
+    assert all(not message["processed"] for message in extraction_messages)
+
+
+def test_standalone_history_has_separate_count_and_body_limits():
+    _save_turn("kept")
+    for number in range(7):
+        save_message(1, "assistant", f"proactive-{number}", processed=True)
+    save_message(1, "assistant", "x" * 5000, processed=True)
+
+    context = db.get_conversation_context(1, 1, include_summary=False)
+
+    assert len(context["recent"]) == 7
+    assert [m["content"] for m in context["recent"][:2]] == [
+        "user-kept", "assistant-kept",
+    ]
+    assert [m["content"] for m in context["recent"][2:-1]] == [
+        "proactive-3", "proactive-4", "proactive-5", "proactive-6",
+    ]
+    assert len(context["recent"][-1]["content"]) == 2000
+    assert context["recent"][-1]["content"].endswith("...")
+    assert get_recent_messages(1)[-1]["content"] == "x" * 5000
+    ordinary = db.get_conversation_context(
+        1, 1, include_summary=False, include_standalone=False,
+    )
+    assert len(ordinary["recent"]) == 2
+
+
+def test_standalone_history_survives_midnight_but_not_context_reset():
+    old_id = save_message(1, "assistant", "last-night", processed=True)
+    with db._connect() as conn:
+        conn.execute(
+            "UPDATE messages SET created_at = '2020-01-01T23:59:00+00:00' WHERE id = ?",
+            (old_id,),
+        )
+    assert [
+        m["content"] for m in db.get_conversation_context(1)["recent"]
+    ] == ["last-night"]
+
+    set_context_reset(1)
+    save_message(1, "assistant", "new-epoch", processed=True)
+    save_message(2, "assistant", "other-user", processed=True)
+
+    assert [
+        m["content"] for m in db.get_conversation_context(1)["recent"]
+    ] == ["new-epoch"]
+
+
+def test_standalone_delivery_between_user_and_reply_keeps_chronology():
+    save_message(1, "user", "question", turn_id="chat")
+    save_message(1, "assistant", "independent-delivery", processed=True)
+    save_message(1, "assistant", "answer", turn_id="chat")
+
+    assert [
+        m["content"] for m in db.get_conversation_context(1)["recent"]
+    ] == ["question", "independent-delivery", "answer"]
 
 
 def test_tool_ledger_keeps_real_receipt_and_filters_non_changes():

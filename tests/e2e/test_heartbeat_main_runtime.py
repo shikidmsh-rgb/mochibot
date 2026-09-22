@@ -9,8 +9,8 @@ from mochi.core_store import replace_core
 from mochi.db import _connect, get_recent_messages, save_message
 from mochi.heartbeat_runtime import set_schedule_due
 from mochi.main_runtime import DurableChatResult, MainRuntimeEntry
-from mochi.transport import DeliveryError
-from tests.e2e.mock_llm import make_response
+from mochi.transport import DeliveryError, IncomingMessage
+from tests.e2e.mock_llm import make_response, make_tool_call
 
 
 def test_observer_rediscovery_preserves_runtime_cache():
@@ -34,13 +34,8 @@ async def test_free_time_keeps_only_immediate_conversation_context(
     monkeypatch,
 ):
     import mochi.ai_client as ai_client
-    import mochi.tool_execution as tool_execution
 
     replace_core("CORE_MARKER", source="test")
-    monkeypatch.setattr(
-        tool_execution, "recent_operations_context",
-        lambda *args: pytest.fail("Free Time must not inject execution records"),
-    )
     monkeypatch.setattr(
         ai_client,
         "_retrieve_memories_for_turn",
@@ -75,6 +70,93 @@ async def test_free_time_keeps_only_immediate_conversation_context(
     assert [item["content"].split("] ", 1)[-1] for item in history] == [
         "user-1", "assistant-1", "user-2", "assistant-2",
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["chat", "free_time", "attention", "self_reminder", "bedtime"])
+async def test_main_sees_delivered_autonomous_history_only(
+    mock_llm_factory, kind,
+):
+    delivered = ChatResult(_pending_history={
+        "user_id": 1, "content": "ALREADY_SAID_GOODNIGHT",
+        "turn_id": "attention:delivered", "processed": True, "tool_history": None,
+    })
+    assert delivered.confirm_delivered()
+    assert not delivered.confirm_delivered()
+    ChatResult(_pending_history={
+        "user_id": 1, "content": "UNSENT_DRAFT",
+        "turn_id": "attention:failed", "processed": True, "tool_history": None,
+    })
+    save_message(2, "assistant", "OTHER_USER", processed=True)
+    mock = mock_llm_factory([make_response("[SKIP]")])
+    if kind == "chat":
+        await chat(IncomingMessage(
+            user_id=1, channel_id=100, text="hello", transport="fake",
+        ))
+    else:
+        await chat(runtime_entry=MainRuntimeEntry(
+            kind=kind, user_id=1, channel_id=100, transport="fake",
+            trigger="silence" if kind == "bedtime" else None,
+            intent="check in" if kind == "self_reminder" else None,
+        ))
+
+    messages = mock.call_log[0]["messages"]
+    delivered_messages = [
+        message for message in messages
+        if "ALREADY_SAID_GOODNIGHT" in message.get("content", "")
+    ]
+    assert len(delivered_messages) == 1
+    assert delivered_messages[0]["role"] == "assistant"
+    assert delivered_messages[0]["content"].startswith("[")
+    assert not any(
+        value in message.get("content", "")
+        for message in messages for value in ("UNSENT_DRAFT", "OTHER_USER")
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("next_kind", ["free_time", "attention", "chat"])
+async def test_silent_reminder_creation_is_visible_in_the_next_main_entry(
+    mock_llm_factory, next_kind,
+):
+    from mochi.skills.reminder.queries import get_pending_reminders
+
+    mock = mock_llm_factory([
+        make_response(tool_calls=[
+            make_tool_call("request_tools", {"skills": ["reminder"]}),
+        ]),
+        make_response(tool_calls=[make_tool_call("manage_reminder", {
+            "action": "create", "message": "BEDTIME_ALREADY_SCHEDULED",
+            "remind_at": (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat(),
+        })]),
+        make_response("[SKIP]"),
+        make_response("[SKIP]"),
+    ])
+    first = await chat(runtime_entry=MainRuntimeEntry.free_time(
+        run_key="free_time:silent-first", wake_reason="periodic", user_id=1,
+        channel_id=100, transport="fake", claim_token="claim",
+        lease_until="2099-01-01T00:00:00+00:00",
+    ))
+    assert first.disposition == "handled"
+    assert first.successful_effects
+    assert get_recent_messages(1) == []
+    assert len(get_pending_reminders()) == 1
+
+    if next_kind == "chat":
+        await chat(IncomingMessage(
+            user_id=1, channel_id=100, text="hello", transport="fake",
+        ))
+    else:
+        await chat(runtime_entry=MainRuntimeEntry(
+            kind=next_kind, user_id=1, channel_id=100, transport="fake",
+            run_key=f"{next_kind}:second", wake_reason="periodic",
+        ))
+
+    prompt = mock.call_log[3]["messages"][0]["content"]
+    assert '"tool":"manage_reminder"' in prompt
+    assert '"source":"runtime:free_time"' in prompt
+    assert "BEDTIME_ALREADY_SCHEDULED" in prompt
+    assert len(get_pending_reminders()) == 1
 
 
 @pytest.mark.asyncio

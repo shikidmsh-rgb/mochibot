@@ -48,6 +48,7 @@ class ContextPolicy:
     diary_journal: bool = True
     conversation_summary: bool = True
     recent_history: bool = True
+    standalone_history: bool = True
     recent_turns: int | None = None
     trailing_history: bool = True
     auto_recall: bool = True
@@ -68,7 +69,6 @@ def context_policy(entry: "MainRuntimeEntry | None") -> ContextPolicy:
             recent_turns=2,
             trailing_history=False,
             auto_recall=False,
-            recent_operations=False,
             prompt_sections=False,
             temporal_context=True,
         )
@@ -79,13 +79,13 @@ def context_policy(entry: "MainRuntimeEntry | None") -> ContextPolicy:
             conversation_summary=True,
             recent_history=True,
             auto_recall=False,
-            recent_operations=False,
             prompt_sections=False,
         )
     if entry.kind == "weekly_maintenance":
         return ContextPolicy(
             diary_journal=False,
             conversation_summary=True,
+            standalone_history=False,
             auto_recall=False,
             recent_operations=False,
             prompt_sections=False,

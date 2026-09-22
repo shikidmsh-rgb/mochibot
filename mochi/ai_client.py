@@ -254,10 +254,9 @@ def _format_history_timestamp(created_at) -> str:
 def _expand_history(history: list[dict]) -> list[dict]:
     """Convert stored conversation history into ordinary chat messages.
 
-    Only user messages get a `[MM-DD HH:MM] ` timestamp prefix to anchor the
-    LLM's time awareness across long conversation gaps. Assistant messages are
-    left clean so the model does not few-shot-learn to echo timestamps in its
-    own replies. Stored tool history is intentionally not replayed as provider-
+    User and standalone assistant messages get a `[MM-DD HH:MM] ` prefix to
+    anchor conversation gaps and independent deliveries. Ordinary replies are
+    left clean. Stored tool history is intentionally not replayed as provider-
     native tool calls; real executions are kept in the tool execution ledger.
     """
     messages: list[dict] = []
@@ -267,7 +266,10 @@ def _expand_history(history: list[dict]) -> list[dict]:
         ts_prefix = _format_history_timestamp(msg.get("created_at"))
 
         def _prefixed(text, msg_role):
-            if msg_role == "user" and isinstance(text, str) and text and ts_prefix:
+            if (
+                (msg_role == "user" or msg.get("standalone"))
+                and isinstance(text, str) and text and ts_prefix
+            ):
                 return ts_prefix + text
             return text
 
@@ -703,6 +705,7 @@ async def chat(
                 user_id,
                 recent_turns,
                 include_summary=prompt_policy.conversation_summary,
+                include_standalone=prompt_policy.standalone_history,
             )
         except Exception as e:
             log.warning("Conversation context skipped: %s", e)
@@ -841,6 +844,7 @@ async def chat(
         if prompt_policy.recent_history
         else []
     )
+    history.sort(key=lambda item: item["id"])
     conv_summary = (
         conversation_context["summary"]
         if prompt_policy.conversation_summary
@@ -883,6 +887,7 @@ async def chat(
         if not prompt_policy.recent_operations
         else await asyncio.to_thread(
             recent_operations_context, user_id, history,
+            include_autonomous=True,
         )
     )
 
