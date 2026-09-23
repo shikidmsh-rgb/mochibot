@@ -1,50 +1,39 @@
-import hashlib
-import json
-
 import pytest
 
 import mochi.core_store as core_store
 
 
-def test_legacy_identity_migrates_once_with_backups():
-    from mochi.db import _connect
+@pytest.mark.parametrize("content", [b"Personal Core\r\n", b""])
+def test_initialization_preserves_existing_core(content):
+    core_store.DATA_DIR.mkdir(parents=True)
+    path = core_store.DATA_DIR / "core.md"
+    path.write_bytes(content)
 
-    prompts = core_store.DATA_DIR / "prompts" / "system_chat"
-    prompts.mkdir(parents=True)
-    raw_soul = b"Custom soul\r\n"
-    (prompts / "soul.md").write_bytes(raw_soul)
-    conn = _connect()
-    conn.execute(
-        "CREATE TABLE core_memory "
-        "(user_id INTEGER PRIMARY KEY, content TEXT NOT NULL, updated_at TEXT NOT NULL)"
+    core_store.initialize_core()
+    assert core_store.read_core() == content.decode().strip()
+    assert path.read_bytes() == content
+
+
+def test_missing_core_starts_with_open_seed(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from mochi.admin.admin_server import app
+    import mochi.config as config
+
+    monkeypatch.setattr(config, "ADMIN_TOKEN", "test-admin-token")
+    core_store.initialize_core()
+    assert core_store.read_core() == core_store.DEFAULT_CORE
+    assert {path.name for path in core_store.DATA_DIR.iterdir()} == {
+        "core.md", ".core.lock",
+    }
+
+    client = TestClient(
+        app, headers={"Authorization": "Bearer test-admin-token"},
     )
-    conn.execute(
-        "INSERT INTO core_memory VALUES (1, 'Legacy relationship', 'now')"
-    )
-    conn.commit()
-    conn.close()
-
-    status = core_store.initialize_core(1)
-    content = core_store.read_core()
-
-    assert status["status"] == "migrated"
-    assert all(text in content for text in (
-        "Custom soul", "Legacy relationship",
-    ))
-    backup = core_store.DATA_DIR / status["backup"]["directory"]
-    manifest = json.loads((backup / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["sources"]["soul_override"]["sha256"] == hashlib.sha256(
-        raw_soul,
-    ).hexdigest()
-    assert core_store.initialize_core(1)["target_sha256"] == status["target_sha256"]
-
-
-def test_fresh_core_uses_bundled_identity():
-    status = core_store.initialize_core(1)
-    content = core_store.read_core()
-    assert status["status"] == "fresh"
-    assert "# \u6211" in content
-    assert "AI \u966a\u4f34\u642d\u5b50" in content
+    response = client.get("/api/memory")
+    assert response.status_code == 200
+    assert response.json()["content"] == core_store.DEFAULT_CORE
+    assert "migration" not in response.json()
 
 
 def test_exact_patch_conflict_and_internal_snapshot():

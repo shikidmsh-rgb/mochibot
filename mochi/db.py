@@ -2459,23 +2459,6 @@ def cleanup_old_trash(days: int = 30) -> int:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Legacy Core import (Layer 1)
-# ═══════════════════════════════════════════════════════════════════════════
-
-def get_core_memory(user_id: int) -> str:
-    """Read a pre-file-store Core only for one-time canonical migration."""
-    conn = _connect()
-    try:
-        row = conn.execute(
-            "SELECT content FROM core_memory WHERE user_id = ?", (user_id,)
-        ).fetchone()
-    except sqlite3.OperationalError:
-        row = None
-    finally:
-        conn.close()
-    return row["content"] if row else ""
-
-# ═══════════════════════════════════════════════════════════════════════════
 # Usage Logging
 # ═══════════════════════════════════════════════════════════════════════════
 

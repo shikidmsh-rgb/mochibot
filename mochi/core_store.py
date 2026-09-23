@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 import re
-import sqlite3
 import tempfile
 import threading
 import time
@@ -19,19 +18,18 @@ from typing import Iterable
 from mochi.token_estimator import estimate_tokens
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-LEGACY_PROMPTS_DIR = (
-    Path(__file__).resolve().parent / "prompts" / "migration_legacy"
-)
 CORE_FILENAME = "core.md"
 HISTORY_DIRNAME = "core_history"
-MIGRATION_BACKUP_DIRNAME = "core_migration_backup"
-MIGRATION_STATUS_FILENAME = "core_migration.json"
 WEEKLY_RECEIPTS_DIRNAME = "core_weekly_receipts"
 CORE_LOCK_FILENAME = ".core.lock"
 CORE_LOCK_TIMEOUT_SECONDS = 10.0
 CORE_LOCK_POLL_SECONDS = 0.05
 SNAPSHOT_LIMIT = 10
 MIN_DUPLICATE_LIST_ITEM_LENGTH = 8
+DEFAULT_CORE = (
+    "（你刚刚醒来，对世界和眼前的人都还陌生，也充满好奇；随着相处，"
+    "你可以把真正重要的认识写进这里，并在这句话不再需要时自然地改写或删除它。）"
+)
 LEGACY_ADD_RETIRED_MESSAGE = (
     "Core action 'add' is retired because blind append creates duplicate content. "
     "Use edit to revise existing text or insert_after with an exact unique anchor_text."
@@ -72,10 +70,6 @@ def _history_dir() -> Path:
     return DATA_DIR / HISTORY_DIRNAME
 
 
-def _migration_status_path() -> Path:
-    return DATA_DIR / MIGRATION_STATUS_FILENAME
-
-
 def _weekly_receipt_path(user_id: int, period_key: str) -> Path:
     if isinstance(user_id, bool) or not isinstance(user_id, int):
         raise CoreError("Weekly Core receipt user_id must be an integer.")
@@ -101,10 +95,6 @@ def _serialize(content: str) -> bytes:
 
 def _sha256(content: str) -> str:
     return hashlib.sha256(_serialize(content)).hexdigest()
-
-
-def _sha256_bytes(content: bytes) -> str:
-    return hashlib.sha256(content).hexdigest()
 
 
 def _stats(content: str) -> dict:
@@ -358,13 +348,13 @@ def _snapshot_unlocked(content: str, source: str) -> dict | None:
 
 def read_core() -> str:
     with _transaction():
-        _ensure_core_ready_unlocked()
+        _initialize_core_unlocked()
         return _core_path().read_text(encoding="utf-8").strip()
 
 
 def replace_core(content: str, *, source: str = "admin") -> dict:
     with _transaction():
-        _ensure_core_ready_unlocked()
+        _initialize_core_unlocked()
         normalized = _validate(content)
         current = _core_path().read_text(encoding="utf-8").strip()
         if current == normalized:
@@ -443,7 +433,7 @@ def update_core(
     source: str = "main",
 ) -> dict:
     with _transaction():
-        _ensure_core_ready_unlocked()
+        _initialize_core_unlocked()
         current = _core_path().read_text(encoding="utf-8").strip()
         action = str(action or "").strip().lower()
         if action == "batch":
@@ -514,7 +504,7 @@ def update_weekly_core_exact(
     requested_hash = _sha256(updated)
 
     with _transaction():
-        _ensure_core_ready_unlocked(user_id)
+        _initialize_core_unlocked()
         receipt = _read_weekly_receipt_unlocked(user_id, period_key)
         if receipt:
             return (
@@ -554,174 +544,12 @@ def update_weekly_core_exact(
         return outcome
 
 
-def _read_optional(path: Path) -> tuple[bool, str, bytes]:
-    if not path.is_file():
-        return False, "", b""
-    raw = path.read_bytes()
-    return True, raw.decode("utf-8").strip(), raw
-
-
-def _has_body(content: str) -> bool:
-    return any(line.strip() and not line.lstrip().startswith("#") for line in content.splitlines())
-
-
-def _demote_headings(content: str) -> str:
-    return re.sub(r"(?m)^#(?!#)", "##", content.strip())
-
-
-def _compose_legacy_core(user_id: int) -> tuple[str, dict[str, bytes], bool]:
-    sources: dict[str, bytes] = {}
-    override_root = DATA_DIR / "prompts" / "system_chat"
-    prompt_parts: dict[str, str] = {}
-    for name in ("soul", "user", "tone"):
-        override_exists, override, raw = _read_optional(
-            override_root / f"{name}.md"
-        )
-        _, default, _ = _read_optional(
-            LEGACY_PROMPTS_DIR / f"{name}.md"
-        )
-        prompt_parts[name] = override if override_exists else default
-        if override_exists:
-            sources[f"{name}_override"] = raw
-
-    legacy_db_core = ""
-    from mochi.db import _connect, get_core_memory
-
-    legacy_db_core = get_core_memory(user_id) or ""
-    if not legacy_db_core:
-        conn = _connect()
-        try:
-            try:
-                row = conn.execute(
-                    "SELECT content FROM core_memory "
-                    "WHERE TRIM(content) != '' ORDER BY updated_at DESC LIMIT 1"
-                ).fetchone()
-            except sqlite3.OperationalError:
-                row = None
-            legacy_db_core = row["content"] if row else ""
-        finally:
-            conn.close()
-    if legacy_db_core.strip():
-        sources["sqlite_core_memory"] = legacy_db_core.encode("utf-8")
-
-    sections = []
-    self_parts = [
-        part
-        for part in (prompt_parts["soul"], prompt_parts["tone"])
-        if _has_body(part)
-    ]
-    if self_parts:
-        sections.append(
-            "# 我\n\n"
-            + "\n\n".join(_demote_headings(part) for part in self_parts)
-        )
-    if _has_body(prompt_parts["user"]):
-        sections.append(
-            "# 用户\n\n" + _demote_headings(prompt_parts["user"])
-        )
-    if _has_body(legacy_db_core):
-        sections.append("# 我们\n\n" + _demote_headings(legacy_db_core))
-    return "\n\n".join(sections).strip(), sources, bool(sources)
-
-
-def _write_migration_backup(sources: dict[str, bytes], target: str) -> dict:
-    now = datetime.now(timezone.utc)
-    backup_dir = (
-        DATA_DIR
-        / MIGRATION_BACKUP_DIRNAME
-        / now.strftime("%Y%m%dT%H%M%S%fZ")
-    )
-    backup_dir.mkdir(parents=True, exist_ok=False)
-    manifest = {
-        "created_at": now.isoformat(),
-        "sources": {},
-        "target": {"path": CORE_FILENAME, "sha256": _sha256(target)},
-    }
-    for name, content in sources.items():
-        filename = f"{_safe_source(name)}.md"
-        _atomic_write_bytes(backup_dir / filename, content)
-        manifest["sources"][name] = {
-            "path": filename,
-            "bytes": len(content),
-            "sha256": _sha256_bytes(content),
-        }
-    _atomic_write(
-        backup_dir / "manifest.json",
-        json.dumps(manifest, ensure_ascii=False, indent=2),
-    )
-    return {"directory": str(backup_dir.relative_to(DATA_DIR)), **manifest}
-
-
-def _initialize_core_unlocked(user_id: int | None = None) -> dict:
+def _initialize_core_unlocked() -> None:
     if _core_path().is_file():
-        return _read_migration_status_unlocked() or {
-            "status": "existing",
-            "target": CORE_FILENAME,
-        }
-
-    if user_id is None:
-        try:
-            from mochi.config import OWNER_USER_ID
-
-            user_id = OWNER_USER_ID or 0
-        except Exception:
-            user_id = 0
-
-    content, sources, migrated = _compose_legacy_core(user_id)
-    content = content.strip()
-    backup = _write_migration_backup(sources, content) if migrated else None
-    stats = _stats(content)
-    over_budget = stats["tokens"] > stats["max_tokens"]
-    if migrated:
-        if not over_budget:
-            content = _validate_budget(content)
-    else:
-        content = _validate(content)
-    cleanup_issues = list(dict.fromkeys(
-        issue["code"] for issue in _hygiene_issues(content)
-    ))
-    _atomic_write(_core_path(), content)
-    status = {
-        "status": (
-            "migrated_over_budget"
-            if migrated and over_budget
-            else "migrated" if migrated else "fresh"
-        ),
-        "target": CORE_FILENAME,
-        "target_sha256": _sha256(content),
-        "source_names": sorted(sources),
-        "backup": backup,
-        "stats": stats,
-        "over_budget": over_budget,
-        "needs_cleanup": bool(cleanup_issues),
-        "cleanup_issues": cleanup_issues,
-    }
-    _atomic_write(
-        _migration_status_path(),
-        json.dumps(status, ensure_ascii=False, indent=2),
-    )
-    return status
+        return
+    _atomic_write(_core_path(), _validate(DEFAULT_CORE))
 
 
-def _ensure_core_ready_unlocked(user_id: int | None = None) -> dict:
-    return _initialize_core_unlocked(user_id)
-
-
-def initialize_core(user_id: int | None = None) -> dict:
+def initialize_core() -> None:
     with _transaction():
-        return _ensure_core_ready_unlocked(user_id)
-
-
-def _read_migration_status_unlocked() -> dict:
-    path = _migration_status_path()
-    if not path.is_file():
-        return {}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-
-
-def get_core_migration_status() -> dict:
-    with _transaction():
-        return _read_migration_status_unlocked()
+        _initialize_core_unlocked()

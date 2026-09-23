@@ -2190,11 +2190,8 @@ async function loadMemory() {
     badge.className = 'badge ' + tokClass;
     badge.textContent = '~' + approxTok + ' / ' + maxTok + ' tokens';
     el.innerHTML = `
-      ${data.migration && data.migration.status === 'migrated_over_budget'
-        ? '<div style="background:#FFF3E0;color:#E65100;padding:10px 12px;border-radius:8px;font-size:12px;margin-bottom:10px">⚠️ 旧版内容已完整迁移并备份，但超过新 Core 预算。请精简后保存；系统没有截断任何内容。</div>'
-        : ''}
       ${data.hygiene && data.hygiene.needs_cleanup
-        ? '<div style="background:#FFF3E0;color:#E65100;padding:10px 12px;border-radius:8px;font-size:12px;margin-bottom:10px">⚠️ 当前 Core 来自忠实恢复或旧版数据，包含完全重复的结构。请在下方一次性整理后保存；系统没有删除任何原文。</div>'
+        ? '<div style="background:#FFF3E0;color:#E65100;padding:10px 12px;border-radius:8px;font-size:12px;margin-bottom:10px">⚠️ 当前 Core 包含完全重复的内容。请整理后保存；系统没有删除任何原文。</div>'
         : ''}
       <p style="font-size:12px;color:var(--text-soft);margin-bottom:8px">
         每轮对话都会读取的自由文本，可按你喜欢的方式组织。

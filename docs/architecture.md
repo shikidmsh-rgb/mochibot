@@ -76,6 +76,10 @@ integrity boundaries. Personality-free Lite work such as classification,
 extraction, and validation remains deterministic and may use strict schemas and
 output contracts.
 
+Core has one source, `data/core.md`. A missing file starts with a short,
+open-ended seed; an existing file is preserved. Startup never imports identity
+templates or a database Core. Ordinary document edits retain their snapshots.
+
 ## Main conversation flow
 
 1. A transport receives an owner message and creates an `IncomingMessage`.

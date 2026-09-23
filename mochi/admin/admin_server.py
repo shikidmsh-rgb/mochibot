@@ -191,9 +191,8 @@ if HAS_FASTAPI:
         from mochi import skills as skill_registry
         from mochi import observers as observer_registry
         init_db()
-        from mochi.config import OWNER_USER_ID
         from mochi.core_store import initialize_core
-        initialize_core(OWNER_USER_ID or 0)
+        initialize_core()
         skill_registry.discover()
         observer_registry.discover()
         _migrate_encrypt_api_keys()
@@ -1218,17 +1217,15 @@ if HAS_FASTAPI:
 
     @app.get("/api/memory", dependencies=[Depends(_verify_token)])
     async def api_get_memory():
-        """Return the complete Core and migration state."""
+        """Return the complete Core and its current document status."""
         from mochi.core_store import (
             get_core_hygiene_status,
-            get_core_migration_status,
             get_core_stats,
             read_core,
         )
         return {
             "content": read_core(),
             **get_core_stats(),
-            "migration": get_core_migration_status(),
             "hygiene": get_core_hygiene_status(),
         }
 
