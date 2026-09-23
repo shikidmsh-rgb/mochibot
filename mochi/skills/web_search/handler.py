@@ -1,6 +1,8 @@
-"""Web search using Baidu AI Search with a keyless Bing fallback."""
+"""Web search using Tavily, or Baidu AI Search with a keyless Bing fallback."""
 
 import asyncio
+from calendar import monthrange
+from datetime import datetime
 import hashlib
 import json
 import logging
@@ -11,6 +13,7 @@ from html.parser import HTMLParser
 
 import httpx
 
+from mochi.config import TZ
 from mochi.skills.base import Skill, SkillContext, SkillResult
 
 log = logging.getLogger(__name__)
@@ -21,7 +24,8 @@ _SEARCH_TIMEOUT_S = 10
 _SEARCH_MAX_RESPONSE_BYTES = 1024 * 1024
 _BING_SEARCH_URL = "https://www.bing.com/search"
 _BAIDU_SEARCH_URL = "https://qianfan.baidubce.com/v2/ai_search/web_search"
-_BAIDU_RECENCY_VALUES = frozenset({"week", "month", "semiyear", "year"})
+_TAVILY_SEARCH_URL = "https://api.tavily.com/search"
+_RECENCY_VALUES = frozenset({"week", "month", "semiyear", "year"})
 _CACHE_TTL_S = 300
 _CACHE_SIZE = 256
 
@@ -246,15 +250,17 @@ async def _bing_search_within_deadline(query: str, max_results: int) -> str:
     )
 
 
-def _format_baidu_results(payload: dict, max_results: int) -> str:
+def _format_api_results(
+    payload: dict, max_results: int, *, provider: str, results_key: str,
+) -> str:
     code = payload.get("code")
-    if code:
+    if provider == "Baidu" and code:
         raise ValueError(f"Baidu search returned error code {code}.")
-    raw_references = payload.get("references")
-    if isinstance(raw_references, dict):
+    raw_references = payload.get(results_key)
+    if provider == "Baidu" and isinstance(raw_references, dict):
         raw_references = [raw_references]
     if not isinstance(raw_references, list):
-        raise ValueError("Baidu search response did not contain references.")
+        raise ValueError(f"{provider} search response did not contain {results_key}.")
 
     results: list[str] = []
     for item in raw_references:
@@ -272,7 +278,7 @@ def _format_baidu_results(payload: dict, max_results: int) -> str:
         details = " · ".join(
             value for value in (
                 _single_line([str(item.get("website") or "")]),
-                _single_line([str(item.get("date") or "")]),
+                _single_line([str(item.get("date") or item.get("published_date") or "")]),
             ) if value
         )
         description = " · ".join(value for value in (details, snippet) if value)
@@ -281,31 +287,24 @@ def _format_baidu_results(payload: dict, max_results: int) -> str:
             break
 
     if not results:
-        raise ValueError("Baidu search returned no web results.")
+        raise ValueError(f"{provider} search returned no web results.")
     return "\n\n".join(results)
 
 
-async def _baidu_search(
-    query: str,
+async def _api_search(
     *,
+    provider: str,
+    url: str,
+    payload: dict,
+    results_key: str,
     api_key: str,
-    max_results: int = 5,
-    recency: str = "",
+    max_results: int,
 ) -> str:
     key_fingerprint = hashlib.sha256(api_key.encode()).hexdigest()[:12]
-    cache_key = f"baidu|{key_fingerprint}|{query}|{max_results}|{recency}"
+    cache_key = f"{provider}|{key_fingerprint}|{json.dumps(payload, sort_keys=True)}"
     cached = _cache.get(cache_key)
     if cached is not None:
         return cached
-
-    payload: dict = {
-        "messages": [{"role": "user", "content": query}],
-        "search_source": "baidu_search_v2",
-        "resource_type_filter": [{"type": "web", "top_k": max_results}],
-        "sort": {"priority": "auto"},
-    }
-    if recency:
-        payload["search_recency_filter"] = recency
 
     try:
         async with asyncio.timeout(_SEARCH_TIMEOUT_S):
@@ -318,15 +317,15 @@ async def _baidu_search(
                 },
             ) as client:
                 async with client.stream(
-                    "POST", _BAIDU_SEARCH_URL, json=payload,
+                    "POST", url, json=payload,
                 ) as response:
                     if response.status_code in {401, 403}:
-                        raise ValueError("Baidu API key was rejected.")
+                        raise ValueError(f"{provider} API key was rejected.")
                     if response.status_code in {402, 429}:
-                        raise ValueError("Baidu search quota is unavailable.")
+                        raise ValueError(f"{provider} search quota is unavailable.")
                     if not 200 <= response.status_code < 300:
                         raise ValueError(
-                            f"Baidu search returned HTTP {response.status_code}."
+                            f"{provider} search returned HTTP {response.status_code}."
                         )
 
                     chunks: list[bytes] = []
@@ -335,23 +334,68 @@ async def _baidu_search(
                         size += len(chunk)
                         if size > _SEARCH_MAX_RESPONSE_BYTES:
                             raise ValueError(
-                                "Baidu search response is larger than the 1 MB limit."
+                                f"{provider} search response is larger than the 1 MB limit."
                             )
                         chunks.append(chunk)
     except TimeoutError as exc:
         raise ValueError(
-            f"Baidu search timed out after {_SEARCH_TIMEOUT_S} seconds."
+            f"{provider} search timed out after {_SEARCH_TIMEOUT_S} seconds."
         ) from exc
 
     try:
         response_payload = json.loads(b"".join(chunks))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError("Baidu search returned invalid JSON.") from exc
+        raise ValueError(f"{provider} search returned invalid JSON.") from exc
     if not isinstance(response_payload, dict):
-        raise ValueError("Baidu search returned an invalid response.")
-    output = _format_baidu_results(response_payload, max_results)
+        raise ValueError(f"{provider} search returned an invalid response.")
+    output = _format_api_results(
+        response_payload, max_results, provider=provider, results_key=results_key,
+    )
     _cache.put(cache_key, output)
     return output
+
+
+async def _baidu_search(
+    query: str, *, api_key: str, max_results: int = 5, recency: str = "",
+) -> str:
+    payload: dict = {
+        "messages": [{"role": "user", "content": query}],
+        "search_source": "baidu_search_v2",
+        "resource_type_filter": [{"type": "web", "top_k": max_results}],
+        "sort": {"priority": "auto"},
+    }
+    if recency:
+        payload["search_recency_filter"] = recency
+    return await _api_search(
+        provider="Baidu", url=_BAIDU_SEARCH_URL, payload=payload,
+        results_key="references", api_key=api_key, max_results=max_results,
+    )
+
+
+async def _tavily_search(
+    query: str, *, api_key: str, max_results: int = 5, recency: str = "",
+) -> str:
+    payload: dict = {
+        "query": query,
+        "max_results": max_results,
+        "search_depth": "basic",
+        "include_answer": False,
+        "include_raw_content": False,
+    }
+    if recency == "semiyear":
+        today = datetime.now(TZ).date()
+        year, month = divmod(today.year * 12 + today.month - 1 - 6, 12)
+        month += 1
+        payload["start_date"] = today.replace(
+            year=year, month=month,
+            day=min(today.day, monthrange(year, month)[1]),
+        ).isoformat()
+    elif recency:
+        payload["time_range"] = recency
+    return await _api_search(
+        provider="Tavily", url=_TAVILY_SEARCH_URL, payload=payload,
+        results_key="results", api_key=api_key, max_results=max_results,
+    )
 
 
 def _search_error_label(exc: Exception) -> str:
@@ -368,7 +412,12 @@ def _search_error_label(exc: Exception) -> str:
 
 async def _web_search(
     query: str, *, api_key: str, max_results: int, recency: str,
+    tavily_api_key: str = "",
 ) -> str:
+    if tavily_api_key:
+        return await _tavily_search(
+            query, api_key=tavily_api_key, max_results=max_results, recency=recency,
+        )
     if not api_key:
         output = await _bing_search(query, max_results=max_results)
         if recency:
@@ -423,7 +472,7 @@ class WebSearchSkill(Skill):
         max_results = context.args.get("max_results", _DEFAULT_MAX_RESULTS)
         max_results = max(1, min(10, int(max_results)))
         recency = str(context.args.get("recency") or "").strip().lower()
-        if recency and recency not in _BAIDU_RECENCY_VALUES:
+        if recency and recency not in _RECENCY_VALUES:
             return SkillResult(
                 output="Invalid recency. Use week, month, semiyear, year, or leave it empty.",
                 success=False,
@@ -433,6 +482,7 @@ class WebSearchSkill(Skill):
             result = await _web_search(
                 query,
                 api_key=str(self.config.get("BAIDU_API_KEY") or "").strip(),
+                tavily_api_key=str(self.config.get("TAVILY_API_KEY") or "").strip(),
                 max_results=max_results,
                 recency=recency,
             )

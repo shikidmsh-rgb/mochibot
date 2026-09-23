@@ -121,7 +121,7 @@ Skill 就是 bot 的"能力模块"。每个 Skill 负责一件事，可以独立
 | **reminder**（提醒） | 定时提醒，支持重复 | 不需要 |
 | **meal**（饮食） | 记录饮食、估算热量 | 不需要 |
 | **memory**（记忆） | 记住你说过的事 | 不需要 |
-| **web_search**（搜索） | 联网搜索信息 | 可选百度千帆 `BAIDU_API_KEY`；不配置时使用 Bing |
+| **web_search**（搜索） | 联网搜索信息 | 可选 `TAVILY_API_KEY` 或百度千帆 `BAIDU_API_KEY`；Tavily 优先，均不配置时使用 Bing |
 | **weather**（天气） | 查天气 | 不需要（想让心跳带天气信息需设城市名） |
 | **sticker**（表情包） | 学你发的表情包，聊天时自己发 | 不需要（仅 Telegram） |
 
