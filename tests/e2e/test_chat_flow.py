@@ -34,6 +34,74 @@ class TestSimpleReply:
         assert len(mock.call_log) == 1
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["chat", "attention", "bedtime"])
+    async def test_delivered_reasoning_is_private_and_model_scoped(
+        self, mock_llm_factory, monkeypatch, kind,
+    ):
+        import mochi.ai_client as ai_client
+        from mochi.db import get_conversation_context, get_recent_messages
+        from mochi.main_runtime import DurableChatResult
+
+        source = "https://api.deepseek.com/v1::model"
+        response = make_response("Visible reply")
+        response.reasoning_content = "Private provider reasoning"
+        response.reasoning_source = source
+        mock = mock_llm_factory([
+            response, make_response("[SKIP]"), make_response("[SKIP]"),
+        ])
+        monkeypatch.setattr(
+            type(mock), "reasoning_source", property(lambda self: source),
+        )
+        monkeypatch.setattr(
+            ai_client, "_schedule_continuous_memory", lambda user_id: None,
+        )
+        if kind == "chat":
+            result = await chat(_msg("hello"))
+        else:
+            result = await chat(runtime_entry=MainRuntimeEntry(
+                kind=kind, user_id=1, channel_id=100, transport="fake",
+                trigger="silence" if kind == "bedtime" else None,
+            ))
+        assert result.text == "Visible reply"
+        assert not any(
+            message["role"] == "assistant" for message in get_recent_messages(1)
+        )
+
+        durable = DurableChatResult.from_json(result.to_durable().to_json())
+        restored = ai_client.ChatResult.from_durable(durable)
+        assert restored.confirm_delivered()
+        assert not restored.confirm_delivered()
+        public_history = get_recent_messages(1)
+        assert public_history[-1]["content"] == "Visible reply"
+        assert all("reasoning_content" not in message for message in public_history)
+        assert all(
+            "reasoning_content" not in message
+            for message in get_conversation_context(1)["recent"]
+        )
+
+        next_entry = MainRuntimeEntry(
+            kind="attention", user_id=1, channel_id=100, transport="fake",
+        )
+        await chat(runtime_entry=next_entry)
+        messages = mock.call_log[1]["messages"]
+        replayed = next(
+            message for message in messages if message["role"] == "assistant"
+        )
+        assert replayed["reasoning_content"] == response.reasoning_content
+        assert all(
+            response.reasoning_content not in (message.get("content") or "")
+            for message in messages
+        )
+
+        monkeypatch.setattr(
+            type(mock), "reasoning_source", property(lambda self: source + "-other"),
+        )
+        await chat(runtime_entry=next_entry)
+        assert all(
+            "reasoning_content" not in message for message in mock.call_log[2]["messages"]
+        )
+
+    @pytest.mark.asyncio
     async def test_main_can_request_bedtime(self, mock_llm_factory, monkeypatch):
         import mochi.heartbeat as heartbeat
 

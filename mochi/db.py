@@ -346,6 +346,8 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
     _add_col("messages", "image_data", "TEXT DEFAULT NULL")
     _add_col("messages", "tool_history", "TEXT DEFAULT NULL")
     _add_col("messages", "turn_id", "TEXT DEFAULT NULL")
+    _add_col("messages", "reasoning_content", "TEXT DEFAULT NULL")
+    _add_col("messages", "reasoning_source", "TEXT NOT NULL DEFAULT ''")
 
     # memory_items
     _add_col("memory_items", "access_count", "INTEGER NOT NULL DEFAULT 0")
@@ -750,16 +752,18 @@ def vec_delete(item_ids: list[int],
 def save_message(user_id: int, role: str, content: str,
                  tool_history: str | None = None,
                  turn_id: str | None = None,
-                 processed: bool = False) -> int:
+                 processed: bool = False,
+                 reasoning_content: str | None = None,
+                 reasoning_source: str = "") -> int:
     now = datetime.now(TZ).isoformat()
     conn = _connect()
     cursor = conn.execute(
         "INSERT INTO messages "
-        "(user_id, role, content, created_at, tool_history, turn_id, processed) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "(user_id, role, content, created_at, tool_history, turn_id, processed, "
+        "reasoning_content, reasoning_source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             user_id, role, content, now, tool_history, turn_id,
-            int(processed),
+            int(processed), reasoning_content, reasoning_source,
         ),
     )
     conn.commit()
@@ -775,6 +779,8 @@ def save_message_once(
     tool_history: str | None = None,
     turn_id: str,
     processed: bool = False,
+    reasoning_content: str | None = None,
+    reasoning_source: str = "",
 ) -> bool:
     """Idempotently persist one role within a stable turn."""
     if not turn_id:
@@ -793,11 +799,11 @@ def save_message_once(
             return False
         conn.execute(
             "INSERT INTO messages "
-            "(user_id, role, content, created_at, tool_history, turn_id, processed) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "(user_id, role, content, created_at, tool_history, turn_id, processed, "
+            "reasoning_content, reasoning_source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 user_id, role, content, now, tool_history, turn_id,
-                int(processed),
+                int(processed), reasoning_content, reasoning_source,
             ),
         )
         conn.commit()
@@ -1366,6 +1372,7 @@ def get_conversation_context(
     *,
     include_summary: bool = True,
     include_standalone: bool = True,
+    reasoning_source: str = "",
 ) -> dict:
     """Return recent conversation, delivered standalone replies and overflow."""
     conn = _connect()
@@ -1442,11 +1449,31 @@ def get_conversation_context(
             )
             recent_messages.sort(key=lambda message: message["id"])
 
+        overflow_messages = _flatten(overflow)
+        if reasoning_source:
+            selected = {
+                message["id"]: message
+                for message in [*overflow_messages, *recent_messages]
+                if message["role"] == "assistant"
+            }
+            if selected:
+                placeholders = ",".join("?" for _ in selected)
+                rows = conn.execute(
+                    "SELECT id, reasoning_content FROM messages "
+                    "WHERE user_id = ? AND reasoning_source = ? "
+                    f"AND id IN ({placeholders}) AND reasoning_content IS NOT NULL",
+                    (user_id, reasoning_source, *selected),
+                ).fetchall()
+                for row in rows:
+                    selected[row["id"]]["reasoning_content"] = (
+                        row["reasoning_content"]
+                    )
+
         conn.commit()
         return {
             "summary": summary,
             "through_message_id": through_message_id,
-            "overflow": _flatten(overflow),
+            "overflow": overflow_messages,
             "recent": recent_messages,
             "trailing": trailing,
         }

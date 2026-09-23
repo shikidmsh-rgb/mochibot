@@ -90,6 +90,36 @@ def test_context_merges_standalone_deliveries_without_changing_complete_turns():
     assert all(not message["processed"] for message in extraction_messages)
 
 
+def test_reasoning_replay_respects_history_window_and_memory_boundaries():
+    source = "https://api.deepseek.com/v1::model"
+    for name, reasoning in [("old", "Old reasoning"), ("recent", "")]:
+        save_message(1, "user", f"user-{name}", turn_id=name)
+        save_message(
+            1, "assistant", f"assistant-{name}", turn_id=name,
+            reasoning_content=reasoning, reasoning_source=source,
+        )
+    save_message(2, "assistant", "other-user", processed=True,
+                 reasoning_content="Private", reasoning_source=source)
+
+    context = db.get_conversation_context(
+        1, 1, include_summary=False, reasoning_source=source,
+    )
+    assert [message["content"] for message in context["recent"]] == [
+        "user-recent", "assistant-recent",
+    ]
+    assert context["recent"][-1]["reasoning_content"] == ""
+    _, extraction_messages = db.get_memory_extraction_batch(1, 2)
+    assert len(extraction_messages) == 4
+    assert all("reasoning_content" not in message for message in extraction_messages)
+    claim = db.get_conversation_summary_batch(1, batch_turns=2)
+    assert claim is not None
+    assert all(
+        "reasoning_content" not in turn[role]
+        for turn in claim["turns"] for role in ("user", "assistant")
+    )
+
+
+
 def test_standalone_history_has_separate_count_and_body_limits():
     _save_turn("kept")
     for number in range(7):

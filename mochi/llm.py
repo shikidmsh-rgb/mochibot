@@ -66,10 +66,16 @@ class LLMResponse:
     # for cost telemetry — see plan P1-2.
     reasoning_tokens: int | None = None
     cached_prompt_tokens: int | None = None
+    reasoning_source: str = ""
 
 
 class LLMProvider(ABC):
     """Abstract base class for LLM providers."""
+
+    @property
+    def reasoning_source(self) -> str:
+        """Identity of the provider/model allowed to replay stored reasoning."""
+        return ""
 
     @abstractmethod
     def chat(self, messages: list[dict], tools: list[dict] | None = None,
@@ -286,7 +292,7 @@ class _OpenAICompatChat:
 
     @staticmethod
     def _with_reasoning_placeholders(messages: list[dict]) -> list[dict]:
-        """Copy assistant history with explicit empty reasoning placeholders."""
+        """Fill unavailable history fields without replacing returned reasoning."""
         return [
             (
                 {**message, "reasoning_content": ""}
@@ -401,6 +407,10 @@ class OpenAIProvider(_OpenAICompatChat, LLMProvider):
     def provider_name(self) -> str:
         return "openai"
 
+    @property
+    def reasoning_source(self) -> str:
+        return self._caps_cache_key
+
     def chat(self, messages: list[dict], tools: list[dict] | None = None,
              temperature: float | None = None, max_tokens: int = 2048,
              json_mode: bool = False) -> LLMResponse:
@@ -409,6 +419,8 @@ class OpenAIProvider(_OpenAICompatChat, LLMProvider):
         choice = resp.choices[0]
         response = _openai_response(choice, resp.usage, self._model,
                                     _parse_openai_tool_calls(choice))
+        if isinstance(getattr(choice.message, "reasoning_content", None), str):
+            response.reasoning_source = self.reasoning_source
         if json_mode and response.content:
             response.content = extract_json(response.content)
         return response

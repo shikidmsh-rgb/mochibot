@@ -273,7 +273,10 @@ def _expand_history(history: list[dict]) -> list[dict]:
                 return ts_prefix + text
             return text
 
-        messages.append({"role": role, "content": _prefixed(content, role)})
+        expanded = {"role": role, "content": _prefixed(content, role)}
+        if role == "assistant" and "reasoning_content" in msg:
+            expanded["reasoning_content"] = msg["reasoning_content"]
+        messages.append(expanded)
     return messages
 
 
@@ -311,6 +314,8 @@ class ChatResult:
             tool_history=pending["tool_history"],
             turn_id=pending["turn_id"],
             processed=processed,
+            reasoning_content=pending.get("reasoning_content"),
+            reasoning_source=pending.get("reasoning_source", ""),
         )
         self._delivery_confirmed = True
         if inserted and not processed:
@@ -673,6 +678,7 @@ async def chat(
     # ── Parallel pre-fetch: router classification + DB queries ──
     capability_context = ""
     tier = "main"
+    client = get_client_for_tier(tier)
     routed_skill_names: list[str] = []
 
     # Pre-fetch habits (fast sync DB) — shared by router hint + system prompt
@@ -706,6 +712,7 @@ async def chat(
                 recent_turns,
                 include_summary=prompt_policy.conversation_summary,
                 include_standalone=prompt_policy.standalone_history,
+                reasoning_source=client.reasoning_source,
             )
         except Exception as e:
             log.warning("Conversation context skipped: %s", e)
@@ -931,7 +938,6 @@ async def chat(
 
     # ── LLM call with tool loop ──
     max_tool_rounds = TOOL_LOOP_MAX_ROUNDS
-    client = get_client_for_tier(tier)
     tool_names_used: list[str] = []  # track for tool_history persistence
     tool_audit: list[dict] = []
     successful_effects = False
@@ -939,6 +945,7 @@ async def chat(
     tool_budget = ToolLoopBudget()
     on_interim = message.on_interim if message is not None else None
     bedtime_finalization_attempted = False
+    history_response: LLMResponse | None = None
     bedtime_skip_requested = False
 
     def _log_main_usage(
@@ -968,6 +975,14 @@ async def chat(
         )
 
     def _final_result(reply: str) -> ChatResult:
+        reasoning_metadata = (
+            {
+                "reasoning_content": history_response.reasoning_content,
+                "reasoning_source": history_response.reasoning_source,
+            }
+            if history_response and history_response.reasoning_source
+            else {}
+        )
         tool_history_json = (
             json.dumps([{"name": n} for n in tool_names_used], ensure_ascii=False)
             if tool_names_used else None
@@ -987,6 +1002,7 @@ async def chat(
                     "tool_history": tool_history_json,
                     "turn_id": turn_id,
                     "processed": message is None,
+                    **reasoning_metadata,
                 },
             )
         if is_self_reminder or is_autonomous:
@@ -1013,6 +1029,7 @@ async def chat(
                     "tool_history": tool_history_json,
                     "turn_id": turn_id,
                     "processed": True,
+                    **reasoning_metadata,
                 }
             )
             return ChatResult(
@@ -1039,11 +1056,12 @@ async def chat(
                 "tool_history": tool_history_json,
                 "turn_id": turn_id,
                 "processed": False,
+                **reasoning_metadata,
             },
         )
 
     async def _finalize_bedtime() -> str:
-        nonlocal bedtime_finalization_attempted
+        nonlocal bedtime_finalization_attempted, history_response
         if bedtime_finalization_attempted:
             return ""
         bedtime_finalization_attempted = True
@@ -1061,6 +1079,7 @@ async def chat(
             final_response,
             call_type="bedtime_finalization",
         )
+        history_response = final_response
         return STICKER_RE.sub("", final_response.content or "").strip()
 
     async def _ensure_bedtime_farewell(reply: str) -> str:
@@ -1115,6 +1134,7 @@ async def chat(
                 return ChatResult(text=f"API 报错：{e}")
 
         _log_main_usage(response)
+        history_response = response
 
         # No tool calls — we have the final response
         if not response.tool_calls:

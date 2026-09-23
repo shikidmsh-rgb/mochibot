@@ -122,6 +122,16 @@ images, JSON mode, or model parameters beyond what that endpoint implements.
 Embedding is optional and off by default. OpenAI, Alibaba Cloud Bailian, and
 Azure AI Foundry embedding use the same OpenAI-compatible embedding adapter.
 
+Provider-returned reasoning is protocol metadata, not conversation content or
+memory evidence. Delivered assistant records and durable delivery outboxes
+preserve it separately from visible text. Main replays it only for the same
+endpoint and model, alongside messages already selected by its context policy;
+it never enters summaries, memory extraction, or user-facing message projections.
+Older, non-model, or different-provider messages have no reusable reasoning, so
+a provider that requires the field may still receive an empty compatibility
+placeholder for those messages. Matching reasoning, including an explicitly
+empty value, is never replaced by that fallback.
+
 ## Tool availability boundary
 
 Each provider round receives one immutable tool-availability snapshot. The

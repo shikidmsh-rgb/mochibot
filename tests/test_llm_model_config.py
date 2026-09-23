@@ -94,7 +94,9 @@ def test_openai_compatible_chat_handles_text_and_tools(monkeypatch):
         ),
         SimpleNamespace(
             choices=[SimpleNamespace(
-               message=SimpleNamespace(content="", tool_calls=[malformed_call]),
+               message=SimpleNamespace(
+                   content="", reasoning_content="", tool_calls=[malformed_call],
+               ),
                finish_reason="tool_calls",
             )],
             usage=None,
@@ -116,7 +118,9 @@ def test_openai_compatible_chat_handles_text_and_tools(monkeypatch):
         chat=SimpleNamespace(completions=Completions()),
     )
 
-    assert provider.chat([{"role": "user", "content": "hi"}]).content == "hello"
+    plain = provider.chat([{"role": "user", "content": "hi"}])
+    assert plain.content == "hello"
+    assert plain.reasoning_source == ""
     result = provider.chat(
         [{"role": "user", "content": "weather"}],
         tools=[{"type": "function", "function": {"name": "weather"}}],
@@ -129,6 +133,7 @@ def test_openai_compatible_chat_handles_text_and_tools(monkeypatch):
     }]
     assert result.tool_calls_complete is True
     assert result.reasoning_content == "I should check the weather first."
+    assert result.reasoning_source == "https://api.deepseek.com/v1::model"
 
     malformed = provider.chat(
         [{"role": "user", "content": "weather"}],
@@ -139,6 +144,7 @@ def test_openai_compatible_chat_handles_text_and_tools(monkeypatch):
         "arguments were not valid JSON"
     )
     assert malformed.reasoning_content == ""
+    assert malformed.reasoning_source == result.reasoning_source
 
     anthropic_messages = llm.AnthropicProvider._convert_messages([
         {
