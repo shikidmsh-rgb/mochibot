@@ -49,6 +49,36 @@ def test_messages_round_trip_and_stay_isolated_by_user():
     assert messages[1]["tool_history"] == '[{"name":"weather"}]'
 
 
+def test_usage_totals_respect_local_day_and_month(monkeypatch):
+    from datetime import datetime, timezone
+    from mochi.transport.utils import format_usage_summary
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 9, 23, 12, tzinfo=timezone.utc).astimezone(tz)
+
+    monkeypatch.setattr(db, "datetime", Clock)
+    db.log_usage(100, 20, 120, model="main", reasoning_tokens=5)
+    db.log_usage(30, 10, 40, model="lite")
+    conn = db._connect()
+    conn.execute(
+        "INSERT INTO usage_log "
+        "(prompt_tokens, completion_tokens, total_tokens, model, created_at) "
+        "VALUES (10, 5, 15, 'main', '2026-09-01T01:00:00+00:00'), "
+        "(50, 10, 60, 'main', '2026-08-31T23:00:00+00:00')"
+    )
+    conn.commit()
+    conn.close()
+
+    summary = db.get_usage_summary()
+    assert summary["today"]["total"] == 160
+    assert summary["month"]["total"] == 175
+    assert summary["today"]["by_model"]["main"]["reasoning"] == 5
+    assert "160 tokens" in format_usage_summary(summary)
+    assert "175 tokens" in format_usage_summary(summary)
+
+
 def test_reset_boundary_hides_older_conversation():
     save_message(1, "user", "before reset")
     boundary = set_context_reset(1)

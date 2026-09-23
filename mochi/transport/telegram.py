@@ -132,7 +132,6 @@ class TelegramTransport(Transport):
         self._app.add_handler(CommandHandler("core", self._cmd_core))
         self._app.add_handler(CommandHandler("diary", self._cmd_diary))
         self._app.add_handler(CommandHandler("restart", self._cmd_restart))
-        self._app.add_handler(CommandHandler("admin", self._cmd_admin))
         self._app.add_handler(CommandHandler("skilloff", self._cmd_skilloff))
         self._app.add_handler(CommandHandler("skillon", self._cmd_skillon))
         self._app.add_handler(CommandHandler("reset", self._cmd_reset))
@@ -210,7 +209,6 @@ class TelegramTransport(Transport):
             "/cost — Token 用量统计\n"
             "/core — 查看 Core\n"
             "/diary — 查看今日日記\n"
-            "/admin — 管理后台\n"
             "/skilloff — 闲聊模式（省 token）\n"
             "/skillon — 恢复完整模式\n"
             "/reset — 重置对话上下文（不影响长期记忆）\n"
@@ -223,21 +221,6 @@ class TelegramTransport(Transport):
         await update.message.reply_text("正在重启...")
         from mochi.shutdown import request_restart
         request_restart(update.effective_chat.id)
-
-    async def _cmd_admin(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        # Use _check_owner so the first user auto-becomes owner in setup mode
-        user_id = await self._check_owner(update)
-        if user_id is None:
-            return
-        from mochi.config import ADMIN_PORT, ADMIN_BIND, ADMIN_TOKEN, _detect_host_ip
-        # /admin is always sent from a remote device (phone), so use LAN IP
-        host = _detect_host_ip() or ADMIN_BIND
-        if host in ("0.0.0.0", "127.0.0.1", "localhost", "::1"):
-            host = "<your-server-ip>"
-        url = f"http://{host}:{ADMIN_PORT}"
-        if ADMIN_TOKEN:
-            url += f"?token={ADMIN_TOKEN}"
-        await update.message.reply_text(f"🔧 管理后台：\n{url}")
 
     async def _cmd_skilloff(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not _is_owner(update.effective_user.id):
@@ -301,26 +284,8 @@ class TelegramTransport(Transport):
         if not _is_owner(update.effective_user.id):
             return
         from mochi.db import get_usage_summary
-        s = get_usage_summary()
-
-        def _format_block(title: str, by_model: dict) -> list[str]:
-            lines = [title]
-            if not by_model:
-                lines.append("  (无记录)")
-                return lines
-            for model, data in sorted(by_model.items()):
-                lines.append(f"  {model}")
-                line = f"    input {data['prompt']:,}  |  output {data['completion']:,}"
-                if data.get('reasoning', 0) > 0:
-                    line += f"  (其中 reasoning {data['reasoning']:,})"
-                lines.append(line)
-            return lines
-
-        lines = _format_block("📊 今日", s["today"]["by_model"])
-        lines.append("")
-        lines += _format_block("📊 本月", s["month"]["by_model"])
-
-        await update.message.reply_text("\n".join(lines))
+        from mochi.transport.utils import format_usage_summary
+        await update.message.reply_text(format_usage_summary(get_usage_summary()))
 
     async def _cmd_core(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not _is_owner(update.effective_user.id):

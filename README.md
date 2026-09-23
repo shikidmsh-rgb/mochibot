@@ -111,7 +111,6 @@
 | `/cost` | Token 用量统计——今日 / 本月用量，按模型分类 |
 | `/core` | 查看 Core |
 | `/diary` | 查看今日日记——今日状态面板 + 日记内容 |
-| `/admin` | 获取管理后台链接（带 token，可在手机浏览器打开） |
 | `/skilloff` | 切换到闲聊模式——关闭非核心 skill 和 prerouter，省 token |
 | `/skillon` | 恢复完整模式——重新启用所有 skill |
 | `/reset` | 重置对话上下文——后续聊天 LLM 看不到之前的 history（DB 保留，长期记忆不影响） |
@@ -285,7 +284,7 @@ sudo journalctl -u mochibot -f          # 查看日志
 
 ### 云服务器上使用管理后台
 
-管理后台默认监听 `localhost`。配置了消息平台（Telegram / WeChat）后会自动绑定到 `0.0.0.0` 并生成 `ADMIN_TOKEN`，但你仍需通过以下方式之一从外部访问：
+管理后台默认只监听 `localhost`，配置消息平台不会改变监听地址，也不会在聊天中发送后台凭据。云服务器上推荐使用 SSH 隧道访问：
 
 #### 方式一：SSH 隧道（推荐，安全且无需开放端口）
 

@@ -1,5 +1,43 @@
 from html.parser import HTMLParser
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+
+def test_setup_keeps_admin_local_and_preserves_existing_token(monkeypatch):
+    import sys
+    import uvicorn
+    import mochi.config as config
+    from mochi.admin import __main__ as entry, admin_db, admin_env
+
+    monkeypatch.setattr(config, "WEIXIN_ENABLED", True)
+    monkeypatch.setattr(config, "ADMIN_BIND", "127.0.0.1")
+    monkeypatch.setattr(config, "ADMIN_TOKEN", "existing-token")
+    monkeypatch.setattr(admin_db, "are_required_tiers_ready", lambda: False)
+    assert config.validate_config() == "setup_mode"
+    assert config.ADMIN_BIND == "127.0.0.1"
+    assert config.ADMIN_TOKEN == "existing-token"
+
+    monkeypatch.setattr(sys, "argv", ["admin", "--no-browser"])
+    captured = []
+
+    def server(cfg):
+        captured.append(cfg.host)
+        return SimpleNamespace(serve=AsyncMock())
+
+    monkeypatch.setattr(uvicorn, "Server", server)
+    entry.main()
+    assert captured == ["127.0.0.1"]
+
+    monkeypatch.setattr(admin_env, "read_env_value", lambda key: "saved-token")
+    assert entry._ensure_admin_token(entry.logging.getLogger(__name__)) == "existing-token"
+    monkeypatch.setattr(config, "ADMIN_TOKEN", "")
+    monkeypatch.setenv("ADMIN_TOKEN", "")
+    assert entry._ensure_admin_token(entry.logging.getLogger(__name__)) == "saved-token"
+    assert config.ADMIN_TOKEN == "saved-token"
+    monkeypatch.setattr(sys, "argv", ["admin", "--no-browser", "--bind", "0.0.0.0"])
+    entry.main()
+    assert captured == ["127.0.0.1", "0.0.0.0"]
 
 
 class _ElementAttributeParser(HTMLParser):

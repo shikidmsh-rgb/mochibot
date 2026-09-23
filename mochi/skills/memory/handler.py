@@ -34,7 +34,7 @@ class MemorySkill(Skill):
                     pass  # fall back to keyword-only search
             try:
                 items = db_recall(
-                    uid, query=query, query_embedding=query_embedding,
+                    uid, query=query, limit=15, query_embedding=query_embedding,
                 )
             except Exception as e:
                 log.error("recall_memory failed: %s", e, exc_info=True)

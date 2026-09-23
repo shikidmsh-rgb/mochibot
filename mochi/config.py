@@ -404,88 +404,10 @@ LOG_LEVEL = _env("LOG_LEVEL", "INFO")            # DEBUG, INFO, WARNING, ERROR, 
 # Startup Validation
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _is_private_lan_ip(ip: str) -> bool:
-    """Check if an IP is a standard private LAN address (RFC 1918)."""
-    return (ip.startswith("192.168.")
-            or ip.startswith("10.")
-            or any(ip.startswith(f"172.{i}.") for i in range(16, 32)))
-
-
-def _detect_host_ip() -> str:
-    """Best-effort detection of a LAN IP for this machine.
-
-    Prefers RFC 1918 private addresses (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
-    over other non-loopback IPs, since VPN/proxy software can inject addresses
-    like 198.18.x.x that look non-loopback but aren't reachable from the LAN.
-    """
-    import socket
-
-    candidates: list[str] = []
-
-    # Method 1: UDP connect to public DNS (discovers outbound route IP)
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        if ip and ip != "127.0.0.1":
-            candidates.append(ip)
-    except Exception:
-        pass
-
-    # Method 2: all IPs from getaddrinfo (may list multiple interfaces)
-    try:
-        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
-            ip = info[4][0]
-            if ip and ip != "127.0.0.1" and ip not in candidates:
-                candidates.append(ip)
-    except Exception:
-        pass
-
-    # Prefer RFC 1918 private LAN IPs
-    for ip in candidates:
-        if _is_private_lan_ip(ip):
-            return ip
-
-    # Fall back to any non-loopback IP
-    return candidates[0] if candidates else ""
-
-
-# Populated by validate_config() when in setup mode — used by /admin command
-_DETECTED_HOST: str = ""
-
-
-def _persist_env_key(key: str, value: str) -> None:
-    """Write a key=value into .env (insert or update). Does not raise."""
-    env_path = _PROJECT_ROOT / ".env"
-    try:
-        if env_path.exists():
-            lines = env_path.read_text().splitlines()
-            found = False
-            for i, line in enumerate(lines):
-                if line.startswith(f"{key}="):
-                    lines[i] = f"{key}={value}"
-                    found = True
-                    break
-            if not found:
-                lines.append(f"{key}={value}")
-            env_path.write_text("\n".join(lines) + "\n")
-        else:
-            env_path.write_text(f"{key}={value}\n")
-    except Exception:
-        import logging
-        logging.getLogger(__name__).warning(
-            "Could not persist %s to .env — set it manually", key
-        )
-
-
 def validate_config() -> str:
     """Return normal, guided setup, or admin-only startup mode."""
-    import secrets
     import logging as _logging
     _log = _logging.getLogger(__name__)
-
-    global ADMIN_BIND, ADMIN_TOKEN, _DETECTED_HOST
 
     # Normal runtime requires explicit Main and Lite assignments.
     has_required_models = False
@@ -502,20 +424,8 @@ def validate_config() -> str:
         mode = "setup_mode"
         _log.info("=" * 55)
         _log.info("  SETUP MODE — waiting for explicit Main and Lite models")
-        _log.info("  Send /admin to the bot to get the admin portal URL")
+        _log.info("  Open the local admin portal to finish setup")
         _log.info("=" * 55)
-        ADMIN_BIND = "0.0.0.0"
-        if not ADMIN_TOKEN:
-            token = secrets.token_urlsafe(32)
-            ADMIN_TOKEN = token
-            os.environ["ADMIN_TOKEN"] = token
-            _persist_env_key("ADMIN_TOKEN", token)
-            _log.info("Generated ADMIN_TOKEN (saved to .env)")
-
-        # Detect server IP for /admin command
-        _DETECTED_HOST = _detect_host_ip()
-        if _DETECTED_HOST:
-            _log.info("Detected server IP: %s", _DETECTED_HOST)
     elif not has_transport:
         mode = "admin_only"
         _log.warning(

@@ -172,9 +172,14 @@ async def test_wechat_proactive_text_is_one_message_without_losing_paragraphs(
 
     api.reset_mock()
     assert await transport.send_chat_result(
-        1, ChatResult(text=delimiter.join(paragraphs[:2])),
+        1, ChatResult(text=delimiter.join(paragraphs)),
     )
-    assert api.await_count == 2
+    chunks = [
+        call.args[1]["msg"]["item_list"][0]["text_item"]["text"]
+        for call in api.call_args_list
+    ]
+    assert len(chunks) == 8
+    assert "\n\n".join(chunks) == "\n\n".join(paragraphs)
 
 
 @pytest.mark.asyncio

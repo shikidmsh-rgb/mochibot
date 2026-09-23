@@ -85,7 +85,7 @@ async def handle_message(msg: IncomingMessage) -> ChatResult:
     """Central message handler — called by all transports."""
     if _setup_mode:
         return ChatResult(
-            text="我还在准备中～发 /admin 获取管理后台链接，完成配置后就能正常聊天了"
+            text="我还在准备中～请在管理后台完成配置，之后就能正常聊天了"
         )
     return await chat(msg)
 
@@ -337,7 +337,7 @@ async def main():
     if config_status == "setup_mode":
         log.info("=" * 55)
         log.info("  SETUP MODE active")
-        log.info("  Send /admin to the bot to get the admin portal URL")
+        log.info("  Open the local admin portal to finish setup")
         log.info("=" * 55)
     elif config_status == "admin_only":
         log.info("=" * 55)

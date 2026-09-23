@@ -63,4 +63,24 @@ def split_bubbles(text: str, max_bubbles: int = 8,
         else:
             bubbles.append(part)
 
-    return bubbles[:max_bubbles]
+    limit = max(1, max_bubbles)
+    if len(bubbles) > limit:
+        bubbles = bubbles[:limit - 1] + ["\n\n".join(bubbles[limit - 1:])]
+    return bubbles
+
+
+def format_usage_summary(summary: dict) -> str:
+    """Format the shared /cost response for chat transports."""
+    blocks = []
+    for title, period in (("📊 今日", summary["today"]), ("📊 本月", summary["month"])):
+        lines = [f"{title} · 总计 {period['total']:,} tokens"]
+        if not period["by_model"]:
+            lines.append("  (无记录)")
+        for model, data in sorted(period["by_model"].items()):
+            lines.append(f"  {model}")
+            line = f"    input {data['prompt']:,}  |  output {data['completion']:,}"
+            if data.get("reasoning", 0) > 0:
+                line += f"  (其中 reasoning {data['reasoning']:,})"
+            lines.append(line)
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)

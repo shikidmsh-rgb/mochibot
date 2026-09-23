@@ -34,6 +34,39 @@ class TestSimpleReply:
         assert len(mock.call_log) == 1
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("provider_fails", [False, True])
+    async def test_memory_references_count_exposure_once(
+        self, mock_llm_factory, monkeypatch, provider_fails,
+    ):
+        import mochi.ai_client as ai_client
+        from mochi.db import _connect, save_memory_item
+
+        memory_id = save_memory_item(1, "Likes jasmine tea", source="admin")
+        other_id = save_memory_item(2, "Other owner", source="admin")
+        monkeypatch.setattr(
+            ai_client, "_retrieve_memories_for_turn",
+            lambda *args: [{"memory_id": memory_id, "text": "Likes jasmine tea"}],
+        )
+        responses = (
+            [RuntimeError("offline"), RuntimeError("offline")]
+            if provider_fails else [
+                make_response(tool_calls=[
+                    make_tool_call("request_tools", {"skills": ["weather"]}),
+                ]),
+                make_response("Jasmine tea."),
+            ]
+        )
+        mock_llm_factory(responses)
+        await chat(_msg("What tea do I like?"))
+        conn = _connect()
+        rows = dict(conn.execute(
+            "SELECT id, access_count FROM memory_items",
+        ).fetchall())
+        conn.close()
+        assert rows[memory_id] == (0 if provider_fails else 1)
+        assert rows[other_id] == 0
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("kind", ["chat", "attention", "bedtime"])
     async def test_delivered_reasoning_is_private_and_model_scoped(
         self, mock_llm_factory, monkeypatch, kind,

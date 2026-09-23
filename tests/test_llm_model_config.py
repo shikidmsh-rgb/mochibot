@@ -146,6 +146,18 @@ def test_openai_compatible_chat_handles_text_and_tools(monkeypatch):
     assert malformed.reasoning_content == ""
     assert malformed.reasoning_source == result.reasoning_source
 
+    usage = SimpleNamespace(
+        prompt_tokens=453, completion_tokens=23, total_tokens=476,
+        completion_tokens_details=None, prompt_tokens_details=None,
+        prompt_cache_hit_tokens=384,
+    )
+    choice = SimpleNamespace(
+        message=SimpleNamespace(content="reply"), finish_reason="stop",
+    )
+    assert llm._openai_response(choice, usage, "deepseek", []).cached_prompt_tokens == 384
+    usage.prompt_tokens_details = SimpleNamespace(cached_tokens=0)
+    assert llm._openai_response(choice, usage, "deepseek", []).cached_prompt_tokens == 0
+
     anthropic_messages = llm.AnthropicProvider._convert_messages([
         {
             "role": "assistant",

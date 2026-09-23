@@ -216,6 +216,9 @@ def _openai_response(choice, usage, model: str, tool_calls: list[ToolCallDict]) 
         if prompt_details is not None:
             c = getattr(prompt_details, "cached_tokens", None)
             cached = int(c) if c is not None else None
+        if cached is None:
+            c = getattr(usage, "prompt_cache_hit_tokens", None)
+            cached = int(c) if c is not None else None
     return LLMResponse(
         content=choice.message.content or "",
         reasoning_content=getattr(choice.message, "reasoning_content", "") or "",

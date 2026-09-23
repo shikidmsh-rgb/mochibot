@@ -544,7 +544,6 @@ class WeixinTransport(Transport):
                 "/cost — Token 用量统计\n"
                 "/core — 查看 Core\n"
                 "/diary — 查看今日日記\n"
-                "/admin — 管理后台\n"
                 "/skilloff — 闲聊模式（省 token）\n"
                 "/skillon — 恢复完整模式\n"
                 "/reset — 重置对话上下文（不影响长期记忆）\n"
@@ -555,24 +554,6 @@ class WeixinTransport(Transport):
                     from_user, help_text, context_token)
             except Exception as e:
                 log.warning("WeChat: failed to send help: %s", e)
-            return
-
-        # System command: /admin (owner only)
-        if text.strip() == "/admin":
-            if from_user != self._owner_weixin_id:
-                return
-            from mochi.config import ADMIN_PORT, ADMIN_BIND, ADMIN_TOKEN, _detect_host_ip
-            # /admin is always sent from a remote device (phone), so use LAN IP
-            host = _detect_host_ip() or ADMIN_BIND
-            if host in ("0.0.0.0", "127.0.0.1", "localhost", "::1"):
-                host = "<your-server-ip>"
-            url = f"http://{host}:{ADMIN_PORT}"
-            if ADMIN_TOKEN:
-                url += f"?token={ADMIN_TOKEN}"
-            try:
-                await self._weixin_send_message(from_user, f"🔧 管理后台：\n{url}", context_token)
-            except Exception as e:
-                log.warning("WeChat: failed to send admin URL: %s", e)
             return
 
         # System command: /skilloff (owner only)
@@ -646,27 +627,10 @@ class WeixinTransport(Transport):
             if from_user != self._owner_weixin_id:
                 return
             from mochi.db import get_usage_summary
-            s = get_usage_summary()
-
-            def _format_block(title: str, by_model: dict) -> list[str]:
-                block = [title]
-                if not by_model:
-                    block.append("  (无记录)")
-                    return block
-                for model, data in sorted(by_model.items()):
-                    block.append(f"  {model}")
-                    line = f"    input {data['prompt']:,}  |  output {data['completion']:,}"
-                    if data.get('reasoning', 0) > 0:
-                        line += f"  (其中 reasoning {data['reasoning']:,})"
-                    block.append(line)
-                return block
-
-            lines = _format_block("📊 今日", s["today"]["by_model"])
-            lines.append("")
-            lines += _format_block("📊 本月", s["month"]["by_model"])
+            from mochi.transport.utils import format_usage_summary
             try:
                 await self._weixin_send_message(
-                    from_user, "\n".join(lines), context_token)
+                    from_user, format_usage_summary(get_usage_summary()), context_token)
             except Exception as e:
                 log.warning("WeChat: failed to send cost: %s", e)
             return

@@ -1416,7 +1416,7 @@ async function loadSettings() {
     const setupComplete = hasModel && hasTransport && preferencesConfigured;
     const activeTransport = tgConfigured ? 'Telegram' : (wxConfigured ? 'WeChat' : null);
     const activeIcon = tgConfigured ? '🤖' : (wxConfigured ? '💬' : '');
-    const mainModel = tiers.main?.assigned_name || '';
+    const mainModel = tiers.main?.model || '';
     let html = '';
 
     const heroTitle = botStatus.running
@@ -1463,7 +1463,7 @@ async function loadSettings() {
       </div>`;
     for (const tier of ['main', 'lite']) {
       const cfg = tiers[tier] || {};
-      const selected = cfg.assigned_name || '';
+      const selected = cfg.model || '';
       html += `<div class="settings-tier">
         <div class="settings-tier-label"><strong>${tierLabels[tier]}</strong><span class="settings-tier-copy">${tierDescriptions[tier]}</span></div>
         <div class="settings-model-value${selected?'':' empty'}">${selected ? esc(selected) : '未配置'}</div>
@@ -2340,7 +2340,7 @@ async function searchMemoryItems(page) {
     el.innerHTML =
       '<div style="margin-bottom:10px;font-size:13px;color:var(--text-soft)">共 ' + data.total.toLocaleString() + ' 条 · 第 ' + page + '/' + pages + ' 页</div>' +
       '<div style="overflow-x:auto"><table class="tbl"><thead><tr>' +
-      '<th>内容</th><th>重要性</th><th>来源</th><th>访问</th><th>证据时间</th><th>操作</th>' +
+      '<th>内容</th><th>重要性</th><th>来源</th><th>引用次数</th><th>证据时间</th><th>操作</th>' +
       '</tr></thead><tbody>' + rows + '</tbody></table></div>' +
       '<div style="display:flex;gap:6px;justify-content:center;margin-top:14px;flex-wrap:wrap">' +
         (page > 1 ? '<button class="btn btn-ghost btn-sm" onclick="searchMemoryItems('+(page-1)+')">‹ 上一页</button>' : '') +

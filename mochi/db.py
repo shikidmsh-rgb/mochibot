@@ -2105,6 +2105,25 @@ def recall_memory(user_id: int, query: str = "", limit: int = 20,
     return result
 
 
+def mark_memory_items_accessed(user_id: int, item_ids: list[int]) -> int:
+    """Record Memory Items that were actually exposed to Main."""
+    ids = list(dict.fromkeys(item_ids))
+    if not ids:
+        return 0
+    placeholders = ",".join("?" * len(ids))
+    conn = _connect()
+    try:
+        cursor = conn.execute(
+            "UPDATE memory_items SET access_count = access_count + 1, "
+            f"last_accessed = ? WHERE user_id = ? AND id IN ({placeholders})",
+            [datetime.now(TZ).isoformat(), user_id, *ids],
+        )
+        conn.commit()
+        return cursor.rowcount
+    finally:
+        conn.close()
+
+
 def get_memory_extraction_references(
     user_id: int, limit: int = 80,
 ) -> list[dict]:
@@ -2491,15 +2510,8 @@ def log_usage(prompt_tokens: int, completion_tokens: int, total_tokens: int,
     conn.close()
 
 
-def get_usage_summary(days: int = 30) -> dict:
-    """Return usage summary for /cost command.
-
-    Returns:
-        {
-            "today": {"by_model": {model: {"prompt": int, "completion": int}, ...}},
-            "month": {"by_model": {model: {"prompt": int, "completion": int}, ...}},
-        }
-    """
+def get_usage_summary() -> dict:
+    """Return local-day/month token totals and per-model usage."""
     now = datetime.now(TZ)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
@@ -2512,17 +2524,26 @@ def get_usage_summary(days: int = 30) -> dict:
             """SELECT model,
                       COALESCE(SUM(prompt_tokens), 0) as p,
                       COALESCE(SUM(completion_tokens), 0) as c,
+                      COALESCE(SUM(total_tokens), 0) as t,
                       COALESCE(SUM(reasoning_tokens), 0) as r
                FROM usage_log WHERE created_at >= ? GROUP BY model""",
             (since,),
         ).fetchall():
             result[r["model"] or "unknown"] = {
-                "prompt": r["p"], "completion": r["c"], "reasoning": r["r"],
+                "prompt": r["p"], "completion": r["c"],
+                "total": r["t"], "reasoning": r["r"],
             }
         return result
 
-    today = {"by_model": _by_model(today_start)}
-    month = {"by_model": _by_model(month_start)}
+    def _period(since: str) -> dict:
+        by_model = _by_model(since)
+        return {
+            "by_model": by_model,
+            "total": sum(item["total"] for item in by_model.values()),
+        }
+
+    today = _period(today_start)
+    month = _period(month_start)
 
     conn.close()
     return {"today": today, "month": month}

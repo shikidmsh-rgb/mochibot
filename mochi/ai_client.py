@@ -13,6 +13,7 @@ import logging
 import os
 import platform
 import re
+import sqlite3
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -22,7 +23,7 @@ from mochi.llm import get_client_for_tier, LLMResponse
 from mochi.prompt_loader import get_prompt, get_system_chat_modules
 from mochi.db import (
     save_message, save_message_once, log_usage,
-    recall_memory, get_conversation_context,
+    recall_memory, mark_memory_items_accessed, get_conversation_context,
     start_tool_execution, finish_tool_execution,
 )
 from mochi.core_store import read_core
@@ -178,6 +179,7 @@ def _retrieve_memories_for_turn(text: str, user_id: int) -> list[dict]:
                 content = content[:max_chars - 3].rstrip() + "..."
             raw_score = float(item.get("score") or 0.0)
             candidates.append({
+                "memory_id": item["id"],
                 "text": content,
                 "score": round(max(0.0, min(1.0, raw_score / 10.0)), 2),
                 "evidence_start": str(item.get("evidence_start") or "")[:10],
@@ -941,6 +943,7 @@ async def chat(
     tool_names_used: list[str] = []  # track for tool_history persistence
     tool_audit: list[dict] = []
     successful_effects = False
+    recall_exposure_recorded = False
     bedtime_requested = False
     tool_budget = ToolLoopBudget()
     on_interim = message.on_interim if message is not None else None
@@ -1134,6 +1137,18 @@ async def chat(
                 return ChatResult(text=f"API 报错：{e}")
 
         _log_main_usage(response)
+        if recalled_memories and not recall_exposure_recorded:
+            try:
+                mark_memory_items_accessed(
+                    user_id,
+                    [
+                        item["memory_id"] for item in recalled_memories
+                        if "memory_id" in item
+                    ],
+                )
+            except sqlite3.Error as exc:
+                log.warning("Memory reference accounting failed: %s", exc)
+            recall_exposure_recorded = True
         history_response = response
 
         # No tool calls — we have the final response

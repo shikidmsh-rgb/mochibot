@@ -27,16 +27,19 @@ def _admin_log_url(host: str, port: int) -> str:
 def _ensure_admin_token(log) -> str:
     """Ensure ADMIN_TOKEN is set. Auto-generate if missing."""
     from mochi.admin.admin_env import read_env_value, _bootstrap_write_env
+    import mochi.config as config_module
 
-    token = read_env_value("ADMIN_TOKEN")
+    token = config_module.ADMIN_TOKEN or read_env_value("ADMIN_TOKEN")
     if token:
         os.environ["ADMIN_TOKEN"] = token
-        log.info("Using existing ADMIN_TOKEN from .env")
+        config_module.ADMIN_TOKEN = token
+        log.info("Using existing ADMIN_TOKEN")
         return token
 
     token = secrets.token_urlsafe(32)
     _bootstrap_write_env("ADMIN_TOKEN", token)
     os.environ["ADMIN_TOKEN"] = token
+    config_module.ADMIN_TOKEN = token
     log.info("Generated new ADMIN_TOKEN (saved to .env)")
     return token
 
@@ -73,57 +76,20 @@ def main():
                         help="Don't auto-open browser on startup")
     args = parser.parse_args()
 
-    # ── Setup mode detection & remote access ──
-    # If transport is configured, bind to 0.0.0.0 so the user can reach
-    # the admin portal from their phone via /admin command.
-    # Token auth keeps it secure; the bind is in-memory only (not saved to .env).
-    _is_setup_mode = False
-    _has_transport = False
-    try:
-        from mochi.db import init_db
-        init_db()
-        from mochi.admin.admin_db import seed_models_from_env, get_tier_effective_config
-        seed_models_from_env()
-        has_model_db = False
-        for cfg in get_tier_effective_config().values():
-            if cfg.get("model") and cfg.get("api_key_set"):
-                has_model_db = True
-                break
-        from mochi.config import TELEGRAM_BOT_TOKEN, WEIXIN_ENABLED
-        _has_transport = bool(TELEGRAM_BOT_TOKEN) or WEIXIN_ENABLED
-        if not has_model_db and _has_transport:
-            _is_setup_mode = True
-            log.info("SETUP MODE — no LLM model configured yet")
-    except Exception as e:
-        log.debug("Setup mode detection skipped: %s", e)
-
     _LOCALHOST = {"127.0.0.1", "localhost", "::1"}
-
-    # Bind to 0.0.0.0 when transport is configured so /admin works from phone
-    if _has_transport and args.bind in _LOCALHOST:
-        args.bind = "0.0.0.0"
-        log.info("Transport configured — binding admin to 0.0.0.0 for /admin access")
 
     # Only require token for non-localhost binds
     token = None
     if args.bind not in _LOCALHOST:
         token = _ensure_admin_token(log)
-        if _is_setup_mode:
-            log.info(
-                "=" * 60 + "\n"
-                "  SETUP MODE — send /admin to your bot to get the admin URL\n"
-                "  The local browser will open the protected admin page.\n" +
-                "=" * 60,
-            )
-        else:
-            log.warning(
-                "=" * 60 + "\n"
-                "  Binding to %s (network-accessible)\n"
-                "  Remote access requires ADMIN_TOKEN.\n"
-                "  Consider using SSH tunnel instead:\n"
-                "    ssh -L %d:localhost:%d user@this-server\n" +
-                "=" * 60, args.bind, args.port, args.port
-            )
+        log.warning(
+            "=" * 60 + "\n"
+            "  Binding to %s (network-accessible)\n"
+            "  Remote access requires ADMIN_TOKEN.\n"
+            "  Consider using SSH tunnel instead:\n"
+            "    ssh -L %d:localhost:%d user@this-server\n" +
+            "=" * 60, args.bind, args.port, args.port
+        )
 
     from mochi.admin.admin_server import app
 
@@ -134,9 +100,6 @@ def main():
 
     if not args.no_browser:
         webbrowser.open(url)
-
-    from mochi.admin.admin_server import _check_port
-    _check_port(args.bind, args.port)
 
     config = uvicorn.Config(app, host=args.bind, port=args.port, log_level="info")
     server = uvicorn.Server(config)
