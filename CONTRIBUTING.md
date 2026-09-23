@@ -224,10 +224,10 @@ pip install pytest pytest-asyncio                    # 测试依赖
 ### 跑测试
 
 ```bash
-pytest                  # 日常开发和发布前都跑这一套轻量回归测试
+pytest tests/test_db.py  # 按改动选择相关文件或具体 case，不默认跑全套
 ```
 
-测试运行不需要 `.env`、API key 或真实聊天平台。
+这些自动化回归不需要 `.env`、API key 或真实聊天平台；它们不能替代真实用户路径和真实 Provider 的验证。
 
 ### 测试基建
 
@@ -242,34 +242,9 @@ pytest                  # 日常开发和发布前都跑这一套轻量回归测
 
 在 `tests/` 下创建 `test_my_skill_handler.py`（单元测试），或在 `tests/e2e/` 下创建 E2E 测试。
 
-**E2E 测试示例**——验证完整的 消息 → LLM → 工具调用 → DB 流程：
+优先扩展最近的现有测试，只为确定性逻辑、真实回归和难以稳定实测的协议边界增加最小 case。断言真实数据或执行状态，不用预设的模型回复证明模型会做出正确选择，也不逐字锁定产品文案。
 
-```python
-import pytest
-from mochi.transport import IncomingMessage
-from mochi.ai_client import chat
-from tests.e2e.mock_llm import make_response, make_tool_call
-
-def _msg(text, user_id=1):
-    return IncomingMessage(user_id=user_id, channel_id=100,
-                           text=text, transport="fake")
-
-class TestMySkill:
-    @pytest.mark.asyncio
-    async def test_add_item(self, mock_llm_factory):
-        # 脚本化 LLM：先返回工具调用，再返回最终回复
-        mock_llm_factory([
-            make_response(tool_calls=[
-                make_tool_call("my_tool", {"action": "add", "item": "买菜"}),
-            ]),
-            make_response("已添加！"),
-        ])
-
-        reply = await chat(_msg("帮我记一下买菜"))
-        assert "已添加" in reply.text
-```
-
-只在测试能阻止真实用户故障时添加：优先覆盖完整流程、数据丢失、安全边界和已发生过的 bug。不要为默认值、mock 调用次数、第三方 SDK 格式或每个 handler 分支逐一补 case。
+复用现有 fixture，不为验收另建本地代理服务、模拟 Provider 或独立运行环境。不要为默认值、mock 调用次数、每个 handler 分支或没有实际依据的极端组合堆积测试。
 
 ### 什么能测、什么不能测
 

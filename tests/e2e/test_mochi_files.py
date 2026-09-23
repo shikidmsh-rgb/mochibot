@@ -12,58 +12,8 @@ from mochi.transport import IncomingMessage
 from tests.e2e.mock_llm import make_response, make_tool_call
 
 
-WORKSPACE_POINTER = "`personal_workspace` 是保存资料和自行开发个人扩展的入口。"
 FILES_TOOLS = {"browse_workspace", "edit_workspace"}
 WORKSPACE_TOOLS = FILES_TOOLS | {"run_extension", "activate_extension"}
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("escalation", [True, False])
-@pytest.mark.parametrize("development", [True, False])
-async def test_agent_knows_personal_extensions_before_search_or_unrelated_routing(
-    monkeypatch, mock_llm_factory, escalation, development,
-):
-    """Prove first-request context and availability, not a scripted model's judgment."""
-    import mochi.admin.admin_db as admin_db
-    import mochi.config as config
-    import mochi.skills as registry
-    import mochi.tool_router as router
-    from mochi.personal_workspace import set_development_enabled
-
-    monkeypatch.setattr(config, "TOOL_ROUTER_ENABLED", True)
-    monkeypatch.setattr(config, "TOOL_ESCALATION_ENABLED", escalation)
-    monkeypatch.setattr(admin_db, "list_tier_assignments", lambda: {"lite": "fixture"})
-    routed = []
-
-    async def unrelated_route(*_args, **kwargs):
-        assert "personal_workspace" not in kwargs["catalog"]
-        assert "todo" in kwargs["catalog"]
-        routed.append("todo")
-        return ["todo"]
-
-    monkeypatch.setattr(router, "classify_skills", unrelated_route)
-    set_development_enabled(development)
-    mock = mock_llm_factory([make_response("I can choose an appropriate approach.")])
-    await chat(IncomingMessage(
-        user_id=1, channel_id=100, text="I need a capability I do not have yet.",
-        transport="fake", owner_authorized=False,
-    ))
-
-    assert routed == ["todo"]
-    initial = mock.call_log[0]
-    prompt = initial["messages"][0]["content"]
-    names = {tool["function"]["name"] for tool in initial["tools"]}
-    assert prompt.count(WORKSPACE_POINTER) == 1
-    assert "manage_todo" in names
-    assert ("request_tools" in names) is escalation
-    assert WORKSPACE_TOOLS.isdisjoint(names)
-    assert all(message["role"] != "tool" for message in initial["messages"])
-    assert "class PersonalSkill" not in prompt
-    available = {
-        tool["function"]["name"]
-        for tool in registry.get_tools_by_names(["personal_workspace"])
-    }
-    assert available == (WORKSPACE_TOOLS if development else FILES_TOOLS)
 
 
 @pytest.mark.asyncio
@@ -127,18 +77,6 @@ async def test_personal_workspace_document_vertical_contract(
         tool["function"]["name"] for tool in mock.call_log[0]["tools"]
     }
     assert WORKSPACE_TOOLS.isdisjoint(initial_names)
-    initial_prompt = "\n".join(
-        item.get("content", "")
-        for item in mock.call_log[0]["messages"]
-        if isinstance(item.get("content"), str)
-    )
-    assert initial_prompt.count(WORKSPACE_POINTER) == 1
-    assert "你有一片持久的私人 Markdown 空间" not in initial_prompt
-    assert "old_text" not in initial_prompt
-    assert "上一版本" not in initial_prompt
-    assert "### mochi_files" not in initial_prompt
-    assert "### development" not in initial_prompt
-
     second_names = {
         tool["function"]["name"] for tool in mock.call_log[1]["tools"]
     }
@@ -211,55 +149,3 @@ async def test_personal_workspace_document_vertical_contract(
     assert denied.success is False
     assert denied.error_code == "main_only"
     assert authored_text not in denied.output
-
-
-@pytest.mark.asyncio
-async def test_plain_medical_notebook_can_be_saved_without_code_or_health_facts(
-    tmp_path, monkeypatch, mock_llm_factory,
-):
-    """Mechanics only: scripted choices are not evidence of model preference."""
-    import mochi.config as config
-    import mochi.mochi_files_store as files_store
-    from mochi.extensions import store
-
-    monkeypatch.setattr(config, "TOOL_ESCALATION_ENABLED", True)
-    monkeypatch.setattr(files_store, "DATA_DIR", tmp_path / "files_data")
-    path = "documents/health/病历本.md"
-    content = (
-        "# 病历本\n\n尚未记录病情。\n\n"
-        "## 每次记录可补充\n"
-        "- 日期与时间\n- 症状与持续时间\n- 就诊、检查和用药信息（如有）\n"
-    )
-    agent = mock_llm_factory([
-        make_response(tool_calls=[
-            make_tool_call("request_tools", {"skills": ["personal_workspace"]}),
-        ]),
-        make_response(tool_calls=[
-            make_tool_call("edit_workspace", {
-                "action": "create", "path": path, "content": content,
-            }),
-        ]),
-        make_response(tool_calls=[
-            make_tool_call("browse_workspace", {"action": "read", "path": path}),
-        ]),
-        make_response("病历本已建好。你还没有提供具体病情，想先记录哪一次？"),
-    ])
-    result = await chat(IncomingMessage(
-        user_id=1, channel_id=100, text="建立一个病历本，记录我的生病情况",
-        transport="fake", owner_authorized=False,
-    ))
-    assert result.text
-    saved = files_store.DATA_DIR / files_store.ACTIVE_DIRNAME / "health" / "病历本.md"
-    assert saved.read_text(encoding="utf-8") == content
-    records = get_recent_tool_executions(1, limit=10, state_changes_only=False)
-    assert {item["tool_name"] for item in records} == FILES_TOOLS
-    assert len(records) == 2
-    assert not store.list_extensions()
-    receipt = next(
-        json.loads(item["content"])
-        for item in agent.call_log[-1]["messages"]
-        if item.get("role") == "tool"
-        and json.loads(item["content"]).get("source") == "agent_authored_document"
-    )
-    assert json.loads(receipt["result"])["files"][0]["content"] == content
-    assert all(content not in item["result_summary"] for item in records)

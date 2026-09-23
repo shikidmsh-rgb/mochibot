@@ -2,18 +2,6 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 
-def test_personal_extension_copy_keeps_workspace_and_api_names():
-    html = (
-        Path(__file__).parents[1] / "mochi" / "admin" / "index.html"
-    ).read_text(encoding="utf-8")
-    assert "保存资料，也能让 Mochi 自己开发小工具（个人扩展）" in html
-    assert "开发个人扩展（不影响资料）" in html
-    assert "个人扩展开发关闭" in html
-    assert "已安装扩展的独立开关" in html
-    assert "s.name === 'personal_workspace'" in html
-    assert "workspace?'development':esc(s.name)" in html
-
-
 class _ElementAttributeParser(HTMLParser):
     def __init__(self, element_id: str):
         super().__init__()

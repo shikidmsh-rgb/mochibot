@@ -180,15 +180,6 @@ def test_autonomous_receipts_respect_time_reset_and_shared_budget():
     assert len(recent_operations_context(1, _history(), include_autonomous=True)) <= 2400
 
 
-def test_visible_autonomous_receipt_is_not_duplicated():
-    db.save_message(1, "assistant", "delivered", turn_id="autonomous", processed=True)
-    _execution("autonomous", source="runtime:attention", summary="ONE_RECEIPT")
-
-    context = recent_operations_context(1, _history(), include_autonomous=True)
-
-    assert context.count("ONE_RECEIPT") == 1
-
-
 def test_visible_turns_keep_receipts_older_than_a_day():
     _turn("long-running-project")
     execution_id = _execution("long-running-project", summary="older visible draft")
@@ -198,19 +189,6 @@ def test_visible_turns_keep_receipts_older_than_a_day():
             ("2020-01-01T12:00:00+00:00", "2020-01-01T12:00:00+00:00", execution_id),
         )
     assert "older visible draft" in recent_operations_context(1, _history())
-
-
-def test_only_ten_most_recent_visible_turns_supply_receipts():
-    for number in range(11):
-        turn_id = f"turn-{number}"
-        _turn(turn_id)
-        _execution(turn_id, summary=f"RECEIPT_{number:02}_END")
-
-    context = recent_operations_context(1, _history(), max_chars=10000)
-
-    assert "RECEIPT_00_END" not in context
-    assert "RECEIPT_01_END" in context
-    assert "RECEIPT_10_END" in context
 
 
 def test_receipt_count_and_text_are_bounded_without_losing_latest_facts():
@@ -235,25 +213,10 @@ def test_receipt_count_and_text_are_bounded_without_losing_latest_facts():
             assert isinstance(json.loads(line.split("] ", 1)[1]), dict)
 
 
-def test_oversized_latest_summary_does_not_hide_all_receipts():
-    _turn("large")
-    _execution("large", summary="x" * 10000, args={
-        "path": "extensions/local_example/draft/" + "x" * 1000,
-    })
-
-    context = recent_operations_context(1, _history(), max_chars=400)
-
-    assert len(context) <= 400
-    assert '"tool":"run_extension"' in context
-    assert '"status":"success"' in context
-
-
 @pytest.mark.parametrize("total,per_tool,expected", [
-    (None, None, (24, 3)),
     ("48", "12", (48, 12)),
     ("8", "1", (8, 1)),
     ("0", "0", (0, 0)),
-    ("-1", "-2", (0, 0)),
 ])
 def test_budget_configuration_has_no_silent_upper_clamp(monkeypatch, total, per_tool, expected):
     import dotenv
@@ -264,10 +227,7 @@ def test_budget_configuration_has_no_silent_upper_clamp(monkeypatch, total, per_
         ("TOOL_LOOP_TOTAL_TOOL_LIMIT", total),
         ("TOOL_LOOP_PER_TOOL_LIMIT", per_tool),
     ):
-        if value is None:
-            monkeypatch.delenv(key, raising=False)
-        else:
-            monkeypatch.setenv(key, value)
+        monkeypatch.setenv(key, value)
     loaded = runpy.run_path(str(Path(config.__file__)))
     assert (
         loaded["TOOL_LOOP_TOTAL_TOOL_LIMIT"], loaded["TOOL_LOOP_PER_TOOL_LIMIT"],

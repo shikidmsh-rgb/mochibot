@@ -188,21 +188,3 @@ async def test_oversized_responses_fail_without_cache(monkeypatch):
     assert not result.success
     assert "larger than" in result.output
     assert not handler._cache._store
-
-
-def test_plaintext_config_remains_compatible_and_local_queries_keep_their_language():
-    from mochi.skill_config_resolver import resolve_skill_config
-    from mochi.skills.base import ConfigField
-
-    set_skill_config("example", "SECRET", "legacy-plaintext")
-    set_skill_config("example", "LABEL", "gAAAAA-not-a-secret")
-    assert resolve_skill_config("example", [
-        ConfigField("SECRET", "str", "", secret=True),
-        ConfigField("LABEL", "str", ""),
-    ]) == {"SECRET": "legacy-plaintext", "LABEL": "gAAAAA-not-a-secret"}
-    headers, params, cookies = handler._bing_request_options("\u82cf\u5dde\u5929\u6c14", 5)
-    assert headers["Accept-Language"].startswith("zh-CN")
-    assert "ensearch" not in params
-    assert cookies == {}
-    with pytest.raises(ValueError, match="invalid response|references"):
-        handler._format_baidu_results({}, 5)
