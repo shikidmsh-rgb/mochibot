@@ -97,7 +97,7 @@ class ToolLoopBudget:
 
     request_attempts: int = 0
     ordinary_attempts: int = 0
-    per_tool_attempts: dict[str, int] = field(default_factory=dict)
+    duplicate_attempts: dict[str, int] = field(default_factory=dict)
 
     def claim_request(self, limit: int) -> dict | None:
         if self.request_attempts >= limit:
@@ -111,23 +111,27 @@ class ToolLoopBudget:
     def claim_tool(
         self,
         tool_name: str,
+        arguments: dict,
         *,
         total_limit: int,
         per_tool_limit: int,
     ) -> dict | None:
-        current = self.per_tool_attempts.get(tool_name, 0)
+        fingerprint = tool_name + ":" + json.dumps(
+            arguments, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        )
+        current = self.duplicate_attempts.get(fingerprint, 0)
         if per_tool_limit <= 0 or (
             tool_name not in _WORKSPACE_TOOLS and current >= per_tool_limit
         ):
             return {
                 "ok": False,
-                "code": "per_tool_limit_reached",
+                "code": "repeated_tool_call",
                 "started": False,
                 "retryable": False,
                 "changed": False,
                 "message": (
-                    f"Tool '{tool_name}' may be called at most "
-                    f"{per_tool_limit} times per turn."
+                    "The same tool call is repeating without new arguments. "
+                    "Use the previous result or change the approach."
                 ),
             }
         if self.ordinary_attempts >= total_limit:
@@ -142,7 +146,7 @@ class ToolLoopBudget:
                 ),
             }
         self.ordinary_attempts += 1
-        self.per_tool_attempts[tool_name] = current + 1
+        self.duplicate_attempts[fingerprint] = current + 1
         return None
 
 

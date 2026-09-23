@@ -232,3 +232,27 @@ def test_budget_configuration_has_no_silent_upper_clamp(monkeypatch, total, per_
     assert (
         loaded["TOOL_LOOP_TOTAL_TOOL_LIMIT"], loaded["TOOL_LOOP_PER_TOOL_LIMIT"],
     ) == expected
+
+
+def test_tool_budget_counts_identical_arguments_not_distinct_operations():
+    from mochi.request_tools import ToolLoopBudget
+
+    budget = ToolLoopBudget()
+    for index in range(5):
+        assert budget.claim_tool(
+            "manage_todo", {"action": "update", "todo_id": index},
+            total_limit=10, per_tool_limit=2,
+        ) is None
+    args = {"todo_id": 0, "action": "update"}
+    assert budget.claim_tool(
+        "manage_todo", args, total_limit=10, per_tool_limit=2,
+    ) is None
+    denied = budget.claim_tool(
+        "manage_todo", args, total_limit=10, per_tool_limit=2,
+    )
+    assert denied["code"] == "repeated_tool_call"
+    assert denied["started"] is False
+    assert denied["changed"] is False
+    assert budget.claim_tool(
+        "manage_todo", {"todo_id": 6}, total_limit=6, per_tool_limit=2,
+    )["code"] == "tool_call_limit_reached"

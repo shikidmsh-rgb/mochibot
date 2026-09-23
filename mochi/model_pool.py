@@ -284,21 +284,52 @@ class ModelPool:
             return None
 
     def embed_batch(self, texts: list[str]) -> list[bytes | None]:
-        """Batch-embed multiple texts."""
+        """Batch-embed unique cache misses in one provider request."""
         if not self._embed_client or not texts:
             return [None] * len(texts)
+        results: list[bytes | None] = [None] * len(texts)
+        missing_keys: list[str] = []
+        positions: dict[str, list[int]] = {}
+        for index, text in enumerate(texts):
+            if not text.strip():
+                continue
+            key = text[:8000]
+            cached = self._embed_cache.get(key)
+            if isinstance(cached, bytes):
+                results[index] = cached
+                continue
+            if key not in positions:
+                missing_keys.append(key)
+                positions[key] = []
+            positions[key].append(index)
+        if not missing_keys:
+            return results
         try:
-            truncated = [t[:8000] for t in texts]
             resp = self._embed_client.embeddings.create(
-                model=self._embed_model, input=truncated,
+                model=self._embed_model, input=missing_keys,
             )
-            results: list[bytes | None] = [None] * len(texts)
+            packed_by_key: dict[str, bytes] = {}
             for item in resp.data:
-                results[item.index] = struct.pack(f"{len(item.embedding)}f", *item.embedding)
+                index = item.index
+                if (
+                    isinstance(index, bool) or not isinstance(index, int)
+                    or not 0 <= index < len(missing_keys)
+                    or missing_keys[index] in packed_by_key
+                ):
+                    raise ValueError("Embedding batch returned invalid indexes")
+                packed_by_key[missing_keys[index]] = struct.pack(
+                    f"{len(item.embedding)}f", *item.embedding,
+                )
+            if len(packed_by_key) != len(missing_keys):
+                raise ValueError("Embedding batch returned incomplete results")
+            for key, packed in packed_by_key.items():
+                self._embed_cache.put(key, packed)
+                for index in positions[key]:
+                    results[index] = packed
             return results
         except Exception as e:
             log.warning("Batch embedding failed: %s", e)
-            return [None] * len(texts)
+            return results
 
 
 # ---------------------------------------------------------------------------

@@ -102,6 +102,13 @@ messages only after confirmed delivery, alongside complete ordinary turns.
 These messages do not become user turns or enter Lite summary/extraction batches.
 User isolation and conversation resets apply to both kinds of history.
 
+Automatic recall searches the current sentence and a bounded recent completed
+conversation independently, prioritizing the current topic and deduplicating
+Memory Items. Embedding cache misses share one batch request; there is no extra
+Lite selection call. Repeat cooldown applies only to the same query context
+after Main has received it. Reference counts describe actual Main exposure, not
+unshown search candidates.
+
 The existing execution ledger supplies bounded receipts for the completed turns
 visible in Main's conversation context, independent of message wording or routing,
 plus the last 24 hours of Free Time, Attention and Self Reminder work. Silent

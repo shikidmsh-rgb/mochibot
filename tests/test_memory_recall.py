@@ -33,11 +33,11 @@ class Pool:
         self.error = error
         self.queries = []
 
-    def embed(self, text):
-        self.queries.append(text)
+    def embed_batch(self, texts):
+        self.queries.extend(texts)
         if self.error:
             raise self.error
-        return self.embedding
+        return [self.embedding] * len(texts)
 
 
 @pytest.fixture(autouse=True)
@@ -56,7 +56,7 @@ def _recall_config(monkeypatch):
 
 
 @pytest.mark.parametrize("cooldown", [0, 120])
-def test_consecutive_topics_recall_unless_cooldown_is_explicit(
+def test_cooldown_only_suppresses_the_same_exposed_query(
     monkeypatch, cooldown,
 ):
     import mochi.ai_client as ai_client
@@ -71,17 +71,75 @@ def test_consecutive_topics_recall_unless_cooldown_is_explicit(
     save_memory_item(1, "Has a cat that dislikes car rides", source="admin")
 
     first = _retrieve_memories_for_turn("presentations", 1)
+    ai_client._record_recalled_memories_exposed(1, first)
+    repeated = _retrieve_memories_for_turn("presentations", 1)
     second = _retrieve_memories_for_turn("cat", 1)
 
     assert [item["text"] for item in first] == [
         "Gets nervous before presentations",
     ]
-    assert [item["text"] for item in second] == (
-        ["Has a cat that dislikes car rides"] if cooldown == 0 else []
-    )
+    assert bool(repeated) == (cooldown == 0)
+    assert [item["text"] for item in second] == ["Has a cat that dislikes car rides"]
     assert pool.queries == (
-        ["presentations", "cat"] if cooldown == 0 else ["presentations"]
+        ["presentations", "presentations", "cat"] if cooldown == 0
+        else ["presentations", "cat"]
     )
+
+
+def test_recall_uses_completed_context_but_not_unanswered_or_reset_history(monkeypatch):
+    import mochi.ai_client as ai_client
+    import mochi.model_pool as model_pool
+    from mochi.db import set_context_reset
+
+    save_memory_item(1, "Gets nervous before presentations", source="admin")
+    save_message(1, "user", "presentations", turn_id="complete")
+    save_message(1, "assistant", "Let's talk about that.", turn_id="complete")
+    save_message(1, "assistant", "standalone-marker", processed=True)
+    save_message(1, "user", "unanswered-marker", turn_id="pending")
+    save_message(2, "user", "other-owner-marker", turn_id="other")
+    save_message(2, "assistant", "Other reply", turn_id="other")
+    pool = Pool()
+    monkeypatch.setattr(model_pool, "get_pool", lambda: pool)
+    recalled = _retrieve_memories_for_turn("and then?", 1)
+    assert [item["text"] for item in recalled] == ["Gets nervous before presentations"]
+    assert len(pool.queries) == 2
+    assert "[用户] presentations" in pool.queries[1]
+    assert "[Mochi] Let's talk about that." in pool.queries[1]
+    assert "marker" not in pool.queries[1]
+    conn = _connect()
+    assert conn.execute("SELECT access_count FROM memory_items").fetchone()[0] == 0
+    conn.close()
+    ai_client._record_recalled_memories_exposed(1, recalled)
+    conn = _connect()
+    assert conn.execute("SELECT access_count FROM memory_items").fetchone()[0] == 1
+    conn.close()
+    set_context_reset(1)
+    assert ai_client._memory_recall_queries("and then?", 1) == ["and then?"]
+
+
+def test_batch_embedding_reuses_cache_and_preserves_result_order():
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from mochi.model_pool import ModelPool, _TTLCache
+
+    pool = ModelPool.__new__(ModelPool)
+    pool._embed_model = "embedding"
+    pool._embed_cache = _TTLCache()
+    cached = struct.pack("2f", 1, 0)
+    pool._embed_cache.put("cached", cached)
+    create = Mock(return_value=SimpleNamespace(data=[
+        SimpleNamespace(index=1, embedding=[0, 1]),
+        SimpleNamespace(index=0, embedding=[0.5, 0.5]),
+    ]))
+    pool._embed_client = SimpleNamespace(embeddings=SimpleNamespace(create=create))
+    result = pool.embed_batch(["first", "cached", "second", "first", ""])
+    assert create.call_args.kwargs["input"] == ["first", "second"]
+    assert result == [
+        struct.pack("2f", 0.5, 0.5), cached, struct.pack("2f", 0, 1),
+        struct.pack("2f", 0.5, 0.5), None,
+    ]
+    assert pool.embed_batch(["first", "second"]) == [result[0], result[2]]
+    create.assert_called_once()
 
 
 @pytest.mark.parametrize(

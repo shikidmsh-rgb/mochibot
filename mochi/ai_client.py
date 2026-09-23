@@ -8,6 +8,7 @@ This is the "brain" that ties together:
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -88,7 +89,7 @@ def _replace_current_user_with_image(
     if messages:
         message = messages[-1]
         existing = message.get("content")
-        # _expand_history prefixes persisted user turns with [MM-DD HH:MM].
+        # _expand_history prefixes persisted user turns with an absolute timestamp.
         if (message.get("role") == "user"
                 and isinstance(existing, str)
                 and (existing == stored_text or existing.endswith(stored_text))):
@@ -98,7 +99,7 @@ def _replace_current_user_with_image(
     messages.append({"role": "user", "content": content})
 
 # ── Auto-recall state (per-user cooldown) ──
-_user_last_recall: dict[int, float] = {}   # user_id → timestamp
+_user_last_recall: dict[int, tuple[float, str]] = {}
 _USER_LAST_RECALL_MAX = 100                # evict oldest when exceeded
 
 
@@ -121,8 +122,50 @@ def _format_recalled_memories(memories: list[dict]) -> str:
     )
 
 
+def _memory_recall_queries(text: str, user_id: int) -> list[str]:
+    queries = [text.strip()]
+    context = get_conversation_context(
+        user_id, 3, include_summary=False, include_standalone=False,
+    )
+    recent = context["recent"]
+    selected = [message for message in recent if message["role"] == "user"][-3:]
+    assistants = [message for message in recent if message["role"] == "assistant"]
+    if assistants:
+        selected.append(assistants[-1])
+    selected.sort(key=lambda message: message["id"])
+    labels = {"user": "用户", "assistant": "Mochi"}
+    lines = [
+        f"[{labels[message['role']]}] {' '.join(message['content'].split())[:500]}"
+        for message in selected if message["content"].strip()
+    ]
+    if lines:
+        queries.append(
+            "最近已完成对话：\n" + "\n".join(lines)
+            + f"\n[当前用户] {text.strip()}"
+        )
+    return queries
+
+
+def _record_recalled_memories_exposed(user_id: int, memories: list[dict]) -> None:
+    try:
+        mark_memory_items_accessed(
+            user_id, [item["memory_id"] for item in memories if "memory_id" in item],
+        )
+    except sqlite3.Error as exc:
+        log.warning("Memory reference accounting failed: %s", exc)
+    query_key = next(
+        (item["_recall_query_key"] for item in memories if "_recall_query_key" in item),
+        None,
+    )
+    if query_key is not None:
+        if len(_user_last_recall) >= _USER_LAST_RECALL_MAX:
+            oldest = min(_user_last_recall, key=lambda uid: _user_last_recall[uid][0])
+            del _user_last_recall[oldest]
+        _user_last_recall[user_id] = (time.time(), query_key)
+
+
 def _retrieve_memories_for_turn(text: str, user_id: int) -> list[dict]:
-    """Recall explicit text matches, optionally enhanced by vectors and KG."""
+    """Fuse current-topic and complete-conversation recall without another LLM."""
     from mochi.config import (
         MEMORY_AUTO_RECALL, MEMORY_AUTO_RECALL_TOP_K,
         MEMORY_AUTO_RECALL_MAX_ITEMS, MEMORY_AUTO_RECALL_MIN_VEC_SIM,
@@ -133,33 +176,46 @@ def _retrieve_memories_for_turn(text: str, user_id: int) -> list[dict]:
     if not MEMORY_AUTO_RECALL or not user_id or not text or not text.strip():
         return []
 
-    # Cooldown check
+    try:
+        queries = _memory_recall_queries(text, user_id)
+    except sqlite3.Error as exc:
+        log.warning("auto-recall continuity unavailable: %s", exc)
+        queries = [text.strip()]
+    query_key = hashlib.sha256("\0".join(queries).encode("utf-8")).hexdigest()
     if MEMORY_AUTO_RECALL_COOLDOWN > 0 and user_id in _user_last_recall:
-        elapsed = time.time() - _user_last_recall[user_id]
-        if elapsed < MEMORY_AUTO_RECALL_COOLDOWN:
+        recalled_at, previous_key = _user_last_recall[user_id]
+        elapsed = time.time() - recalled_at
+        if elapsed < MEMORY_AUTO_RECALL_COOLDOWN and previous_key == query_key:
             log.debug("auto-recall: cooldown skip (%.0fs < %ds)",
                       elapsed, MEMORY_AUTO_RECALL_COOLDOWN)
             return []
 
-    query_emb = None
+    embeddings = [None] * len(queries)
     try:
         from mochi.model_pool import get_pool
-        query_emb = get_pool().embed(text)
+        embeddings = get_pool().embed_batch(queries)
+        if len(embeddings) != len(queries):
+            raise ValueError("auto-recall embedding count mismatch")
     except Exception as exc:
         log.warning(
             "auto-recall embedding failed; using keyword search: %s", exc,
         )
+        embeddings = [None] * len(queries)
 
     try:
-        recalled = recall_memory(
-            user_id, query=text,
-            limit=max(1, MEMORY_AUTO_RECALL_TOP_K),
-            query_embedding=query_emb,
-            bump_access=False,
-        )
+        recalled = []
+        for query, embedding in zip(queries, embeddings):
+            items = recall_memory(
+                user_id, query=query,
+                limit=max(1, MEMORY_AUTO_RECALL_TOP_K),
+                query_embedding=embedding,
+                bump_access=False,
+            )
+            recalled.extend(items)
 
         max_chars = max(80, MEMORY_AUTO_RECALL_MAX_CHARS)
         candidates: list[dict] = []
+        seen_ids: set[int] = set()
         for item in recalled:
             vec_sim = float(item.get("vec_sim") or 0.0)
             match_source = str(item.get("match_source") or "")
@@ -171,10 +227,13 @@ def _retrieve_memories_for_turn(text: str, user_id: int) -> list[dict]:
             )
             if not text_hit and not vector_hit:
                 continue
+            if item["id"] in seen_ids:
+                continue
 
             content = " ".join((item.get("content") or "").split())
             if not content:
                 continue
+            seen_ids.add(item["id"])
             if len(content) > max_chars:
                 content = content[:max_chars - 3].rstrip() + "..."
             raw_score = float(item.get("score") or 0.0)
@@ -205,23 +264,20 @@ def _retrieve_memories_for_turn(text: str, user_id: int) -> list[dict]:
             except Exception:
                 pass  # non-critical, degrade gracefully
 
-        max_total = max(1, MEMORY_AUTO_RECALL_MAX_ITEMS) + 2
+        max_total = max(1, MEMORY_AUTO_RECALL_MAX_ITEMS)
         max_tokens = max(1, MEMORY_AUTO_RECALL_MAX_TOKENS)
         selected: list[dict] = []
         for candidate in candidates:
             proposed = selected + [candidate]
             if estimate_tokens(_format_recalled_memories(proposed)) > max_tokens:
-                break
+                continue
+            candidate["_recall_query_key"] = query_key
             selected = proposed
             if len(selected) >= max_total:
                 break
 
         if not selected:
             return []
-        if len(_user_last_recall) >= _USER_LAST_RECALL_MAX:
-            oldest = min(_user_last_recall, key=_user_last_recall.get)
-            del _user_last_recall[oldest]
-        _user_last_recall[user_id] = time.time()
         log.info(
             "auto-recall: %d memories (top score=%.2f)",
             len(selected),
@@ -1158,16 +1214,7 @@ async def chat(
 
         _log_main_usage(response)
         if recalled_memories and not recall_exposure_recorded:
-            try:
-                mark_memory_items_accessed(
-                    user_id,
-                    [
-                        item["memory_id"] for item in recalled_memories
-                        if "memory_id" in item
-                    ],
-                )
-            except sqlite3.Error as exc:
-                log.warning("Memory reference accounting failed: %s", exc)
+            _record_recalled_memories_exposed(user_id, recalled_memories)
             recall_exposure_recorded = True
         history_response = response
 
@@ -1303,6 +1350,7 @@ async def chat(
 
             budget_error = tool_budget.claim_tool(
                 tc["name"],
+                arguments,
                 total_limit=TOOL_LOOP_TOTAL_TOOL_LIMIT,
                 per_tool_limit=TOOL_LOOP_PER_TOOL_LIMIT,
             )
