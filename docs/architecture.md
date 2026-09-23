@@ -21,24 +21,15 @@ setup, not broad provider or multi-user infrastructure.
   operations. Transports and heartbeat call them only through Main or the skill
   registry.
 - **Personal workspace** (`mochi/personal_workspace.py`) is Main's single
-  document/source authoring surface, exposed by `personal_workspace`.
-  Its two path prefixes delegate to the existing Markdown and extension stores
-  without moving data or exposing a general host filesystem. Browse/edit are
-  shared; execution and live activation remain explicit separate operations.
+  document/source authoring surface, delegating to Markdown and extension stores
+  rather than exposing the host filesystem. Editing, execution and live
+  activation are separate operations chosen by Main.
   The existing `workspace` skill continues to own Diary only.
 - **Personal extensions** (`mochi/extensions/`) own code under the Git-ignored
-  `data/extensions/` directory, outside official source. The default-enabled
-  personal workspace gives Main on-demand inspection, authoring, execution, and
-  live activation tools; Main remains the sole author and judge of its work.
-  Development is visible to Main from startup and needs no separate authorization.
-  The always-loaded Agent document points to the personal workspace.
-  Tool descriptions and the on-demand guide provide the operational details.
-  The persisted development toggle disables source mutation/run/activation,
-  not documents, read-only inspection or installed tools.
-  Activation loads an immutable candidate with its configuration and own data,
-  validates tool ownership, persists current code with one previous version,
-  then swaps the registry. Failure preserves the old registry; trusted candidate
-  code may already have affected data or external services.
+  `data/extensions/` directory, outside official source. The Agent document
+  points Main to the default-enabled workspace; tools and the on-demand guide
+  supply details. Disabling development blocks source mutation, execution and
+  activation, not documents, inspection or installed tools.
 - **Observers** (`mochi/observers/`) are read-only factual producers. Each
   source projects only bounded, provenance-safe unresolved facts; omission on
   a later successful source scan resolves them. Their cached safe views expose
@@ -53,36 +44,24 @@ setup, not broad provider or multi-user infrastructure.
 Dependency direction is transport/heartbeat -> Main -> skills and persistence.
 Skills do not import transports or orchestration.
 
-Personal extensions are trusted in-process Python tools, not a sandbox. Their
-versioned boundary is `mochi.mod_api.v1`: the existing Skill context/result,
-injected configuration, an extension-owned data directory and the import-light
-candidate helper. `SKILL.md` declares `mod_api: 1`; versionless packages and
-legacy imports remain supported without migration. Base preserves this host
-contract across internal refactors, not arbitrary private imports or dependency
-versions. The canonical authoring contract is [extensions.md](extensions.md).
-Shared database, Observer, MCP, prompt and lifecycle hooks are outside this
-interface. Development scripts run bounded
-subprocesses against disposable copies, without a second Main runtime or an
-automatic continuation loop. Main decides how to build, test, and activate;
-there is no required workflow or verification-success gate. Owner management
-through conversation or Admin can inspect and disable failed packages from
-metadata without importing them. Code lives in `draft`, `current`, and `previous`;
-extension-owned `data` survives replacement. Live instances use temporary
-immutable copies, so draft edits or activation cannot change in-flight code.
-Startup loads enabled installed current versions; ordinary rediscovery does not
-import newly restored code. Explicit activation or enable/load can load code
-live. One previous code copy supports manual recovery, not data rollback.
+Personal extensions are trusted in-process Python tools, not a sandbox.
+`mochi.mod_api.v1` exposes the existing Skill context/result, injected
+configuration, extension-owned persistent data and the candidate helper.
+Development scripts use bounded subprocesses and disposable copies, not another
+Main runtime. Activation validates an immutable candidate before replacing the
+live registry; in-flight calls retain their code. Failed activation preserves
+the old registry, not necessarily data or external effects. Main judges the
+work; no verification-success gate or automatic continuation loop does so.
+The [extension guide](extensions.md) owns authoring, compatibility, storage and
+recovery details, including legacy support and unsupported integration hooks.
 
 Personal workspace files remain separate from Core, Memory, KG, Diary, and
 SQLite. Workspace tools are available only to Main tool calls, not Lite,
 Nightly, scripts, or harness jobs. Browse results are current-turn agent-authored
 artifacts, not external truth or automatically recalled context.
-Writes use exact UTF-8 Markdown files, fixed quotas, atomic publication, and one
-hidden previous version for append/edit recovery safety.
 The registry retains complete tool ownership separately from current eligibility;
 changing the development setting can hide execution tools without losing their
-registration. Exact legacy discovery names resolve to the single personal entry,
-not parallel callable interfaces.
+registration.
 
 Main 可通过 resident `look_around` 读取 Observer 已有缓存的安全视图。
 该工具只读，不触发采集、外部请求或 Attention 状态变化；Free Time 默认
@@ -171,13 +150,9 @@ After live extension activation, in-flight calls finish on their existing
 immutable code snapshot. Subsequent provider rounds refresh tools already
 authorized for the turn; newly added names still require `request_tools`.
 Authoring, activation, and use can therefore complete within one conversation
-turn, without a restart or an extra autonomous workflow. The default provider
-round budget is 16; the shared ordinary-tool budget defaults to 24, other tools'
-per-name budget to 3, and request budget to 4. Personal workspace tools use the
-shared total without positive per-name caps, allowing iterative authoring and
-debugging. Explicit call-limit settings are honored rather than silently clamped
-to the defaults; zero still disables ordinary calls. These are resource ceilings,
-not new authorization or continuation steps.
+turn. Shared call budgets bound resource use without prescribing a workflow;
+explicit configured limits remain effective. Defaults belong in configuration
+and the extension guide rather than this architecture overview.
 
 Explicit owner requests to change sleep/wake hours, timezone, or the daily
 Free Time/Attention limit route `manage_agent_settings` into Main's turn.

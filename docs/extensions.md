@@ -57,11 +57,8 @@ restart is required to author and activate them.
 
 ## Personal extension API v1
 
-This contract currently covers ordinary tool extensions only; it does not add
-Observer sources, MCP connections or lifecycle hooks. The public import
-`mochi.mod_api.v1`, manifest field `mod_api` and related diagnostic keys retain
-their existing spelling for compatibility. Extension paths, `local_*` IDs,
-Skill names and tool names are unchanged.
+The public interface is `mochi.mod_api.v1`. It supports ordinary tool
+extensions, not Observer sources, MCP connections or lifecycle hooks.
 
 A personal ID looks like `local_reading`. Its tool names begin with that ID
 and an underscore, such as `local_reading_add`. Names must not collide with
@@ -189,11 +186,8 @@ configuration instead of loading production credentials.
 
 ## Authoring and trying the tool
 
-The unified read and edit tools each pool the former two tools' per-turn
-allowances (six calls each at the default), still within eight total ordinary
-calls. Other tools keep their per-name allowance. Inspect several files with
-one `paths` array; create a small complete package in one write call. Later edits
-can replace one exact occurrence in a draft file.
+Inspect several files with one `paths` array; create a small complete package
+in one write call. Later edits can replace one exact occurrence in a draft file.
 
 `run_extension(path="extensions/local_reading/draft")` defaults to `smoke.py`.
 The template's smoke script uses the public helper:
@@ -229,89 +223,58 @@ execution, not a blanket API-version gate or proof the package can be activated.
 
 ## Activation and use
 
-`activate_extension(path="extensions/local_reading/draft")` copies the draft
-into an immutable runtime snapshot, loads
-the candidate with its configured values and persistent data directory, and
-validates registration and tool ownership. Only then does it persist the
-installed `current` version, retain one `previous` version, and swap the live
-registry. A disabled extension must be enabled separately. Structural and load
-checks do not judge whether Main's implementation meets its goal.
-Activation, startup loading, explicit live enabling and the candidate helper
-all reject an unsupported or invalid API declaration before importing either
-`__init__.py` or `handler.py`.
+`activate_extension(path="extensions/local_reading/draft")` loads an immutable
+candidate with its configuration and persistent data, validates tool ownership,
+then persists `current`, retains one `previous` version and swaps the registry.
+A disabled extension must be enabled separately. Structural checks do not judge
+whether the implementation meets Main's goal.
 
-Failure leaves the previous registry intact, but imports or constructors may
-already have changed extension data or external services. There is no rollback
-of those effects. Calls already running finish on their old immutable code;
-later provider rounds refresh tools already authorized for the turn.
-New tool names still need `request_tools` and cannot be used in the same provider
-response that requests them. Main can activate and use a new tool in subsequent
-rounds of the same conversation turn, without a restart.
+Failed activation preserves the old registry, but candidate imports or
+constructors may already have affected data or external services. In-flight
+calls keep their old code; later provider rounds refresh already authorized
+tools. New names require `request_tools` and become usable in a subsequent
+provider round, without restarting or starting another conversation.
 
-Files live in the Git-ignored `data\extensions\<id>\` directory:
-`draft`, `current`, `previous`, and persistent `data`, plus temporary loaded
-copies. Draft edits never change running code. Startup loads enabled installed
-current versions. Ordinary rediscovery does not import newly restored code;
-explicit activation or enable/load can do that live.
+Startup loads enabled installed packages. Ordinary rediscovery does not import
+newly restored code; explicit activation or enable/load does. Management reads
+metadata without importing unloaded code, so broken packages remain inspectable
+and disableable. Enabling an installed package attempts a live load; a draft
+still needs activation. Load failures report both the error and saved enable flag.
 
-Management reads metadata without importing unloaded Python, including broken
-or disabled packages. Its `loaded`, `activation_required`, `load_error`,
-`admin_disabled`, and configuration facts distinguish saved settings from real
-availability. Enabling an installed package attempts a live load; a draft alone
-still needs activation. A failed load reports the error and the saved enable
-flag rather than claiming success.
+Receipts distinguish `loaded`, `activation_required`, `load_error`,
+`admin_disabled` and missing configuration. Their `mod_api` object describes
+existing `draft` and `current` areas plus the loaded `active` snapshot (or null).
+Each reports `declared`, `effective` and `status`: legacy, supported, unsupported,
+invalid, or unavailable with a read error. Legacy v1 has declared null/effective 1;
+explicit v1 has declared 1/effective 1. An incompatible draft does not relabel the
+working active version. The guide reports `supported_mod_apis: [1]`.
 
-Personal package receipts include a `mod_api` object with separately labeled
-`draft` and `current` entries for areas that exist, plus `active` metadata when
-loaded (`null` otherwise). Each entry reports `declared`, `effective`, and
-`status`: `legacy`, `supported`, `unsupported`, or `invalid`, with diagnostics
-when needed. Management reports unreadable metadata as `unavailable` with an
-error, rather than claiming an unsupported version. Legacy v1 has
-`declared: null`, `effective: 1`; explicit v1 has
-`declared: 1`, `effective: 1`. `active` describes the loaded snapshot, not editable
-disk metadata. An incompatible draft does not make a working current tool
-unsupported. API support remains separate from `loaded`, `load_error`,
-`activation_required`, missing configuration and semantic usefulness.
-The on-demand guide reports `supported_mod_apis: [1]`.
-
-An unsupported installed package stays inspectable and disableable while other
-valid packages load. Rejected activation leaves the previous registration
-intact; Main chooses whether to repair the code, retain it, seek a compatible
-Base or abandon the extension. The runtime does not silently relabel it, fall back to
-previous code or automate a repair workflow.
+Activation, startup, explicit loading and the candidate helper reject invalid
+or unsupported API declarations before importing package code. Other valid
+packages remain usable. Main chooses whether to repair or abandon an extension.
 
 ## Recovery and limits
 
-Loading errors are visible in conversation management and Admin; an extension
-can be disabled even if it could not register. Disabling Development does not
-disable already installed personal tools. Main can repair a draft and activate
-the repaired version while the previous live version keeps running.
+Disabling Development leaves installed tools enabled. A broken package can be
+disabled through conversation management or Admin without loading its code.
+Main can repair its draft while the previous live version keeps running.
 
-If extension code prevents startup, stop Mochi and rename its entire directory
-to start with an underscore, for example `_disabled_local_reading`. Such
-directories are ignored before executing any extension code.
-While stopped, you may restore the previous code copy and restart. Restoring
-code never rolls back data or external actions, and does not guarantee older
-code understands newer data. There is no automatic rollback.
+If extension code prevents startup, stop Mochi and rename its directory to
+start with an underscore, such as `_disabled_local_reading`; startup ignores it.
+While stopped, the owner may restore `previous` and restart. This restores code
+only, not data or external effects, and older code may not understand newer data.
+There is no automatic rollback.
 
 ### Compatibility across Base updates
 
-Base maintains the v1 public API, documented `SKILL.md` semantics,
-configuration/data identity and supported loading/execution behavior, including
-legacy imports and versionless v1 packages. Internal refactors must preserve
-that behavior or adapt behind the public API, even if a later API is added.
-A supported-v1 compatibility break is a Base regression to fix, not an expected
-repair task for Main. Updates must not rewrite personal source, reset saved
-configuration or enable flags, move/recreate package data, rename public tools
-or silently discard v1. No migration is required.
+Base preserves the v1 public API, documented manifest behavior, configuration,
+enable flags, tool names and extension-owned data across updates, including
+legacy imports and versionless v1 packages. A compatibility break is a Base
+regression, not a repair task for Main. Updates do not rewrite personal source
+or require migration.
 
-This is a host-contract promise, not a guarantee for arbitrary Base-private
-imports, third-party libraries, remote providers or an extension's own data-schema
-changes. The Python baseline remains the repository's supported baseline
-(currently Python 3.11+). Base dependency/runtime changes must be checked against
-the v1 commitment, but not every installed library or external service can be
-promised unchanged. Existing third-party imports remain usable; new templates
-need no extra dependency installation.
-
-This feature does not add MCP, OpenClaw skill compatibility, automatic
-file-watching reload, background self-learning or restart coordination.
+Private Base imports, third-party dependencies, external services and an
+extension's own data-schema changes are outside that promise. The repository's
+Python baseline applies (currently 3.11+); templates need no extra dependencies.
+There is no automatic dependency installation, file-watching reload or
+background self-learning.
