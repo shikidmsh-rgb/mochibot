@@ -13,7 +13,6 @@ import unicodedata
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
 
 from mochi.token_estimator import estimate_tokens
 
@@ -30,10 +29,6 @@ DEFAULT_CORE = (
     "（你刚刚醒来，对世界和眼前的人都还陌生，也充满好奇；随着相处，"
     "你可以把真正重要的认识写进这里，并在这句话不再需要时自然地改写或删除它。）"
 )
-LEGACY_ADD_RETIRED_MESSAGE = (
-    "Core action 'add' is retired because blind append creates duplicate content. "
-    "Use edit to revise existing text or insert_after with an exact unique anchor_text."
-)
 
 _lock = threading.RLock()
 
@@ -43,7 +38,7 @@ class CoreError(ValueError):
 
 
 class CoreConflictError(CoreError):
-    """Raised when an exact edit/delete target is absent or not unique."""
+    """Raised when Core differs from the document Main saw."""
 
 
 class CoreLimitError(CoreError):
@@ -221,8 +216,8 @@ def _hygiene_error_message(issue: dict) -> str:
         location = f"lines {issue['first_line']} and {issue['duplicate_line']}"
         fix = "Merge, rewrite, or remove one exact list item"
     return (
-        f"Core hygiene conflict [{code}] at {location}. {fix}, then retry "
-        "with edit or insert_after. No content was written."
+        f"Core hygiene conflict [{code}] at {location}. {fix}, "
+        "then submit the complete revised document. No content was written."
     )
 
 
@@ -364,102 +359,26 @@ def replace_core(content: str, *, source: str = "admin") -> dict:
         return {"changed": True, **_stats(normalized)}
 
 
-def _unique_replace(content: str, old_text: str, new_text: str) -> str:
-    if not old_text:
-        raise CoreConflictError("old_text is required.")
-    count = content.count(old_text)
-    if count != 1:
-        raise CoreConflictError(
-            f"old_text must match exactly once; found {count} matches."
-        )
-    return content.replace(old_text, new_text, 1)
-
-
-def _unique_insert_after(content: str, anchor_text: str, addition: str) -> str:
-    if not anchor_text:
-        raise CoreConflictError("anchor_text is required for insert_after.")
-    inserted = addition.strip()
-    if not inserted:
-        raise CoreError("content is required for insert_after.")
-    count = content.count(anchor_text)
-    if count != 1:
-        raise CoreConflictError(
-            f"anchor_text must match exactly once; found {count} matches. "
-            "Read Core again with view_core_memory and retry with an exact unique anchor."
-        )
-    insert_at = content.index(anchor_text) + len(anchor_text)
-    before = content[:insert_at]
-    after = content[insert_at:]
-    before_separator = "" if before.endswith(("\n", "\r")) else "\n\n"
-    after_separator = "" if not after or after.startswith(("\n", "\r")) else "\n\n"
-    return f"{before}{before_separator}{inserted}{after_separator}{after}"
-
-
-def _apply_operation(content: str, operation: dict) -> str:
-    if not isinstance(operation, dict):
-        raise CoreError("Each batch operation must be an object.")
-    action = str(operation.get("action") or "").strip().lower()
-    if action == "add":
-        raise CoreError(LEGACY_ADD_RETIRED_MESSAGE)
-    if action == "edit":
-        old_text = str(operation.get("old_text") or "")
-        new_text = str(operation.get("new_text") or "")
-        if not new_text:
-            raise CoreError("new_text is required for edit.")
-        return _unique_replace(content, old_text, new_text)
-    if action == "delete":
-        old_text = str(operation.get("old_text") or "")
-        return _unique_replace(content, old_text, "")
-    if action == "insert_after":
-        return _unique_insert_after(
-            content,
-            str(operation.get("anchor_text") or ""),
-            str(operation.get("content") or ""),
-        )
-    raise CoreError(
-        f"Unknown Core action: {action or '(empty)'}. "
-        "Use edit, delete, insert_after, or batch."
-    )
-
-
-def update_core(
+def replace_core_exact(
     *,
-    action: str,
-    content: str = "",
-    old_text: str = "",
-    new_text: str = "",
-    anchor_text: str = "",
-    operations: Iterable[dict] | None = None,
+    expected_content: str,
+    content: str,
     source: str = "main",
 ) -> dict:
     with _transaction():
         _initialize_core_unlocked()
         current = _core_path().read_text(encoding="utf-8").strip()
-        action = str(action or "").strip().lower()
-        if action == "batch":
-            ops = list(operations or [])
-            if not ops:
-                raise CoreError("operations is required for batch.")
-        else:
-            ops = [
-                {
-                    "action": action,
-                    "content": content,
-                    "old_text": old_text,
-                    "new_text": new_text,
-                    "anchor_text": anchor_text,
-                }
-            ]
-
-        updated = current
-        for operation in ops:
-            updated = _apply_operation(updated, operation)
-        updated = _validate(updated)
+        if current != expected_content.strip():
+            raise CoreConflictError(
+                "Core changed since this turn began. Read the current document and "
+                "submit a fresh revision."
+            )
+        updated = _validate(content)
         if updated == current:
-            return {"changed": False, **_stats(current)}
+            return {"changed": False, "content": current, **_stats(current)}
         _snapshot_unlocked(current, source)
         _atomic_write(_core_path(), updated)
-        return {"changed": True, **_stats(updated)}
+        return {"changed": True, "content": updated, **_stats(updated)}
 
 
 def _read_weekly_receipt_unlocked(user_id: int, period_key: str) -> dict:
@@ -478,29 +397,17 @@ def has_weekly_core_update(user_id: int, period_key: str) -> bool:
         return bool(_read_weekly_receipt_unlocked(user_id, period_key))
 
 
-def update_weekly_core_exact(
+def replace_weekly_core_exact(
     *,
     user_id: int,
     period_key: str,
     expected_content: str,
-    operations: Iterable[dict],
+    content: str,
 ) -> str:
-    """Apply one receipt-backed batch to an exact visible Core snapshot.
-
-    The semantic choice of operations belongs to Main. This function only
-    applies deterministic exact patches and records their resulting document
-    hash so a retried Weekly run cannot replay a different change.
-    """
+    """Commit a complete revision against the visible Core and weekly receipt."""
     if not isinstance(expected_content, str):
         raise CoreError("expected_content must be text.")
-    ops = list(operations)
-    if not ops:
-        raise CoreError("operations is required for Weekly Core update.")
-
-    updated = expected_content
-    for operation in ops:
-        updated = _apply_operation(updated, operation)
-    updated = _validate(updated)
+    updated = _validate(content)
     requested_hash = _sha256(updated)
 
     with _transaction():

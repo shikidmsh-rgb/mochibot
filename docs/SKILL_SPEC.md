@@ -204,6 +204,7 @@ class MySkill(Skill):
 | `output` | str | `""` | 返回给用户的文本 |
 | `actions` | list[dict] | `[]` | heartbeat 风格的动作列表（如 `[{"type": "message", "content": "..."}]`），普通 skill 一般不用 |
 | `success` | bool | `True` | 操作是否成功 |
+| `document_snapshot` | str \| None | `None` | 内置 Core/Diary 工具已向 Main 展示的确切文档内容；框架在下一次模型调用前更新并发核对基线，不从回执文案猜测版本 |
 
 ### 可选方法
 

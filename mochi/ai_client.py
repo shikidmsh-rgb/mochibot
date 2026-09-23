@@ -17,7 +17,7 @@ import sqlite3
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from mochi.llm import get_client_for_tier, LLMResponse
 from mochi.prompt_loader import get_prompt, get_system_chat_modules
@@ -233,8 +233,11 @@ def _retrieve_memories_for_turn(text: str, user_id: int) -> list[dict]:
         return []
 
 
+_WEEKDAY_NAMES = ("星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日")
+
+
 def _format_history_timestamp(created_at) -> str:
-    """Format a message timestamp as `[MM-DD HH:MM] ` for history prefix.
+    """Format a message timestamp as `[YYYY-MM-DD HH:MM] ` for history prefix.
 
     Returns empty string on missing/invalid input — caller leaves content as-is.
     """
@@ -248,7 +251,7 @@ def _format_history_timestamp(created_at) -> str:
             dt = dt.replace(tzinfo=tz)
         else:
             dt = dt.astimezone(tz)
-        return f"[{dt.strftime('%m-%d %H:%M')}] "
+        return f"[{dt.strftime('%Y-%m-%d %H:%M')}] "
     except (ValueError, TypeError):
         return ""
 
@@ -256,9 +259,7 @@ def _format_history_timestamp(created_at) -> str:
 def _expand_history(history: list[dict]) -> list[dict]:
     """Convert stored conversation history into ordinary chat messages.
 
-    User and standalone assistant messages get a `[MM-DD HH:MM] ` prefix to
-    anchor conversation gaps and independent deliveries. Ordinary replies are
-    left clean. Stored tool history is intentionally not replayed as provider-
+    Both speakers get an absolute timestamp prefix. Stored tool history is not replayed as provider-
     native tool calls; real executions are kept in the tool execution ledger.
     """
     messages: list[dict] = []
@@ -269,7 +270,7 @@ def _expand_history(history: list[dict]) -> list[dict]:
 
         def _prefixed(text, msg_role):
             if (
-                (msg_role == "user" or msg.get("standalone"))
+                msg_role in {"user", "assistant"}
                 and isinstance(text, str) and text and ts_prefix
             ):
                 return ts_prefix + text
@@ -383,6 +384,7 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
                          recalled_memories: list[dict] | None = None,
                          diary_status: str = "",
                          diary_journal: str = "",
+                         diary_tomorrow: str = "",
                          conv_summary: str = "",
                          recent_operations: str = "",
                          runtime_entry: MainRuntimeEntry | None = None,
@@ -393,7 +395,7 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
     modules = get_system_chat_modules()
     from mochi.config import TZ
     now = datetime.now(TZ)
-    now_str = now.strftime("%Y-%m-%d %H:%M:%S %z")
+    now_str = now.strftime("%Y-%m-%d %H:%M:%S %z") + f" {_WEEKDAY_NAMES[now.weekday()]}"
     policy = policy or context_policy(runtime_entry)
     is_weekly = bool(
         runtime_entry and runtime_entry.kind == "weekly_maintenance"
@@ -494,6 +496,9 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
 
     if recent_operations:
         dynamic_live_context.append(recent_operations)
+
+    if runtime_entry and runtime_entry.kind == "bedtime" and diary_tomorrow:
+        dynamic_live_context.append("## 明日日记草稿\n" + diary_tomorrow)
 
     if recalled_memories:
         dynamic_live_context.append(
@@ -910,17 +915,31 @@ async def chat(
         if prompt_policy.diary_status
         else ""
     )
-    _dj = (
-        _diary.read(section="今日日記")
-        if prompt_policy.diary_journal
-        else ""
+    diary_source_date, diary_today, diary_tomorrow = await asyncio.to_thread(
+        _diary.read_write_snapshot,
     )
+    _dj = diary_today if prompt_policy.diary_journal else ""
+    diary_target_dates = {
+        "today": diary_source_date,
+        "tomorrow": (
+            datetime.fromisoformat(diary_source_date) + timedelta(days=1)
+        ).date().isoformat(),
+    }
+    diary_expected = {
+        diary_source_date: diary_today if prompt_policy.diary_journal else None,
+        diary_target_dates["tomorrow"]: (
+            diary_tomorrow if is_bedtime or not diary_tomorrow else None
+        ),
+    }
+    core_expected = core_memory
+    if weekly_session:
+        weekly_session.expected_core = core_memory
 
     system_prompt = _build_system_prompt(
         user_id, capability_context=capability_context, tool_names=active_tool_names,
         core_memory=core_memory, habits=habits, transport=transport,
         recalled_memories=recalled_memories,
-        diary_status=_ds, diary_journal=_dj,
+        diary_status=_ds, diary_journal=_dj, diary_tomorrow=diary_tomorrow,
         conv_summary=(conv_summary or "") if prompt_policy.conversation_summary else "",
         recent_operations=recent_operations,
         runtime_entry=runtime_entry,
@@ -1101,6 +1120,7 @@ async def chat(
         return "" if reply == "[SKIP]" else reply
 
     for round_num in range(max_tool_rounds):
+        document_updates: dict[str, str] = {}
         availability = availability.refresh_extensions(transport)
         round_availability = availability
         for _attempt in range(2):
@@ -1360,6 +1380,16 @@ async def chat(
                 arguments_json=serialized_arguments(tc["name"], arguments),
             )
             try:
+                dispatch_args = dict(arguments)
+                if tc["name"] == "update_core":
+                    dispatch_args["_expected_content"] = core_expected
+                elif tc["name"] == "write_diary":
+                    target = diary_target_dates[arguments.get("day", "today")]
+                    dispatch_args.update(
+                        _expected_content=diary_expected[target],
+                        _source_date=diary_source_date,
+                        _target_date=target,
+                    )
                 if is_weekly_tool:
                     result = await weekly_session.execute(
                         tc["name"], arguments,
@@ -1367,7 +1397,7 @@ async def chat(
                     result.execution_started = True
                 else:
                     result = await skill_registry.dispatch(
-                        tc["name"], arguments,
+                        tc["name"], dispatch_args,
                         user_id=user_id, channel_id=channel_id,
                         transport=transport,
                         actor="main",
@@ -1416,7 +1446,20 @@ async def chat(
                 "tool_call_id": tc["id"],
                 "content": model_result_for(result),
             })
+            if result.document_snapshot is not None:
+                if tc["name"] in {"update_core", "view_core_memory", "update_weekly_core"}:
+                    document_updates["core"] = result.document_snapshot
+                elif tc["name"] == "write_diary":
+                    target = diary_target_dates[arguments.get("day", "today")]
+                    document_updates[target] = result.document_snapshot
+                elif tc["name"] == "read_diary" and not arguments.get("date"):
+                    document_updates[diary_source_date] = result.document_snapshot
 
+        # Only advance snapshots after their results become visible to Main.
+        core_expected = document_updates.pop("core", core_expected)
+        diary_expected.update(document_updates)
+        if weekly_session:
+            weekly_session.expected_core = core_expected
         availability = next_availability
 
     # If we exhausted tool rounds, return whatever we have

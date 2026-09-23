@@ -69,7 +69,7 @@ def action_for(tool_name: str, args: dict) -> str:
         "delete_meal": "delete",
         "update_core": "update",
         "delete_memory": "delete",
-        "write_diary": "create",
+        "write_diary": "update",
         "toggle_skill": "update",
         "set_skill_config": "update",
     }

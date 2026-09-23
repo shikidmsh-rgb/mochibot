@@ -10,7 +10,7 @@ from mochi.db import (
     list_memory_trash as db_list_trash,
     restore_memory_from_trash as db_restore_trash,
 )
-from mochi.core_store import CoreError, read_core, update_core
+from mochi.core_store import CoreError, read_core, replace_core_exact
 
 log = logging.getLogger(__name__)
 
@@ -48,35 +48,38 @@ class MemorySkill(Skill):
             return SkillResult(output=f"Found {len(items)} memories:\n" + "\n".join(lines))
 
         elif tool == "update_core":
-            action = args.get("action", "")
+            expected_content = args.get("_expected_content")
+            if not isinstance(expected_content, str):
+                return SkillResult(
+                    output="Core update context is unavailable. Try again next turn.",
+                    success=False,
+                )
             try:
-                result = update_core(
-                    action=action,
+                result = replace_core_exact(
+                    expected_content=expected_content,
                     content=args.get("content", ""),
-                    old_text=args.get("old_text", ""),
-                    new_text=args.get("new_text", ""),
-                    anchor_text=args.get("anchor_text", ""),
-                    operations=args.get("operations"),
                     source="main",
                 )
             except CoreError as e:
+                current = read_core()
                 return SkillResult(
                     output=(
-                        f"Core update rejected: {e} "
-                        "Re-read the current document with view_core_memory, then use "
-                        "edit or insert_after with exact unique text."
+                        f"Core update rejected: {e}\n\n"
+                        f"Current Core:\n{current}"
                     ),
                     success=False,
+                    document_snapshot=current,
                 )
             receipt = (
                 f"Core {'updated' if result['changed'] else 'unchanged'} "
                 f"({result['tokens']}/{result['max_tokens']} estimated tokens)."
             )
             return SkillResult(
-                output=receipt,
+                output=f"{receipt}\n\nCurrent Core:\n{result['content']}",
                 summary=receipt,
                 entity_refs=["core"],
                 state_changed=result["changed"],
+                document_snapshot=result["content"],
             )
 
         elif tool == "list_memories":
@@ -135,8 +138,8 @@ class MemorySkill(Skill):
         elif tool == "view_core_memory":
             core = read_core()
             if not core:
-                return SkillResult(output="Core is empty.")
-            return SkillResult(output=f"Core:\n{core}")
+                return SkillResult(output="Core is empty.", document_snapshot=core)
+            return SkillResult(output=f"Core:\n{core}", document_snapshot=core)
 
         elif tool == "memory_trash_bin":
             action = args.get("action", "list")

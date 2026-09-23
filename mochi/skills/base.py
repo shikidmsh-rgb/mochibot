@@ -91,6 +91,7 @@ class SkillResult:
     - execution_started: whether the skill handler was entered
     - state_change_unknown: an exception may have happened after a side effect
     - content_source: optional provenance for content returned to the model
+    - document_snapshot: exact Core/Diary content exposed by this result
     """
     output: str = ""
     actions: list[dict] = field(default_factory=list)
@@ -103,6 +104,7 @@ class SkillResult:
     execution_started: bool = False
     state_change_unknown: bool = False
     content_source: str = ""
+    document_snapshot: str | None = None
 
 
 @dataclass

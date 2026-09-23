@@ -12,11 +12,12 @@ locked: true
 ## Tools
 
 ### write_diary (resident)
-日记是你的今日小本本，记录用户或者你的想法、经历、重要事项等。判断标准是：我应该今天一天都知道这事吗？我应该后续翻看知道这件事吗？
+自由修订今天或明天的日记正文；日期、来源和状态区由系统管理；正文结构与内容由 Main 决定。
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| entry | string | yes | 日记内容 |
+| content | string | yes | 修订后的完整“今日日記”正文，不包含当天日期页头 |
+| day | string (enum: today, tomorrow) | no | 写今天或明天，默认 today |
 
 ### read_diary (on_demand)
 读取今天或指定日期的日记归档，为回顾当天经历提供原始记录。
@@ -27,5 +28,5 @@ locked: true
 
 ## Capability Context
 
-- `write_diary` 追加今日日记；habit、todo 和 meal 的结构化状态由各自技能维护，重复写入日记会留下两份事实。
+- `write_diary` 修订今天或明天的完整日记正文；habit、todo 和 meal 的结构化状态由各自技能维护，重复写入日记会留下两份事实。
 - `read_diary` 不带日期时读取今天，带 `YYYY-MM-DD` 时读取对应归档。

@@ -36,16 +36,23 @@ def test_missing_core_starts_with_open_seed(monkeypatch):
     assert "migration" not in response.json()
 
 
-def test_exact_patch_conflict_and_internal_snapshot():
+def test_complete_revision_conflict_and_internal_snapshot(monkeypatch):
     core_store.replace_core("alpha\n\nbeta")
     with pytest.raises(core_store.CoreConflictError):
-        core_store.update_core(
-            action="edit", old_text="missing", new_text="changed",
+        core_store.replace_core_exact(
+            expected_content="stale", content="changed",
         )
     assert core_store.read_core() == "alpha\n\nbeta"
 
-    core_store.update_core(
-        action="edit", old_text="alpha", new_text="gamma",
+    core_store.replace_core_exact(
+        expected_content="alpha\n\nbeta", content="gamma\n\nbeta",
     )
     assert core_store.read_core() == "gamma\n\nbeta"
     assert list((core_store.DATA_DIR / "core_history").glob("*.md"))
+    import mochi.config as config
+    monkeypatch.setattr(config, "CORE_MAX_TOKENS", 10)
+    with pytest.raises(core_store.CoreLimitError):
+        core_store.replace_core_exact(
+            expected_content="gamma\n\nbeta", content="long " * 100,
+        )
+    assert core_store.read_core() == "gamma\n\nbeta"

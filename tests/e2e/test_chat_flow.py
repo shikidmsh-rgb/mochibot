@@ -21,6 +21,27 @@ def _msg(text: str, user_id: int = 1, channel_id: int = 100) -> IncomingMessage:
     )
 
 
+def test_history_dates_both_speakers_without_changing_stored_content(monkeypatch):
+    from datetime import timezone
+    import mochi.config as config
+    from mochi.ai_client import _expand_history, _build_system_prompt, _WEEKDAY_NAMES
+
+    monkeypatch.setattr(config, "TZ", timezone.utc)
+    history = [
+        {"role": "user", "content": "Hello", "created_at": "2025-01-02T03:04:00+00:00"},
+        {
+            "role": "assistant", "content": "Hi", "created_at": "2025-01-02T03:05:00+00:00",
+            "reasoning_content": "private",
+        },
+    ]
+    messages = _expand_history(history)
+    assert messages[0]["content"] == "[2025-01-02 03:04] Hello"
+    assert messages[1]["content"] == "[2025-01-02 03:05] Hi"
+    assert messages[1]["reasoning_content"] == "private"
+    assert history[1]["content"] == "Hi"
+    assert any(name in _build_system_prompt(1) for name in _WEEKDAY_NAMES)
+
+
 class TestSimpleReply:
     """LLM returns a plain text reply — no tool calls."""
 
@@ -303,9 +324,7 @@ class TestSimpleReply:
         replace_core("Core anchor")
         tool_response = make_response(tool_calls=[
                 make_tool_call("update_core", {
-                    "action": "insert_after",
-                    "anchor_text": "Core anchor",
-                    "content": "User likes jasmine tea",
+                    "content": "Core anchor\n\nUser likes jasmine tea",
                 }),
             ])
         tool_response.reasoning_content = "I should preserve this exact thought."
@@ -347,8 +366,6 @@ class TestSimpleReply:
             ),
             (
                 make_tool_call("update_core", {
-                    "action": "insert_after",
-                    "anchor_text": "Core anchor",
                     "content": "must not run",
                 }, call_id="incomplete"),
                 False,
@@ -361,14 +378,15 @@ class TestSimpleReply:
             ),
             (
                 make_tool_call(
-                    "update_core", {"action": 1}, call_id="type",
+                    "update_core", {"content": 1}, call_id="type",
                 ),
                 True,
                 "invalid_tool_arguments",
             ),
             (
                 make_tool_call(
-                    "update_core", {"action": "invent"}, call_id="enum",
+                    "write_diary", {"content": "must not run", "day": "invent"},
+                    call_id="enum",
                 ),
                 True,
                 "invalid_tool_arguments",
@@ -403,6 +421,30 @@ class TestSimpleReply:
                 for message in assistant_messages
             )
             assert read_core() == unchanged_core
+
+    @pytest.mark.asyncio
+    async def test_complete_document_snapshots_advance_between_rounds(self, mock_llm_factory):
+        from mochi.core_store import replace_core, read_core
+        from mochi.diary import diary
+        replace_core("Original")
+        mock = mock_llm_factory([
+            make_response(tool_calls=[
+                make_tool_call("update_core", {"content": "First"}),
+                make_tool_call("write_diary", {"content": "First journal"}),
+            ]),
+            make_response(tool_calls=[
+                make_tool_call("update_core", {"content": "Second"}),
+                make_tool_call("write_diary", {"content": "Second journal"}),
+            ]),
+            make_response("Done"),
+        ])
+        await chat(_msg("Revise these documents"))
+        assert read_core() == "Second"
+        assert diary.read("今日日記") == "Second journal"
+        for call in mock.call_log:
+            for message in call["messages"]:
+                if message.get("tool_calls"):
+                    assert "_expected_content" not in json.dumps(message["tool_calls"])
 
 class TestToolCallReminder:
     """LLM calls manage_reminder tool."""

@@ -15,7 +15,8 @@ from mochi.db import (
 from mochi.core_store import (
     CoreError,
     has_weekly_core_update,
-    update_weekly_core_exact,
+    read_core,
+    replace_weekly_core_exact,
 )
 from mochi.diary import DiaryArchiveWindow, read_diary_archive_window
 from mochi.memory_curation import (
@@ -44,22 +45,18 @@ _CORE_DEFINITION = {
     "function": {
         "name": CORE_TOOL,
         "description": (
-            "Apply exact edit/delete/insert_after patches to the free-text Core "
-            "only when the complete visible snapshot is still current. Preserve "
-            "the user's document organization. This can succeed once per week."
+            "根据当前看到的完整 Core，提交整理后的完整文档。保留仍然重要的"
+            "认识，合并重复或过时表达；每周最多成功一次。"
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "expected_content": {"type": "string"},
-                "operations": {
-                    "type": "array",
-                    "minItems": 1,
-                    "maxItems": 20,
-                    "items": {"type": "object"},
+                "content": {
+                    "type": "string",
+                    "description": "整理后的完整 Core 文本。",
                 },
             },
-            "required": ["expected_content", "operations"],
+            "required": ["content"],
             "additionalProperties": False,
         },
     },
@@ -323,6 +320,7 @@ def build_weekly_maintenance_context(
 class WeeklyMaintenanceSession:
     user_id: int
     context: WeeklyMaintenanceContext
+    expected_core: str = ""
     core_succeeded: bool = False
     curation_succeeded: bool = False
     relationships_succeeded: bool = False
@@ -357,9 +355,9 @@ class WeeklyMaintenanceSession:
         return SkillResult(output=f"Unknown Weekly tool: {tool_name}", success=False)
 
     async def _update_core(self, args: dict) -> SkillResult:
-        if set(args) != {"expected_content", "operations"}:
+        if set(args) != {"content"}:
             return SkillResult(
-                output="Weekly Core update accepts an exact snapshot and patch operations.",
+                output="Weekly Core update accepts the revised complete document.",
                 success=False,
             )
         if self.core_succeeded:
@@ -369,11 +367,11 @@ class WeeklyMaintenanceSession:
             )
         try:
             outcome = await asyncio.to_thread(
-                update_weekly_core_exact,
+                replace_weekly_core_exact,
                 user_id=self.user_id,
                 period_key=self.context.period_key,
-                expected_content=args["expected_content"],
-                operations=args["operations"],
+                expected_content=self.expected_core,
+                content=args["content"],
             )
         except CoreError as exc:
             return SkillResult(
@@ -381,19 +379,24 @@ class WeeklyMaintenanceSession:
                 success=False,
             )
         if outcome == "conflict":
+            current = await asyncio.to_thread(read_core)
             return SkillResult(
-                output="Weekly Core update rejected: Core changed after packaging.",
+                output=(
+                    "Weekly Core update rejected: Core changed after packaging.\n\n"
+                    f"Current Core:\n{current}"
+                ),
                 success=False,
+                document_snapshot=current,
             )
         self.core_succeeded = True
         if outcome == "replayed":
             return SkillResult(
-                output="Weekly Core patch already committed for this week.",
-                summary="Weekly Core patch replayed safely.",
+                output="Weekly Core revision already committed for this week.",
+                summary="Weekly Core revision replayed safely.",
             )
         return SkillResult(
-            output="Weekly Core patch committed with a snapshot.",
-            summary="Weekly Core patch committed.",
+            output="Weekly Core revision committed with a snapshot.",
+            summary="Weekly Core revision committed.",
             state_changed=True,
         )
 

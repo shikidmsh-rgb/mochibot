@@ -6,6 +6,7 @@ and file I/O. No skill-layer logic here — just structured file operations.
 """
 
 import logging
+import json
 import os
 import re
 import tempfile
@@ -34,6 +35,17 @@ class DiaryArchiveWindow:
     dates: tuple[str, ...]
     total_chars: int
     truncated: bool
+
+
+class DiaryConflictError(ValueError):
+    """The journal changed after Main received its visible snapshot."""
+
+
+@dataclass(frozen=True)
+class TomorrowDiaryDraft:
+    source_date: str
+    target_date: str
+    content: str
 
 
 def _atomic_replace_text(path: Path, content: str) -> None:
@@ -151,9 +163,14 @@ class DailyFile:
                 ):
                     content = self._add_section_headers(content)
                     _atomic_replace_text(self.path, content + "\n")
-                return content
+                return self._reconcile_tomorrow_draft_unlocked(today, content)
 
-        header = self._header(today)
+        content = self._empty_document(today)
+        _atomic_replace_text(self.path, content + "\n")
+        return self._reconcile_tomorrow_draft_unlocked(today, content)
+
+    def _empty_document(self, date_str: str) -> str:
+        header = self._header(date_str)
         if self.sections:
             parts = [header]
             for sec in self.sections:
@@ -161,7 +178,6 @@ class DailyFile:
             content = "\n".join(parts)
         else:
             content = header
-        _atomic_replace_text(self.path, content + "\n")
         return content
 
     def _add_section_headers(self, content: str) -> str:
@@ -205,12 +221,41 @@ class DailyFile:
             return self._section_max[section]
         return self.max_lines
 
+    def _section_span(self, content: str, section: str) -> tuple[int, int]:
+        heading = re.search(
+            rf"(?m)^## {re.escape(section)}[ \t]*(?:\r?\n|\Z)", content,
+        )
+        if heading is None:
+            raise ValueError(f"unknown section '{section}'")
+        start = heading.end()
+        reserved = "|".join(re.escape(item) for item in self.sections)
+        following = re.search(
+            rf"(?m)^## (?:{reserved})[ \t]*(?:\r?\n|\Z)", content[start:],
+        )
+        return start, start + following.start() if following else len(content)
+
+    def _section_content(self, content: str, section: str) -> str:
+        start, end = self._section_span(content, section)
+        return content[start:end].strip()
+
+    def _replace_section_content(self, content: str, section: str, body: str) -> str:
+        start, end = self._section_span(content, section)
+        before = content[:start].rstrip() + "\n"
+        after = content[end:].lstrip("\r\n")
+        normalized = body.strip()
+        replacement = before + (normalized + "\n" if normalized else "")
+        if after:
+            replacement += "\n" + after
+        return replacement.rstrip()
+
     # -- read --
 
     def read(self, section: str | None = None) -> str:
         """Read today's entries. section=None returns all entries (no header)."""
         with self._lock:
             content = self._ensure_today()
+        if self.sections and section:
+            return self._section_content(content, section)
         entries = self._get_section_lines(content, section)
         return "\n".join(entries)
 
@@ -227,8 +272,6 @@ class DailyFile:
         entry = entry.strip()
         if not entry:
             return "Error: entry is empty."
-        if len(entry) > 100:
-            entry = entry[:97] + "..."
 
         line = _format_line(entry, source)
 
@@ -268,8 +311,6 @@ class DailyFile:
         entry = entry.strip()
         if not entry:
             return "Error: entry is empty."
-        if len(entry) > 100:
-            entry = entry[:97] + "..."
 
         new_line = _format_line(entry, source)
 
@@ -359,12 +400,148 @@ class DailyFile:
         if not self.sections or section is None:
             header_line = content.strip().split("\n")[0]
             all_lines = [header_line] + entry_lines
-            self.path.write_text("\n".join(all_lines) + "\n", encoding="utf-8")
+            _atomic_replace_text(self.path, "\n".join(all_lines) + "\n")
         else:
-            parsed = self._parse_sections(content)
-            parsed[section] = entry_lines
-            rebuilt = self._rebuild_from_sections(parsed)
-            self.path.write_text(rebuilt + "\n", encoding="utf-8")
+            rebuilt = self._replace_section_content(
+                content, section, "\n".join(entry_lines),
+            )
+            _atomic_replace_text(self.path, rebuilt + "\n")
+
+    def replace_section_exact(
+        self, section: str, *, expected_content: str, content: str,
+        target_date: str,
+    ) -> dict:
+        with self._lock:
+            document = self._ensure_today()
+            if self._header_date(document) != target_date:
+                raise DiaryConflictError(
+                    "The logical day changed since this turn began."
+                )
+            current = self._section_content(document, section)
+            if current != expected_content.strip():
+                raise DiaryConflictError(
+                    "Today's journal changed since this turn began."
+                )
+            normalized = content.strip()
+            changed = normalized != current
+            if changed:
+                updated = self._replace_section_content(document, section, normalized)
+                _atomic_replace_text(self.path, updated + "\n")
+            return {"changed": changed, "chars": len(normalized), "content": normalized}
+
+    @property
+    def tomorrow_draft_path(self) -> Path:
+        return self.path.parent / "diary_tomorrow.json"
+
+    def _read_tomorrow_draft_unlocked(self) -> TomorrowDiaryDraft | None:
+        if not self.tomorrow_draft_path.exists():
+            return None
+        try:
+            payload = json.loads(self.tomorrow_draft_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError("Tomorrow Diary draft is malformed") from exc
+        if not isinstance(payload, dict) or set(payload) != {
+            "source_date", "target_date", "content",
+        }:
+            raise ValueError("Tomorrow Diary draft has invalid fields")
+        if not all(isinstance(value, str) for value in payload.values()):
+            raise ValueError("Tomorrow Diary draft has invalid values")
+        source = date.fromisoformat(payload["source_date"])
+        target = date.fromisoformat(payload["target_date"])
+        if target != source + timedelta(days=1):
+            raise ValueError("Tomorrow Diary target must follow its source date")
+        return TomorrowDiaryDraft(
+            source_date=payload["source_date"],
+            target_date=payload["target_date"],
+            content=payload["content"].strip(),
+        )
+
+    def read_write_snapshot(self) -> tuple[str, str, str]:
+        with self._lock:
+            document = self._ensure_today()
+            source = self._header_date(document)
+            target = (date.fromisoformat(source) + timedelta(days=1)).isoformat()
+            draft = self._read_tomorrow_draft_unlocked()
+            tomorrow = draft.content if draft and draft.target_date == target else ""
+            return source, self._section_content(document, "今日日記"), tomorrow
+
+    def read_tomorrow_draft(self, target_date: str) -> str:
+        with self._lock:
+            draft = self._read_tomorrow_draft_unlocked()
+            return draft.content if draft and draft.target_date == target_date else ""
+
+    def replace_tomorrow_exact(
+        self, *, source_date: str, target_date: str,
+        expected_content: str, content: str,
+    ) -> dict:
+        source = date.fromisoformat(source_date)
+        target = date.fromisoformat(target_date)
+        if target != source + timedelta(days=1):
+            raise ValueError("Tomorrow Diary target must be the next logical day")
+        with self._lock:
+            document = self._ensure_today()
+            if self._header_date(document) != source_date:
+                raise DiaryConflictError(
+                    "The logical day changed since this turn began."
+                )
+            draft = self._read_tomorrow_draft_unlocked()
+            if draft is not None and draft.target_date != target_date:
+                raise DiaryConflictError("Another Tomorrow Diary target is already staged.")
+            current = draft.content if draft else ""
+            if current != expected_content.strip():
+                raise DiaryConflictError(
+                    "Tomorrow's journal changed since this turn began."
+                )
+            normalized = content.strip()
+            changed = current != normalized
+            if changed:
+                if normalized:
+                    _atomic_replace_text(self.tomorrow_draft_path, json.dumps({
+                        "source_date": source_date,
+                        "target_date": target_date,
+                        "content": normalized,
+                    }, ensure_ascii=False) + "\n")
+                else:
+                    self.tomorrow_draft_path.unlink(missing_ok=True)
+            return {"changed": changed, "chars": len(normalized), "content": normalized}
+
+    def _archive_missed_draft_unlocked(self, draft: TomorrowDiaryDraft) -> None:
+        archive_path = (
+            self.path.parent / f"{self.label.lower()}_archive"
+            / f"{draft.target_date[:7]}.md"
+        )
+        archived = archive_path.read_text(encoding="utf-8") if archive_path.exists() else ""
+        existing = dict(self._archive_blocks(archived)).get(draft.target_date)
+        if existing is None:
+            document = self._replace_section_content(
+                self._empty_document(draft.target_date), "今日日記", draft.content,
+            )
+            _atomic_replace_text(archive_path, f"{archived.rstrip()}\n\n{document}\n\n".lstrip())
+            return
+        current = self._section_content(existing, "今日日記")
+        if draft.content not in current:
+            updated = self._replace_section_content(
+                existing, "今日日記",
+                "\n\n".join(part for part in (current, draft.content) if part),
+            )
+            _atomic_replace_text(archive_path, archived.replace(existing, updated, 1))
+
+    def _reconcile_tomorrow_draft_unlocked(self, today: str, document: str) -> str:
+        draft = self._read_tomorrow_draft_unlocked()
+        if draft is None or draft.target_date > today:
+            return document
+        if draft.target_date < today:
+            self._archive_missed_draft_unlocked(draft)
+        else:
+            current = self._section_content(document, "今日日記")
+            if draft.content not in current:
+                document = self._replace_section_content(
+                    document, "今日日記",
+                    "\n\n".join(part for part in (draft.content, current) if part),
+                )
+                _atomic_replace_text(self.path, document + "\n")
+        self.tomorrow_draft_path.unlink(missing_ok=True)
+        return document
 
     # -- archive --
 

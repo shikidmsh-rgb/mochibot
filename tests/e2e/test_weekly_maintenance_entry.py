@@ -58,12 +58,7 @@ async def test_weekly_main_updates_core_without_chat_history(
             make_tool_call(
                 "update_weekly_core",
                 {
-                    "expected_content": old_core,
-                    "operations": [{
-                        "action": "insert_after",
-                        "anchor_text": "- Natural companionship",
-                        "content": "- User started learning Japanese",
-                    }],
+                    "content": old_core + "\n- User started learning Japanese",
                 },
             ),
         ]),

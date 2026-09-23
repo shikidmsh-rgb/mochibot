@@ -79,6 +79,12 @@ output contracts.
 Core has one source, `data/core.md`. A missing file starts with a short,
 open-ended seed; an existing file is preserved. Startup never imports identity
 templates or a database Core. Ordinary document edits retain their snapshots.
+Main and Weekly submit complete Core revisions. The runtime retains the exact
+visible document for concurrency checks rather than asking Main to reproduce
+patch anchors or old content. Diary uses the same visible-snapshot boundary for
+complete journal bodies; deterministic status updates preserve the journal's
+formatting. Next-day drafts belong to their logical date and enter that day's
+journal or archive without replacing existing content.
 
 ## Main conversation flow
 
@@ -202,7 +208,7 @@ After Monday Nightly succeeds, heartbeat claims the ISO week and creates
 same Main prompt and tool loop, but receives an entry-scoped surface rather than
 ordinary chat tools:
 
-- an exact receipt-backed patch operation for the free-text Core, with snapshots;
+- a receipt-backed complete revision of the visible free-text Core, with snapshots;
 - one atomic curation batch over only the rendered Memory Items and same-user
   evidence messages;
 - one atomic relationship curation batch over the active user-life graph.
@@ -218,7 +224,7 @@ only from an exact visible Memory Item snapshot backed by user-message evidence;
 Core is useful context but is not evidence. Archives use exact active-triple
 snapshots, and the whole relationship batch commits or rolls back together.
 Weekly's final model text is discarded and no synthetic chat history is stored.
-Successful Core patches record a content-hash ISO-week receipt in the canonical
+Successful Core revisions record a content-hash ISO-week receipt in the canonical
 Core store, so a later failure can retry curation without offering the Core
 mutation again or retaining an extra copy of Core.
 

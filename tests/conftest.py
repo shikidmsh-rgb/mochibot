@@ -18,6 +18,12 @@ UTC = timezone.utc
 _skills_discovered = False
 
 
+@pytest.fixture(autouse=True)
+def isolated_diary(tmp_path, monkeypatch):
+    from mochi.diary import diary
+    monkeypatch.setattr(diary, "path", tmp_path / "diary.md")
+
+
 @pytest.fixture
 def extension_state(tmp_path, monkeypatch):
     from mochi.extensions import store
