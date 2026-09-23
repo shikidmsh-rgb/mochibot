@@ -227,7 +227,6 @@ def copy_package(source: Path, destination: Path) -> list[str]:
                 continue
             target = _file_path(destination, relative)
             _atomic_write(target, _read_bytes(_file_path(source, relative)))
-        inspect_package(destination)
         return [entry["path"] for entry in inspect_package(destination)]
 
 
@@ -513,7 +512,6 @@ def publish(extension_id: str, source: Path) -> dict:
         current_moved = False
         published = False
         try:
-            validate_package(extension_id, source)
             copy_package(source, stage)
             parsed = validate_package(extension_id, stage)
             current = _area(extension_id, "current", required=False)
