@@ -18,11 +18,9 @@ import json
 import logging
 import os
 from copy import deepcopy
-from datetime import datetime
 from pathlib import Path
 from typing import Sequence
 
-from mochi.config import TZ
 from mochi.observers.base import (
     CachedObserverView,
     Observer,
@@ -184,44 +182,6 @@ async def collect_all() -> dict[str, dict]:
             results[name] = data
 
     return results
-
-
-async def collect_attention_facts() -> bool:
-    """Refresh canonical bounded facts for sources that are actually due."""
-    from mochi.db import get_disabled_skills
-    from mochi.heartbeat_runtime import sync_attention_facts
-
-    disabled_skills = get_disabled_skills()
-    now = datetime.now(TZ)
-    changed = False
-    for name, obs in _observers.items():
-        if not obs.meta.enabled or obs._consecutive_errors >= 5:
-            continue
-        if obs.meta.skill_name and obs.meta.skill_name in disabled_skills:
-            continue
-        if not obs.should_collect(now):
-            continue
-        previous = dict(obs._last_data)
-        before_errors = obs._consecutive_errors
-        data = await obs.safe_observe()
-        if obs._consecutive_errors > before_errors:
-            continue
-        projected = obs.attention_facts(data)
-        freshness = max(
-            [fact.freshness_seconds for fact in projected]
-            or [obs.effective_interval * 180],
-        )
-        sync_attention_facts(
-            name,
-            [
-                {"stable_key": fact.stable_key, "facts": fact.facts}
-                for fact in projected
-            ],
-            observed_at=now,
-            freshness_seconds=freshness,
-        )
-        changed = obs.has_delta(previous, data) or changed
-    return changed
 
 
 def get_observer(name: str) -> Observer | None:

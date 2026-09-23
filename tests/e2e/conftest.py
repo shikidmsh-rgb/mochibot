@@ -41,13 +41,8 @@ def mock_config(monkeypatch):
     monkeypatch.setattr(cfg, "TOOL_LOOP_MAX_ROUNDS", 5)
     monkeypatch.setattr(cfg, "AI_CHAT_MAX_COMPLETION_TOKENS", 1024)
     monkeypatch.setattr(cfg, "TIMEZONE_OFFSET_HOURS", 0)
-    monkeypatch.setattr(cfg, "HEARTBEAT_INTERVAL_MINUTES", 20)
     monkeypatch.setattr(cfg, "MAX_DAILY_PROACTIVE", 10)
-    monkeypatch.setattr(cfg, "PROACTIVE_COOLDOWN_SECONDS", 0)
-    monkeypatch.setattr(cfg, "ATTENTION_INTERVAL_MINUTES", 60)
     monkeypatch.setattr(cfg, "FREE_TIME_ENABLED", True)
-    monkeypatch.setattr(cfg, "FREE_TIME_MIN_MINUTES", 90)
-    monkeypatch.setattr(cfg, "FREE_TIME_MAX_MINUTES", 240)
     monkeypatch.setattr(cfg, "BEDTIME_ENTRY_ENABLED", True)
     monkeypatch.setattr(cfg, "BEDTIME_ENTRY_TIMEOUT_S", 60)
     monkeypatch.setattr(cfg, "WEEKLY_MAINTENANCE_ENABLED", True)
@@ -119,6 +114,8 @@ def reset_heartbeat_state(monkeypatch):
     monkeypatch.setattr(hb, "_wake_reason", None)
     monkeypatch.setattr(hb, "_last_sleep_at", None)
     monkeypatch.setattr(hb, "_silent_pause", False)
+    monkeypatch.setattr(hb, "_active_chat_tokens", set())
+    monkeypatch.setattr(hb, "_chat_activity_generation", 0)
 
     import mochi.reminder_timer as timer
     monkeypatch.setattr(timer, "_send_callback", None)

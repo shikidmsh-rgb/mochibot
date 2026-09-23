@@ -554,8 +554,8 @@ async function checkSystemUpdate(btn) {
       return;
     }
     if (!r.available) {
-      container.innerHTML = `<div style="font-size:12px;color:var(--success);display:flex;align-items:center;gap:6px">${statusIcon('ok')} 已是最新版本 (${esc(r.current_hash)})</div>`;
-      showToast('已是最新版本');
+      container.innerHTML = `<div style="font-size:12px;color:var(--success);display:flex;align-items:center;gap:6px">${statusIcon('ok')} 没有更新的官方正式版（当前 v${esc(r.current_version)}）</div>`;
+      showToast('没有更新的官方正式版');
       return;
     }
     let h = `<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:12px;margin-top:8px">`;
@@ -564,11 +564,11 @@ async function checkSystemUpdate(btn) {
     h += `<span class="badge badge-info">v${esc(r.current_version)}</span>`;
     h += `<span style="color:var(--text-soft)">→</span>`;
     h += `<span class="badge badge-ok">v${esc(r.remote_version)}</span>`;
-    h += `<span style="font-size:11px;color:var(--text-soft)">(${r.commits_behind} 个提交)</span>`;
+    h += `<span style="font-size:11px;color:var(--text-soft)">官方正式版 ${esc(r.release_tag)}</span>`;
     h += `</div>`;
-    if (r.changelog_diff) {
-      h += `<details style="margin-bottom:10px"><summary style="cursor:pointer;font-size:12px;color:var(--text-soft)">查看更新日志</summary>`;
-      h += `<div class="bot-log" style="max-height:180px;overflow:auto;margin-top:6px;font-size:11px;white-space:pre-wrap">${esc(r.changelog_diff)}</div>`;
+    if (r.release_notes) {
+      h += `<details style="margin-bottom:10px"><summary style="cursor:pointer;font-size:12px;color:var(--text-soft)">查看更新说明摘要</summary>`;
+      h += `<div class="bot-log" style="max-height:180px;overflow:auto;margin-top:6px;font-size:11px;white-space:pre-wrap">${esc(r.release_notes)}</div>`;
       h += `</details>`;
     }
     h += `<button class="btn btn-primary btn-sm" onclick="applySystemUpdate(this)">更新并重启</button>`;
@@ -599,8 +599,8 @@ async function checkSystemUpdate(btn) {
 async function applySystemUpdate(btn) {
   btn.disabled = true;
   let dots = 0;
-  btn.textContent = '更新中...';
-  const anim = setInterval(() => { dots = (dots + 1) % 3; btn.textContent = '更新中' + '.'.repeat(dots + 1); }, 400);
+  btn.textContent = '准备中...';
+  const anim = setInterval(() => { dots = (dots + 1) % 3; btn.textContent = '准备中' + '.'.repeat(dots + 1); }, 400);
   const container = document.getElementById('update-status');
   try {
     const r = await api('POST', '/system/update-apply');
@@ -617,28 +617,15 @@ async function applySystemUpdate(btn) {
       return;
     }
     let h = `<div style="font-size:13px;color:var(--success);display:flex;align-items:center;gap:6px;margin-top:8px">${statusIcon('ok')} ${esc(r.message)}</div>`;
-    h += `<div style="font-size:11px;color:var(--text-soft);margin-top:4px">新版本：v${esc(r.new_version)}</div>`;
-    if (r.restarting) {
-      h += `<div id="restart-countdown" style="margin-top:10px;font-size:12px;color:var(--text-soft)">3 秒后自动重启…</div>`;
+    if (r.prepared) {
+      h += `<div style="font-size:11px;color:var(--text-soft);margin-top:4px">目标版本：${esc(r.release_tag)}</div>`;
+      h += `<div id="restart-countdown" style="margin-top:10px;font-size:12px;color:var(--text-soft)">正在交接安装；重启后刷新页面查看实际版本。</div>`;
       container.innerHTML = h;
-      showToast('✅ 更新完成，正在重启');
-      let n = 3;
-      const tick = setInterval(() => {
-        n -= 1;
-        const el = document.getElementById('restart-countdown');
-        if (el) el.textContent = n > 0 ? `${n} 秒后自动重启…` : '正在重启，页面将自动刷新…';
-        if (n <= 0) {
-          clearInterval(tick);
-          // Wait for the server to actually exit, then poll until it's back.
-          setTimeout(() => waitForServerBack(true), 1500);
-        }
-      }, 1000);
+      showToast('更新已准备，尚未安装完成');
+      waitForServerBack(true);
     } else {
-      h += `<div style="margin-top:10px;display:flex;gap:8px">`;
-      h += `<button class="btn btn-primary btn-sm" onclick="restartAfterUpdate()">重启 Bot + Admin</button>`;
-      h += `</div>`;
       container.innerHTML = h;
-      showToast('✅ 更新完成，请重启生效');
+      showToast(r.message);
     }
   } catch(e) {
     container.innerHTML = `<div style="font-size:12px;color:var(--danger);margin-top:8px">更新失败：${esc(e.message)}</div>`;
@@ -667,18 +654,6 @@ async function waitForServerBack(waitForShutdown) {
   // Give up gracefully — user can refresh manually.
   const el = document.getElementById('restart-countdown');
   if (el) el.textContent = '重启耗时较长，请手动刷新页面。';
-}
-
-async function restartAfterUpdate() {
-  try {
-    await api('POST', '/admin/restart');
-    showToast('正在重启...');
-    document.getElementById('update-status').innerHTML = '<div style="font-size:12px;color:var(--text-soft);margin-top:8px">正在重启，页面将在几秒后自动刷新...</div>';
-    waitForServerBack(true);
-  } catch(e) {
-    showToast('重启请求已发送，请手动刷新页面');
-    waitForServerBack(true);
-  }
 }
 
 function toggleWeixinConfig() {
@@ -1535,11 +1510,11 @@ async function loadSettings() {
     const timezone = prefs.TIMEZONE_OFFSET_HOURS || {value: 8, default: 8, source: 'default'};
     const browserTimezone = -(new Date().getTimezoneOffset() / 60);
     const timezoneValue = timezone.source === 'default' ? browserTimezone : timezone.value;
-    const proactive = prefs.MAX_DAILY_PROACTIVE || {value: 10, default: 10};
+    const proactive = prefs.MAX_DAILY_PROACTIVE || {value: 5, default: 5};
     const proactiveEnabled = Number(proactive.value) > 0;
-    const proactiveLimit = proactiveEnabled ? Number(proactive.value) : Number(proactive.default || 10);
+    const proactiveLimit = proactiveEnabled ? Number(proactive.value) : Number(proactive.default || 5);
     html += `<div class="card"><div class="settings-section-head">
-      <div><div class="settings-section-title">相处偏好</div><div class="settings-section-copy">时间和主动联系</div></div>
+      <div><div class="settings-section-title">相处偏好</div><div class="settings-section-copy">时间和自由时间</div></div>
     </div>
       <div class="config-form-row" style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)">
         <div style="min-width:260px;flex:1">
@@ -1552,11 +1527,11 @@ async function loadSettings() {
       <div class="config-form-row" style="display:flex;align-items:center;gap:12px;padding:10px 0">
         <label class="toggle"><input id="pref-proactive-enabled" type="checkbox" ${proactiveEnabled?'checked':''} onchange="toggleProactivePreference()"><span class="slider"></span></label>
         <div style="min-width:220px;flex:1">
-          <div style="font-size:14px">主动关心</div>
-          <div style="font-size:11px;color:var(--text-soft);margin-top:2px">允许 Agent 在有值得说的事情时主动联系你</div>
+          <div style="font-size:14px">Free Time 自由时间</div>
+          <div style="font-size:11px;color:var(--text-soft);margin-top:2px">每天 6:00–21:00 随机安排自由时间机会，不等于主动消息条数</div>
         </div>
-        <label style="font-size:12px;color:var(--text-soft)">每天最多</label>
-        <input class="form-input" id="pref-proactive-limit" type="number" min="1" max="50" style="width:80px" value="${esc(proactiveLimit)}" ${proactiveEnabled?'':'disabled'}>
+        <label style="font-size:12px;color:var(--text-soft)">每天最多机会</label>
+        <input class="form-input" id="pref-proactive-limit" type="number" min="1" max="10" style="width:80px" value="${esc(proactiveLimit)}" ${proactiveEnabled?'':'disabled'}>
         <span style="font-size:12px;color:var(--text-soft)">次</span>
       </div>
       <div style="margin-top:14px"><button class="btn btn-primary" onclick="savePreferences()">保存偏好</button>
@@ -1678,8 +1653,8 @@ async function savePreferences() {
   if (!Number.isFinite(timezone) || timezone < -12 || timezone > 14) {
     return showToast('时区必须在 UTC-12 到 UTC+14 之间');
   }
-  if (enabled && (!Number.isInteger(limit) || limit < 1 || limit > 50)) {
-    return showToast('主动关心上限必须是 1 到 50 的整数');
+  if (enabled && (!Number.isInteger(limit) || limit < 1 || limit > 10)) {
+    return showToast('每日 Free Time 机会上限必须是 1 到 10 的整数');
   }
   try {
     await api('PUT', '/preferences', {

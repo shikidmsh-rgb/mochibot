@@ -77,15 +77,6 @@ class ObserverMeta:
     skill_name: str = ""        # owning skill (empty = standalone observer)
 
 
-@dataclass(frozen=True)
-class ObservedFact:
-    """One bounded unresolved fact; omission on a fresh scan resolves it."""
-
-    stable_key: str
-    facts: dict[str, Any]
-    freshness_seconds: int = 3600
-
-
 def _parse_observation_md(md_path: str) -> ObserverMeta:
     """Parse OBSERVATION.md front matter into ObserverMeta.
 
@@ -375,7 +366,3 @@ class Observer(ABC):
         suppress noisy sources (e.g., weather changes are not actionable).
         """
         return prev != curr
-
-    def attention_facts(self, data: dict) -> list[ObservedFact]:
-        """Project observer data into safe facts; raw plugin payloads stay private."""
-        return []

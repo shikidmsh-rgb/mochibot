@@ -73,22 +73,12 @@ echo  Opening admin portal at http://127.0.0.1:8080
 echo  Configure your API keys and bot token in the browser.
 echo  When done, click the start button in the admin portal.
 echo.
-echo  Cloud server? Two options:
-echo    1. SSH tunnel: ssh -L 8080:localhost:8080 user@your-server-ip
+echo  Cloud server? Use an SSH tunnel:
+echo       ssh -L 8080:localhost:8080 user@your-server-ip
 echo       Then open http://localhost:8080?token=YOUR_TOKEN
-echo    2. Phone setup: only fill transport token, start bot, send /admin
 echo.
 
-set ADMIN_ARGS=
-:admin_restart
-.venv\Scripts\python.exe -m mochi.admin %ADMIN_ARGS%
-if %errorlevel% equ 43 (
-    echo.
-    echo  [INFO] Admin server restarting...
-    echo.
-    set ADMIN_ARGS=--no-browser
-    goto admin_restart
-)
+.venv\Scripts\python.exe scripts\start.py --open-browser
 echo.
-echo  [INFO] Admin server stopped (exit code %errorlevel%).
+echo  [INFO] MochiBot stopped (exit code %errorlevel%).
 pause

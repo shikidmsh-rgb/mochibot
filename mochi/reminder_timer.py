@@ -11,17 +11,12 @@ from datetime import datetime, timezone
 from mochi.config import TZ
 from mochi.db import (
     get_tool_executions_for_turn,
-    log_usage,
     save_message_once,
 )
-from mochi.core_store import read_core
-from mochi.llm import get_client_for_tier
 from mochi.main_runtime import DurableChatResult, MainRuntimeEntry
-from mochi.prompt_loader import get_prompt
 from mochi.skills.reminder.queries import (
     begin_delivery,
     claim_reminder,
-    compute_next_occurrence,
     complete_without_delivery,
     complete_reminder_delivery,
     expire_overdue_reminders,
@@ -82,44 +77,8 @@ def _remaining_seconds(claimed: dict) -> float:
     return (reminder_deadline(claimed["remind_at"]) - _utc_now()).total_seconds()
 
 
-async def _rephrase_reminder(
-    message: str, user_id: int, *, timeout_seconds: float = 30,
-) -> str:
-    """Prepare one durable notification; raw content is a safe fallback."""
-    fallback = f"⏰ {message}"
-    try:
-        template = get_prompt("reminder_deliver")
-        if not template:
-            return fallback
-        core = read_core()
-        agent = get_prompt("system_chat/agent")
-        system_prompt = "\n\n".join(
-            part for part in (core, agent, template) if part
-        )
-        response = await asyncio.wait_for(
-            asyncio.to_thread(
-                get_client_for_tier("main").chat,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": message},
-                ],
-                max_tokens=256,
-            ),
-            timeout=timeout_seconds,
-        )
-        log_usage(
-            response.prompt_tokens,
-            response.completion_tokens,
-            response.total_tokens,
-            model=response.model,
-            purpose="reminder_deliver",
-            reasoning_tokens=response.reasoning_tokens,
-            cached_prompt_tokens=response.cached_prompt_tokens,
-        )
-        return (response.content or "").strip() or fallback
-    except Exception as exc:
-        log.warning("Reminder rewrite unavailable, using raw content: %s", exc)
-        return fallback
+def _notification_text(message: str) -> str:
+    return f"⏰ {message}"
 
 
 def _to_utc_key(raw_time: str) -> str | None:
@@ -400,10 +359,7 @@ async def _fire_reminder(reminder: dict) -> None:
             if durable_result is None:
                 return
     elif not prepared_text:
-        prepared_text = await _rephrase_reminder(
-            claimed["message"], claimed["user_id"],
-            timeout_seconds=min(30, _remaining_seconds(claimed)),
-        )
+        prepared_text = _notification_text(claimed["message"])
         if not store_prepared_text(
             claimed["id"], claimed["claimed_at"], prepared_text,
         ):
@@ -437,21 +393,6 @@ async def _fire_reminder(reminder: dict) -> None:
             )
             return
 
-    next_remind_at = None
-    recurrence = claimed.get("recurrence")
-    if recurrence:
-        try:
-            remind_at = datetime.fromisoformat(claimed["remind_at"])
-            if remind_at.tzinfo is None:
-                remind_at = remind_at.replace(tzinfo=TZ)
-            next_occurrence = compute_next_occurrence(
-                remind_at, recurrence,
-            )
-            if next_occurrence:
-                next_remind_at = next_occurrence.isoformat()
-        except (TypeError, ValueError):
-            pass
-
     try:
         if kind == "notify":
             save_message_once(
@@ -468,7 +409,6 @@ async def _fire_reminder(reminder: dict) -> None:
             claimed["id"],
             claimed["claimed_at"],
             delivered_at=_utc_now(),
-            next_remind_at=next_remind_at,
         )
     except Exception as exc:
         await _persist_failure(

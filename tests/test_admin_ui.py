@@ -2,6 +2,96 @@ from html.parser import HTMLParser
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+import pytest
+
+
+@pytest.mark.asyncio
+async def test_admin_update_hands_off_only_after_authenticated_response(monkeypatch):
+    import httpx
+    import mochi.config as config
+    import mochi.update_service as updates
+    from mochi.admin.admin_server import app
+
+    monkeypatch.setattr(config, "ADMIN_TOKEN", "test-admin-token")
+    release = SimpleNamespace(
+        available=True, tag="v1.0.12", version="1.0.12",
+        current_version="1.0.1", notes="Release notes",
+    )
+    check = AsyncMock(return_value=release)
+    monkeypatch.setattr(updates, "check_for_update", check)
+    monkeypatch.setattr(updates, "prepare_update", AsyncMock(return_value={}))
+    monkeypatch.setattr(updates, "stage_update", lambda *args, **kwargs: {"request_id": "update"})
+    events = []
+    monkeypatch.setattr(updates, "request_update_exit", lambda _: events.append("exit"))
+
+    async def application(scope, receive, send):
+        async def capture(message):
+            await send(message)
+            if message["type"] == "http.response.body" and not message.get("more_body"):
+                events.append("response")
+        await app(scope, receive, capture)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test",
+    ) as client:
+        denied = await client.post("/api/system/update-apply")
+        assert denied.status_code == 403
+        check.assert_not_awaited()
+        events.clear()
+        response = await client.post(
+            "/api/system/update-apply", headers={"Authorization": "Bearer test-admin-token"},
+        )
+    assert response.json()["prepared"] is True
+    assert events == ["response", "exit"]
+
+
+def test_launcher_separates_restart_from_update_and_opens_browser_once(monkeypatch):
+    import runpy
+    import subprocess
+    import sys
+    import time
+
+    launcher = runpy.run_path(str(Path(__file__).parents[1] / "scripts" / "start.py"))
+    monkeypatch.setattr(sys, "argv", ["start.py", "--open-browser"])
+    monkeypatch.setattr(time, "sleep", lambda _: None)
+    exits = iter([42, 44, 0, 0])
+    calls = []
+
+    def run(command, *, env):
+        assert env["MOCHIBOT_UPDATE_LAUNCHER"] == "1"
+        calls.append(command)
+        return SimpleNamespace(returncode=next(exits))
+
+    monkeypatch.setattr(subprocess, "run", run)
+    with pytest.raises(SystemExit) as finished:
+        launcher["main"]()
+    assert finished.value.code == 0
+    assert [command[2] for command in calls] == [
+        "mochi.main", "mochi.main", "mochi.update_service", "mochi.main",
+    ]
+    assert "--open-browser" in calls[0]
+    assert all("--open-browser" not in command for command in calls[1:])
+
+
+def test_early_update_exit_request_is_not_lost(monkeypatch):
+    import mochi.shutdown as shutdown
+
+    monkeypatch.setattr(shutdown, "_restart_event", None)
+    monkeypatch.setattr(shutdown, "_requested_exit_code", None)
+    shutdown.request_process_exit(shutdown.UPDATE_EXIT_CODE)
+    assert shutdown.init_restart_event().is_set()
+    assert shutdown.requested_exit_code() == 44
+
+
+def test_diagnostics_use_current_free_time_settings(monkeypatch, fresh_db):
+    import mochi.config as config
+    from mochi.error_buffer import get_diagnostic_report
+
+    monkeypatch.setattr(config, "DB_PATH", fresh_db)
+    report = get_diagnostic_report()
+    assert "FREE_TIME_ENABLED:" in report
+    assert "MAX_DAILY_PROACTIVE:" in report
+    assert "HEARTBEAT_INTERVAL_MINUTES:" not in report
 
 
 def test_setup_keeps_admin_local_and_preserves_existing_token(monkeypatch):

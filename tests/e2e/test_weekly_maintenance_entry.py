@@ -79,8 +79,6 @@ async def test_weekly_main_updates_core_without_chat_history(
                         "object": {"name": "Tokyo", "type": "place"},
                         "source_memory": {
                             "item_id": item_id,
-                            "content": item["content"],
-                            "updated_at": item["updated_at"],
                         },
                     }],
                 },
@@ -183,8 +181,6 @@ async def test_weekly_memory_refreshes_relationship_scope():
             "operations": [{
                 "op": "edit",
                 "item_id": item_id,
-                "expected_content": item["content"],
-                "expected_updated_at": item["updated_at"],
                 "content": "Shiki now lives in Tokyo",
                 "importance": 2,
                 "evidence_message_ids": [new_evidence],
@@ -197,7 +193,13 @@ async def test_weekly_memory_refreshes_relationship_scope():
     assert refreshed["active_relationships"] == []
     assert len(refreshed["memory_items"]) == 1
 
-    relationship_operation["source_memory"] = refreshed["memory_items"][0]
+    relationship_operation["source_memory"] = {"item_id": item_id}
+    unseen = await session.execute(
+        "curate_relationships", {"operations": [relationship_operation]},
+    )
+    assert unseen.success is False
+    assert "changed after Weekly context was built" in unseen.output
+    session.advance_visible_context()
     relationship_result = await session.execute(
         "curate_relationships",
         {"operations": [relationship_operation]},
@@ -207,3 +209,45 @@ async def test_weekly_memory_refreshes_relationship_scope():
     active = list_active_relationships(1)
     assert len(active) == 1
     assert active[0]["source_memory_id"] == item_id
+
+
+@pytest.mark.asyncio
+async def test_weekly_memory_rejects_concurrent_change_without_model_snapshot_fields():
+    conn = _connect()
+    evidence_id = conn.execute(
+        "INSERT INTO messages (user_id, role, content, created_at, processed) "
+        "VALUES (1, 'user', 'Enjoys green tea', '2026-08-05T10:00:00+00:00', 1)"
+    ).lastrowid
+    conn.commit()
+    conn.close()
+    item_id = insert_memory_item(
+        1, "Enjoys green tea", 1, source="extracted", evidence_message_ids=[evidence_id],
+    )
+    conn = _connect()
+    conn.execute(
+        "UPDATE memory_items SET created_at=?, updated_at=? WHERE id=?",
+        ("2026-08-05T10:05:00+00:00", "2026-08-05T10:05:00+00:00", item_id),
+    )
+    conn.commit()
+    conn.close()
+    session = create_weekly_session(
+        user_id=1, logical_date="2026-08-10", period_key="2026-W33",
+    )
+    conn = _connect()
+    conn.execute(
+        "UPDATE memory_items SET content='Enjoys jasmine tea', updated_at=? WHERE id=?",
+        ("2026-08-06T10:05:00+00:00", item_id),
+    )
+    conn.commit()
+    conn.close()
+
+    result = await session.execute("curate_weekly_memory", {"operations": [{
+        "op": "edit", "item_id": item_id, "content": "Enjoys green tea",
+        "importance": 2, "evidence_message_ids": [evidence_id],
+    }]})
+
+    assert result.success is False
+    conn = _connect()
+    row = conn.execute("SELECT content,importance FROM memory_items WHERE id=?", (item_id,)).fetchone()
+    conn.close()
+    assert tuple(row) == ("Enjoys jasmine tea", 1)

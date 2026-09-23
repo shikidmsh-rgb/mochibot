@@ -465,27 +465,21 @@ def test_openai_compatible_chat_handles_text_and_tools(monkeypatch):
     assert "source" not in failed_web_payload
     assert "authority" not in failed_web_payload
 
-    import mochi.skills.habit.handler as habit_handler
     from mochi.skills.habit.handler import HabitSkill
+    from mochi.skills.habit.queries import add_habit
 
-    habit = {
-        "id": 7,
-        "name": "Read",
-        "paused_until": "2026-09-10",
-    }
-    original_list_habits = habit_handler.list_habits
-    monkeypatch.setattr(habit_handler, "list_habits", lambda _user_id: [habit])
-    monkeypatch.setattr(habit_handler, "pause_habit", lambda *_args: True)
+    habit_id = add_habit(1, "Read", "daily:1")
+    first_pause = HabitSkill()._pause(1, {
+        "habit_id": habit_id, "until": "2026-09-10",
+    })
+    assert first_pause.state_changed
     no_op = HabitSkill()._pause(1, {
-        "habit_id": 7,
+        "habit_id": habit_id,
         "until": "2026-09-10",
     })
     assert no_op.success
     assert not no_op.state_changed
 
-    from mochi.skills.habit.queries import add_habit
-
-    monkeypatch.setattr(habit_handler, "list_habits", original_list_habits)
     habit_id = add_habit(1, "Walk", "daily:1")
     first_remove = HabitSkill()._remove(1, {"habit_id": habit_id})
     repeated_remove = HabitSkill()._remove(1, {"habit_id": habit_id})

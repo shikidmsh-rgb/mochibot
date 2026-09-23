@@ -111,6 +111,17 @@ sense:
 并从下一次 provider round 才生效。工具 schema 与 dispatch 始终共享同一份
 不可变轮次快照。
 
+`### my_tool (on_demand, adaptive)` 显式允许框架根据成功使用记录调整为
+`routed`；没有此标注的工具不参加自适应，不能自动成为 `resident`。
+Nightly 统计最近 30 天不同普通聊天轮次的成功调用，达到 3 轮才提升；
+提升至少保持 7 天，30 天无成功使用才降回。Main 可主动 pin/reset eligible
+工具的加载层级，但不能借此绕过配置、平台、开发开关或本轮授权。
+注册表区分声明合同、当前资格与有效加载层级；统计和管理不能导入未激活的扩展代码。
+
+参数表中的真实参数名 `name` 不是表头。对象数组可写作
+`array (items: object {name:string, calories:integer})`；每个对象必须包含声明字段，
+不接受额外字段。数字不接受布尔值或非有限浮点数。
+
 加载方式不是风险等级。会改变状态的工具应在自身契约中写清确定性结果、
 可恢复性和回执；具体 deny rules 与 rate limits 由执行策略落实。
 
@@ -193,7 +204,11 @@ class MySkill(Skill):
 | `transport` | str | 平台标识（`"telegram"`、`"wechat"` 等） |
 | `tool_name` | str | 被调用的工具名称 |
 | `args` | dict | 传给工具的参数 |
-| `observation` | dict \| None | 仅 heartbeat 触发时有值，包含 observer 数据。普通 tool 类 skill 不用关心 |
+| `actor` | str | 框架提供的调用身份，如 Main；不是模型自行声明的参数 |
+| `owner_authorized` | bool | Transport 确认消息来自主人，不替代 Main 对请求语义的判断 |
+| `source` | str | `chat`、`weekly` 或 `runtime:<kind>`；脚本默认空值，不获得普通聊天权限 |
+| `turn_id` | str | 框架生成的本轮标识，供查询排除当前消息、去重和事实统计 |
+| `observation` | dict \| None | 框架显式提供的观察数据；普通 tool 类 skill 不用关心 |
 
 ### SkillResult
 
@@ -205,6 +220,12 @@ class MySkill(Skill):
 | `actions` | list[dict] | `[]` | heartbeat 风格的动作列表（如 `[{"type": "message", "content": "..."}]`），普通 skill 一般不用 |
 | `success` | bool | `True` | 操作是否成功 |
 | `document_snapshot` | str \| None | `None` | 内置 Core/Diary 工具已向 Main 展示的确切文档内容；框架在下一次模型调用前更新并发核对基线，不从回执文案猜测版本 |
+| `exposed_memory_ids` | list[int] | `[]` | 搜索实际返回的 Memory IDs；仅下一次成功模型调用真正看到结果后计引用，同一轮去重 |
+| `after_delivery` | Callable \| None | `None` | 内部生命周期回调；只用于普通聊天最终回复全部送达后的更新交接，不随 provider 结果或自主投递 outbox 序列化 |
+
+工具回执必须区分“准备完成”和“执行完成”。例如正式版更新先保存待交付请求，
+最终文字和附件全部送达后才触发安装退出码；状态提示、部分送达、模型失败或
+工具轮数耗尽的降级回复都不能启动更新。
 
 ### 可选方法
 

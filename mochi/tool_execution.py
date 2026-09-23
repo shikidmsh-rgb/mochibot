@@ -66,6 +66,7 @@ def action_for(tool_name: str, args: dict) -> str:
         return str(action)[:80]
     defaults = {
         "log_meal": "create",
+        "schedule_self_reminder": "create",
         "delete_meal": "delete",
         "update_core": "update",
         "delete_memory": "delete",

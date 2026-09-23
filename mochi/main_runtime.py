@@ -15,28 +15,7 @@ RuntimeEntryKind = Literal[
     "self_reminder",
     "weekly_maintenance",
     "free_time",
-    "attention",
 ]
-
-
-@dataclass(frozen=True)
-class AttentionFact:
-    """A bounded, provenance-safe observer fact offered to Main."""
-
-    source: str
-    stable_key: str
-    observed_at: str
-    freshness: Literal["fresh", "stale"]
-    status: Literal["unresolved"]
-    facts: dict
-
-    def __post_init__(self) -> None:
-        if not self.source.strip() or not self.stable_key.strip():
-            raise ValueError("attention fact source and stable key are required")
-        datetime.fromisoformat(self.observed_at)
-        encoded = json.dumps(self.facts, ensure_ascii=False, separators=(",", ":"))
-        if len(encoded) > 2000:
-            raise ValueError("attention fact payload exceeds 2000 characters")
 
 
 @dataclass(frozen=True)
@@ -72,15 +51,6 @@ def context_policy(entry: "MainRuntimeEntry | None") -> ContextPolicy:
             prompt_sections=False,
             temporal_context=True,
         )
-    if entry.kind == "attention":
-        return ContextPolicy(
-            early_runtime_situation=True,
-            diary_status=True,
-            conversation_summary=True,
-            recent_history=True,
-            auto_recall=False,
-            prompt_sections=False,
-        )
     if entry.kind == "weekly_maintenance":
         return ContextPolicy(
             diary_journal=False,
@@ -113,7 +83,8 @@ class MainRuntimeEntry:
     lease_until: str | None = None
     run_key: str | None = None
     wake_reason: str | None = None
-    attention_facts: tuple[AttentionFact, ...] = ()
+    chat_generation: int | None = None
+    state_changed_at: str | None = None
 
     @classmethod
     def bedtime(
@@ -221,57 +192,10 @@ class MainRuntimeEntry:
         transport: str,
         claim_token: str,
         lease_until: str,
+        chat_generation: int | None = None,
+        state_changed_at: str | None = None,
     ) -> "MainRuntimeEntry":
-        return cls._autonomous(
-            kind="free_time",
-            run_key=run_key,
-            wake_reason=wake_reason,
-            user_id=user_id,
-            channel_id=channel_id,
-            transport=transport,
-            claim_token=claim_token,
-            lease_until=lease_until,
-        )
-
-    @classmethod
-    def attention(
-        cls,
-        *,
-        run_key: str,
-        wake_reason: str,
-        facts: tuple[AttentionFact, ...],
-        user_id: int,
-        channel_id: int,
-        transport: str,
-        claim_token: str,
-        lease_until: str,
-    ) -> "MainRuntimeEntry":
-        return cls._autonomous(
-            kind="attention",
-            run_key=run_key,
-            wake_reason=wake_reason,
-            user_id=user_id,
-            channel_id=channel_id,
-            transport=transport,
-            claim_token=claim_token,
-            lease_until=lease_until,
-            attention_facts=facts,
-        )
-
-    @classmethod
-    def _autonomous(
-        cls,
-        *,
-        kind: Literal["free_time", "attention"],
-        run_key: str,
-        wake_reason: str,
-        user_id: int,
-        channel_id: int,
-        transport: str,
-        claim_token: str,
-        lease_until: str,
-        attention_facts: tuple[AttentionFact, ...] = (),
-    ) -> "MainRuntimeEntry":
+        kind = "free_time"
         for label, value in (
             ("run key", run_key),
             ("wake reason", wake_reason),
@@ -291,7 +215,8 @@ class MainRuntimeEntry:
             wake_reason=wake_reason.strip(),
             claim_token=claim_token.strip(),
             lease_until=lease_until.strip(),
-            attention_facts=attention_facts,
+            chat_generation=chat_generation,
+            state_changed_at=state_changed_at,
         )
 
 

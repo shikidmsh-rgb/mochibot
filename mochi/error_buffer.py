@@ -94,7 +94,7 @@ def get_diagnostic_report() -> str:
         MAIN_PROVIDER, MAIN_MODEL, MAIN_BASE_URL, MAIN_API_KEY,
         TELEGRAM_BOT_TOKEN, WEIXIN_ENABLED,
         EMBEDDING_API_KEY,
-        HEARTBEAT_INTERVAL_MINUTES,
+        FREE_TIME_ENABLED, MAX_DAILY_PROACTIVE,
         ADMIN_PORT, ADMIN_BIND,
         TIMEZONE_OFFSET_HOURS,
         DB_PATH, TZ,
@@ -130,7 +130,8 @@ def get_diagnostic_report() -> str:
     lines.append(f"TELEGRAM_BOT_TOKEN: {_mask(TELEGRAM_BOT_TOKEN)}")
     lines.append(f"WEIXIN_ENABLED: {WEIXIN_ENABLED}")
     lines.append(f"EMBEDDING_API_KEY: {_mask(EMBEDDING_API_KEY)}")
-    lines.append(f"HEARTBEAT_INTERVAL_MINUTES: {HEARTBEAT_INTERVAL_MINUTES}")
+    lines.append(f"FREE_TIME_ENABLED: {FREE_TIME_ENABLED}")
+    lines.append(f"MAX_DAILY_PROACTIVE: {MAX_DAILY_PROACTIVE}")
     lines.append(f"TIMEZONE_OFFSET_HOURS: {TIMEZONE_OFFSET_HOURS}")
     lines.append(f"ADMIN_PORT: {ADMIN_PORT}")
     lines.append(f"ADMIN_BIND: {ADMIN_BIND}")

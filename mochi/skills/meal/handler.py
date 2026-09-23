@@ -8,17 +8,28 @@ Tool-only mode:
 
 import json
 import logging
+import math
 from datetime import datetime
+from uuid import uuid4
 
 from mochi.config import TZ, logical_today, MEAL_REMINDER_BREAKFAST_HOUR, MEAL_REMINDER_LUNCH_HOUR, MEAL_REMINDER_DINNER_HOUR
 from mochi.skills.base import Skill, SkillContext, SkillResult
 from mochi.skills.meal.constants import MEAL_LABELS, VALID_MEAL_TYPES, MAIN_MEAL_TYPES
-from mochi.skills.meal.queries import save_health_log, query_health_log, delete_health_log_items
+from mochi.skills.meal.queries import save_health_log, query_health_log, delete_health_log_item
 
 log = logging.getLogger(__name__)
 
 
 class MealSkill(Skill):
+
+    def get_tools(self) -> list[dict]:
+        tools = super().get_tools()
+        for tool in tools:
+            parameters = tool["function"]["parameters"]
+            parameters["additionalProperties"] = False
+            if tool["function"]["name"] == "log_meal":
+                parameters["properties"]["items"]["minItems"] = 1
+        return tools
 
     def init_schema(self, conn) -> None:
         conn.executescript("""
@@ -55,36 +66,31 @@ class MealSkill(Skill):
 
     # ── Helpers ──────────────────────────────────────────────
 
-    def _normalize_meal_items(self, raw_items: str | list) -> list[dict]:
-        """Parse and normalize meal items from LLM output.
-
-        Ensures every item has: name, calories, protein_g, carbs_g, fat_g.
-        Missing numeric fields default to 0.
-        """
-        if isinstance(raw_items, str):
-            try:
-                items = json.loads(raw_items)
-            except (json.JSONDecodeError, TypeError):
-                return []
-        else:
-            items = raw_items
-
-        if not isinstance(items, list):
+    def _normalize_meal_items(self, raw_items: object) -> list[dict]:
+        if not isinstance(raw_items, list) or not raw_items:
             return []
-
+        fields = {"name", "calories", "protein_g", "carbs_g", "fat_g"}
         normalized = []
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            name = str(item.get("name", "")).strip()
-            if not name:
-                continue
+        for item in raw_items:
+            if not isinstance(item, dict) or set(item) != fields:
+                return []
+            name = item["name"]
+            if not isinstance(name, str) or not name.strip():
+                return []
+            calories = item["calories"]
+            if isinstance(calories, bool) or not isinstance(calories, int) or calories < 0:
+                return []
+            for key in ("protein_g", "carbs_g", "fat_g"):
+                value = item[key]
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+                    return []
+                if isinstance(value, float) and not math.isfinite(value):
+                    return []
             normalized.append({
-                "name": name,
-                "calories": int(item.get("calories", 0)),
-                "protein_g": round(float(item.get("protein_g", 0)), 1),
-                "carbs_g": round(float(item.get("carbs_g", 0)), 1),
-                "fat_g": round(float(item.get("fat_g", 0)), 1),
+                "name": name.strip(), "calories": calories,
+                "protein_g": round(item["protein_g"], 1),
+                "carbs_g": round(item["carbs_g"], 1),
+                "fat_g": round(item["fat_g"], 1),
             })
         return normalized
 
@@ -99,17 +105,17 @@ class MealSkill(Skill):
                 success=False,
             )
 
-        items = self._normalize_meal_items(args.get("items", "[]"))
+        items = self._normalize_meal_items(args.get("items"))
         if not items:
             return SkillResult(
-                output="Error: items must be a non-empty JSON array of food items.",
+                output="Error: items must be a non-empty array; each food needs a non-empty name, non-negative integer calories, and non-negative finite protein_g, carbs_g, and fat_g numbers.",
                 success=False,
             )
 
-        total_calories = int(args.get("total_calories", 0))
-        total_protein = round(float(args.get("total_protein_g", 0)), 1)
-        total_carbs = round(float(args.get("total_carbs_g", 0)), 1)
-        total_fat = round(float(args.get("total_fat_g", 0)), 1)
+        total_calories = sum(item["calories"] for item in items)
+        total_protein = round(sum(item["protein_g"] for item in items), 1)
+        total_carbs = round(sum(item["carbs_g"] for item in items), 1)
+        total_fat = round(sum(item["fat_g"] for item in items), 1)
         source_type = args.get("source", "text").strip().lower()
         date_str = args.get("date", "").strip()
 
@@ -117,7 +123,8 @@ class MealSkill(Skill):
             date_str = logical_today()
         else:
             try:
-                datetime.strptime(date_str, "%Y-%m-%d")
+                if datetime.strptime(date_str, "%Y-%m-%d").strftime("%Y-%m-%d") != date_str:
+                    raise ValueError(date_str)
             except ValueError:
                 return SkillResult(
                     output=f"Error: invalid date format '{date_str}'. Use YYYY-MM-DD.",
@@ -148,11 +155,10 @@ class MealSkill(Skill):
         )
 
         # Use source="meal_{type}" so each meal_type gets its own upsert slot per day.
-        # Snacks append timestamp to allow multiple per day.
+        # Snacks have independent slots even when logged together.
         db_source = f"meal_{meal_type}"
         if meal_type == "snack":
-            ts = datetime.now(TZ).strftime("%H%M%S")
-            db_source = f"meal_snack_{ts}"
+            db_source = f"meal_snack_{uuid4().hex}"
 
         mid = save_health_log(
             user_id=user_id,
@@ -178,11 +184,14 @@ class MealSkill(Skill):
     def _query_meals(self, user_id: int, args: dict) -> SkillResult:
         """Query meal history with daily nutrition totals."""
         date_str = args.get("date", "").strip()
-        days = int(args.get("days", 1))
+        days = args.get("days", 1)
+        if isinstance(days, bool) or not isinstance(days, int) or days <= 0:
+            return SkillResult(output="Error: days must be a positive integer.", success=False)
 
         if date_str:
             try:
-                datetime.strptime(date_str, "%Y-%m-%d")
+                if datetime.strptime(date_str, "%Y-%m-%d").strftime("%Y-%m-%d") != date_str:
+                    raise ValueError(date_str)
             except ValueError:
                 return SkillResult(
                     output=f"Error: invalid date format '{date_str}'. Use YYYY-MM-DD.",
@@ -231,7 +240,7 @@ class MealSkill(Skill):
                     it.get("name", "?") for it in m.get("items", [])[:4]
                 )
                 meal_parts.append(
-                    f"  {label}: {item_names} ~{cal}kcal (P{p:.0f}/C{c:.0f}/F{f:.0f}g)"
+                    f"  #{r['id']} {label}: {item_names} ~{cal}kcal (P{p:.0f}/C{c:.0f}/F{f:.0f}g)"
                 )
 
                 day_total_cal += cal
@@ -246,47 +255,26 @@ class MealSkill(Skill):
                 f"蛋白质{day_total_p:.0f}g 碳水{day_total_c:.0f}g 脂肪{day_total_f:.0f}g"
             )
 
-        return SkillResult(output="\n".join(lines))
+        return SkillResult(
+            output="\n".join(lines),
+            entity_refs=[f"meal:{record['id']}" for record in records],
+        )
 
     def _delete_meal(self, user_id: int, args: dict) -> SkillResult:
-        """Delete a meal record by date and meal_type."""
-        meal_type = args.get("meal_type", "").strip().lower()
-        if meal_type not in VALID_MEAL_TYPES:
+        """Delete one owner-scoped meal by its stable record ID."""
+        meal_id = args.get("meal_id")
+        if isinstance(meal_id, bool) or not isinstance(meal_id, int) or meal_id <= 0:
             return SkillResult(
-                output=f"Error: meal_type must be one of: {', '.join(sorted(VALID_MEAL_TYPES))}",
+                output="Error: meal_id must be a positive integer from query_meals.",
                 success=False,
             )
-
-        date_str = args.get("date", "").strip()
-        if not date_str:
-            date_str = logical_today()
-
-        # Query only the target date
-        records = query_health_log(
-            user_id=user_id,
-            types=["meal"],
-            date=date_str,
-        )
-        to_delete = []
-        for r in records:
-            try:
-                m = json.loads(r.get("metrics") or "{}")
-            except (json.JSONDecodeError, TypeError):
-                m = {}
-            if m.get("meal_type") == meal_type:
-                to_delete.append(r["id"])
-
-        label = MEAL_LABELS.get(meal_type, meal_type)
-        if not to_delete:
-            return SkillResult(output=f"{date_str} 没有找到{label}记录")
-
-        deleted = delete_health_log_items(to_delete)
-        log.info("Meal deleted: %d records [%s] on %s", deleted, meal_type, date_str)
-        receipt = f"✅ 已删除 {date_str} 的{label}记录 ({deleted}条)"
+        deleted = delete_health_log_item(user_id, meal_id)
+        if not deleted:
+            return SkillResult(output=f"Meal #{meal_id} not found.", success=False)
+        receipt = f"✅ 已删除饮食记录 #{meal_id}"
         return SkillResult(
             output=receipt, summary=receipt,
-            entity_refs=[f"meal:{rid}" for rid in to_delete],
-            state_changed=deleted > 0,
+            entity_refs=[f"meal:{meal_id}"], state_changed=True,
         )
 
     # ── Diary integration ─────────────────────────────────────

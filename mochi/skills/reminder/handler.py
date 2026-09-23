@@ -10,6 +10,7 @@ from mochi.skills.reminder.queries import (
     create_self_reminder,
     get_active_reminders,
     reminder_deadline,
+    update_active_reminder,
 )
 from mochi.reminder_timer import notify_new_reminder
 
@@ -33,6 +34,12 @@ def _current_owner_main(context: SkillContext) -> bool:
 
 
 class ReminderSkill(Skill):
+
+    def get_tools(self) -> list[dict]:
+        tools = super().get_tools()
+        for tool in tools:
+            tool["function"]["parameters"]["additionalProperties"] = False
+        return tools
 
     def init_schema(self, conn) -> None:
         conn.executescript("""
@@ -86,6 +93,8 @@ class ReminderSkill(Skill):
 
     async def execute(self, context: SkillContext) -> SkillResult:
         args = context.args
+        if context.tool_name == "schedule_self_reminder":
+            args = {**args, "action": "create", "kind": "self"}
         action = args.get("action", "list")
         uid = context.user_id
 
@@ -102,6 +111,8 @@ class ReminderSkill(Skill):
             message = args.get("message", "")
             intent = args.get("intent", "")
             if kind == "notify":
+                if "intent" in args:
+                    return SkillResult(output="Notify reminders accept message, not intent.", success=False)
                 if not isinstance(message, str) or not message.strip():
                     return SkillResult(
                         output="Notify reminders need message and remind_at.",
@@ -124,33 +135,15 @@ class ReminderSkill(Skill):
                         output="Self reminders accept intent, not a prewritten message.",
                         success=False,
                     )
-                if "recurrence" in args:
-                    return SkillResult(
-                        output="Self reminders must be one-time.",
-                        success=False,
-                    )
                 intent = intent.strip()
 
-            try:
-                remind_at_dt = datetime.fromisoformat(remind_at_raw)
-            except (ValueError, TypeError):
-                return SkillResult(
-                    output=f"Invalid remind_at format: {remind_at_raw!r}. "
-                           "Use ISO 8601, e.g. 2026-04-20T14:30:00+08:00",
-                    success=False,
-                )
-
-            if remind_at_dt.tzinfo is None:
-                remind_at_dt = remind_at_dt.replace(tzinfo=TZ)
-
-            remind_at = remind_at_dt.isoformat()
+            remind_at, error = self._normalize_remind_at(remind_at_raw)
+            if error:
+                return error
+            recurrence, error = self._normalize_recurrence(args.get("recurrence", "one_time"))
+            if error:
+                return error
             expires_at = reminder_deadline(remind_at)
-            if expires_at <= datetime.now(TZ):
-                return SkillResult(
-                    output="Reminder time is already at least five minutes past; "
-                           "choose a current or future time.",
-                    success=False,
-                )
             if kind == "self":
                 rid = create_self_reminder(
                     uid,
@@ -158,6 +151,7 @@ class ReminderSkill(Skill):
                     intent,
                     remind_at,
                     context.transport,
+                    recurrence,
                 )
                 receipt = (
                     f"Self reminder #{rid} set for {remind_at}: "
@@ -165,9 +159,11 @@ class ReminderSkill(Skill):
                 )
             else:
                 rid = create_reminder(
-                    uid, context.channel_id, message, remind_at,
+                    uid, context.channel_id, message, remind_at, recurrence,
                 )
                 receipt = f"Reminder #{rid} set for {remind_at}: {message}"
+            if recurrence:
+                receipt += f" (repeats {recurrence})"
             receipt += f" Expires at {expires_at.isoformat()}; no delivery after expiry."
             notify_new_reminder()
             return SkillResult(
@@ -187,23 +183,100 @@ class ReminderSkill(Skill):
                 else:
                     content = reminder["message"]
                     label = "提醒用户"
+                recurrence_label = f"（{reminder['recurrence']}）" if reminder.get("recurrence") else ""
                 lines.append(
                     f"- #{reminder['id']} [{reminder['remind_at']}] "
-                    f"{label}：{content}"
+                    f"{label}：{content}{recurrence_label}"
                 )
             return SkillResult(
                 output=f"{len(reminders)} reminders:\n" + "\n".join(lines)
+            )
+
+        elif action == "update":
+            rid = args.get("reminder_id")
+            if isinstance(rid, bool) or not isinstance(rid, int) or rid <= 0:
+                return SkillResult(output="Need a valid reminder_id to update.", success=False)
+            if "kind" in args:
+                return SkillResult(output="Reminder kind cannot be changed by update.", success=False)
+            reminder = next((r for r in get_active_reminders(uid) if r["id"] == rid), None)
+            if reminder is None:
+                return SkillResult(output=f"Reminder #{rid} not found.", success=False)
+            is_self = reminder["kind"] == "self"
+            if is_self and not _current_owner_main(context):
+                return SkillResult(output="Self reminders can only be created by Main.", success=False)
+            if is_self and "message" in args:
+                return SkillResult(output="Self reminders accept intent, not a prewritten message.", success=False)
+            if not is_self and "intent" in args:
+                return SkillResult(output="Notify reminders accept message, not intent.", success=False)
+            content_arg = "intent" if is_self else "message"
+            fields = {}
+            if "remind_at" in args:
+                value, error = self._normalize_remind_at(args["remind_at"])
+                if error:
+                    return error
+                fields["remind_at"] = value
+            if content_arg in args:
+                value = args[content_arg]
+                if not isinstance(value, str) or not value.strip():
+                    return SkillResult(
+                        output=f"{content_arg} must be non-empty when provided.", success=False,
+                    )
+                fields["context" if is_self else "message"] = value.strip()
+            if "recurrence" in args:
+                value, error = self._normalize_recurrence(args["recurrence"])
+                if error:
+                    return error
+                fields["recurrence"] = value
+            if not fields:
+                return SkillResult(
+                    output=f"Update reminder #{rid} with remind_at, {content_arg}, or recurrence.",
+                    success=False,
+                )
+            status, updated = update_active_reminder(rid, uid, **fields)
+            if status == "not_found":
+                return SkillResult(output=f"Reminder #{rid} not found.", success=False)
+            if status == "started":
+                return SkillResult(
+                    output=f"Reminder #{rid} has already started or expired and cannot be updated.",
+                    success=False,
+                )
+            if status == "expired_time":
+                return self._expired_time_error()
+            if status == "unchanged":
+                return SkillResult(
+                    output=f"Reminder #{rid} was already unchanged.",
+                    entity_refs=[f"reminder:{rid}"],
+                )
+            content = updated["context"] if is_self else updated["message"]
+            receipt = (
+                f"Reminder #{rid} updated for {updated['remind_at']}: "
+                f"{_bounded_summary(content)}"
+            )
+            if updated["recurrence"]:
+                receipt += f" (repeats {updated['recurrence']})"
+            receipt += (
+                f" Expires at {reminder_deadline(updated['remind_at']).isoformat()}; "
+                "no delivery after expiry."
+            )
+            notify_new_reminder()
+            return SkillResult(
+                output=receipt, summary=receipt, entity_refs=[f"reminder:{rid}"],
+                state_changed=True,
             )
 
         elif action == "delete":
             rid = args.get("reminder_id")
             if not rid:
                 return SkillResult(output="Need reminder_id to delete.", success=False)
-            try:
-                deleted = cancel_reminder(int(rid), uid)
-            except (ValueError, TypeError):
+            if isinstance(rid, bool) or not isinstance(rid, int) or rid <= 0:
                 return SkillResult(output=f"Invalid reminder_id: {rid}", success=False)
+            deleted = cancel_reminder(rid, uid)
             if not deleted:
+                if any(r["id"] == rid for r in get_active_reminders(uid)):
+                    return SkillResult(
+                        output=f"Reminder #{rid} is currently being processed and cannot be deleted.",
+                        success=False,
+                    )
                 return SkillResult(output=f"Reminder #{rid} not found.", success=False)
             notify_new_reminder()
             receipt = f"Reminder #{rid} deleted."
@@ -213,6 +286,42 @@ class ReminderSkill(Skill):
             )
 
         return SkillResult(output=f"Unknown action: {action}", success=False)
+
+    @staticmethod
+    def _expired_time_error() -> SkillResult:
+        return SkillResult(
+            output="Reminder time is already at least five minutes past; "
+                   "choose a current or future time.",
+            success=False,
+        )
+
+    @classmethod
+    def _normalize_remind_at(cls, raw) -> tuple[str | None, SkillResult | None]:
+        try:
+            value = datetime.fromisoformat(raw)
+        except (ValueError, TypeError):
+            return None, SkillResult(
+                output=f"Invalid remind_at format: {raw!r}. "
+                       "Use ISO 8601, e.g. 2026-04-20T14:30:00+08:00",
+                success=False,
+            )
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=TZ)
+        result = value.isoformat()
+        if reminder_deadline(result) <= datetime.now(TZ):
+            return None, cls._expired_time_error()
+        return result, None
+
+    @staticmethod
+    def _normalize_recurrence(raw) -> tuple[str | None, SkillResult | None]:
+        if raw == "one_time":
+            return None, None
+        if raw in ("daily", "weekdays", "weekly"):
+            return raw, None
+        return None, SkillResult(
+            output=f"Invalid recurrence: {raw!r}. Use one_time, daily, weekdays, or weekly.",
+            success=False,
+        )
 
     # ── Diary integration ─────────────────────────────────────
 

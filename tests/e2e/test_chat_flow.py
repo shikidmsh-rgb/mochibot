@@ -56,6 +56,73 @@ class TestSimpleReply:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("provider_fails", [False, True])
+    async def test_search_memory_counts_only_after_result_reaches_main(
+        self, mock_llm_factory, monkeypatch, provider_fails,
+    ):
+        import mochi.ai_client as ai_client
+        import mochi.config as config
+        from mochi.db import _connect, save_memory_item
+
+        monkeypatch.setattr(config, "TOOL_ESCALATION_ENABLED", True)
+        monkeypatch.setattr(ai_client, "_retrieve_memories_for_turn", lambda *args: [])
+        memory_id = save_memory_item(1, "Likes jasmine tea", source="admin")
+        mock = mock_llm_factory([
+            make_response(tool_calls=[
+                make_tool_call("request_tools", {"skills": ["internal_search"]}),
+            ]),
+            make_response(tool_calls=[
+                make_tool_call("search_personal_history", {
+                    "query": "jasmine", "source": "memory",
+                }),
+            ]),
+            *(
+                [RuntimeError("offline"), RuntimeError("offline")]
+                if provider_fails else [make_response("Jasmine tea.")]
+            ),
+        ])
+        await chat(_msg("Search my saved history."))
+        outputs = [
+            json.loads(message["content"])
+            for message in mock.call_log[-1]["messages"] if message["role"] == "tool"
+        ]
+        assert outputs[-1]["ok"], outputs
+        conn = _connect()
+        references = conn.execute(
+            "SELECT access_count FROM memory_items WHERE id=?", (memory_id,),
+        ).fetchone()[0]
+        conn.close()
+        assert references == (0 if provider_fails else 1)
+
+    @pytest.mark.asyncio
+    async def test_habit_progress_context_appears_once_after_loading(
+        self, mock_llm_factory, monkeypatch,
+    ):
+        import mochi.config as config
+        from mochi.skills.habit.queries import add_habit
+
+        monkeypatch.setattr(config, "TOOL_ESCALATION_ENABLED", True)
+        add_habit(1, "Read", "daily:3")
+        mock = mock_llm_factory([
+            make_response(tool_calls=[
+                make_tool_call("request_tools", {"skills": ["habit"]}),
+            ]),
+            make_response(tool_calls=[
+                make_tool_call("habit_progress", {"action": "list"}),
+            ]),
+            make_response("Your current reading progress."),
+        ])
+        await chat(_msg("How is my reading going?"))
+        marker = "## 本轮习惯进度快照（只读事实）"
+        contexts = [
+            "\n".join(m["content"] for m in call["messages"] if m["role"] == "system")
+            for call in mock.call_log
+        ]
+        assert [text.count(marker) for text in contexts] == [0, 1, 1]
+        assert "0/3" in contexts[1]
+        assert "daily:3" not in contexts[1]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("provider_fails", [False, True])
     async def test_memory_references_count_exposure_once(
         self, mock_llm_factory, monkeypatch, provider_fails,
     ):
@@ -88,7 +155,7 @@ class TestSimpleReply:
         assert rows[other_id] == 0
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("kind", ["chat", "attention", "bedtime"])
+    @pytest.mark.parametrize("kind", ["chat", "self_reminder", "bedtime"])
     async def test_delivered_reasoning_is_private_and_model_scoped(
         self, mock_llm_factory, monkeypatch, kind,
     ):
@@ -134,7 +201,7 @@ class TestSimpleReply:
         )
 
         next_entry = MainRuntimeEntry(
-            kind="attention", user_id=1, channel_id=100, transport="fake",
+            kind="self_reminder", user_id=1, channel_id=100, transport="fake",
         )
         await chat(runtime_entry=next_entry)
         messages = mock.call_log[1]["messages"]

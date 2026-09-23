@@ -12,7 +12,7 @@ pure conversation data tells us a lot about user state.
 
 import logging
 import statistics
-from mochi.observers.base import DETAIL_ITEM_LIMIT, ObservedFact, Observer
+from mochi.observers.base import DETAIL_ITEM_LIMIT, Observer
 
 log = logging.getLogger(__name__)
 
@@ -56,27 +56,6 @@ class ActivityPatternObserver(Observer):
         prev_signals = set(prev.get("signals", []))
         curr_signals = set(curr.get("signals", []))
         return bool(curr_signals - prev_signals)
-
-    def attention_facts(self, data: dict) -> list[ObservedFact]:
-        shared = {
-            key: data[key]
-            for key in (
-                "today_messages",
-                "yesterday_messages",
-                "daily_avg_7d",
-                "active_days_7d",
-            )
-            if key in data
-        }
-        return [
-            ObservedFact(
-                stable_key=f"signal:{signal}",
-                facts={"signal": signal, **shared},
-                freshness_seconds=6 * 3600,
-            )
-            for signal in data.get("signals", [])[:4]
-            if isinstance(signal, str) and signal
-        ]
 
     async def observe(self) -> dict:
         from mochi.config import OWNER_USER_ID

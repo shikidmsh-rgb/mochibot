@@ -2,6 +2,8 @@
 
 import logging
 import os
+import sqlite3
+from copy import deepcopy
 
 from mochi.skills.base import Skill, SkillContext, SkillResult
 
@@ -21,13 +23,33 @@ _AGENT_SETTING_FIELDS = {
         "本地时间相对 UTC 的小时偏移。",
     ),
     "max_daily_proactive": (
-        "MAX_DAILY_PROACTIVE", "int", 0, 50,
-        "每天最多送达多少条 Free Time/Attention 主动消息。",
+        "MAX_DAILY_PROACTIVE", "int", 0, 10,
+        "每天最多获得多少次 Free Time 自主思考机会；实际次数可能更少。",
     ),
 }
 
 
 class SkillManagementSkill(Skill):
+
+    def get_tools(self) -> list[dict]:
+        definitions = deepcopy(super().get_tools())
+        for definition in definitions:
+            function = definition["function"]
+            if function["name"] == "manage_tool_load":
+                function["parameters"].update(
+                    additionalProperties=False,
+                    anyOf=[
+                        {"properties": {"action": {"enum": ["pin"]}}, "required": ["load"]},
+                        {
+                            "properties": {
+                                "action": {"enum": ["reset"]},
+                                "tool_name": {"type": "string"},
+                            },
+                            "additionalProperties": False,
+                        },
+                    ],
+                )
+        return definitions
 
     async def execute(self, context: SkillContext) -> SkillResult:
         tool = context.tool_name
@@ -35,6 +57,8 @@ class SkillManagementSkill(Skill):
 
         if tool == "list_skills":
             return self._list_skills()
+        elif tool == "manage_tool_load":
+            return self._manage_tool_load(context)
         elif tool == "toggle_skill":
             return self._toggle_skill(args.get("skill_name", ""), args.get("enabled", True))
         elif tool == "get_skill_config":
@@ -194,7 +218,19 @@ class SkillManagementSkill(Skill):
             else:
                 status = "ON"
 
-            tools_str = ", ".join(s["tools"]) if s["tools"] else "(none)"
+            tool_lines = []
+            for tool in s["tool_loads"]:
+                load = (
+                    tool["effective"] if tool["declared"] == tool["effective"]
+                    else f"{tool['declared']} → {tool['effective']}"
+                )
+                pin = f", pinned={tool['pinned']}" if tool["pinned"] else ""
+                changed = f", changed={tool['changed_at']}" if tool["changed_at"] else ""
+                reason_label = "Nightly snapshot" if tool["adaptive"] and not tool["pinned"] else "reason"
+                tool_lines.append(
+                    f"{tool['name']} [{load}{pin}{changed}; {reason_label}: {tool['reason']}]"
+                )
+            tools_str = ", ".join(tool_lines) if tool_lines else "(none)"
             config_tag = " [has config]" if s["config_schema"] else ""
             lines.append(
                 f"• {s['name']} [{status}] — {s['description']}\n"
@@ -210,6 +246,79 @@ class SkillManagementSkill(Skill):
 
         return SkillResult(
             output=f"Skills ({len(infos)}):\n\n" + "\n\n".join(lines),
+        )
+
+    def _manage_tool_load(self, context: SkillContext) -> SkillResult:
+        if context.actor != "main" or context.trigger != "tool_call":
+            return SkillResult(
+                output="只有 Main 可以调整工具加载层级。",
+                success=False, error_code="main_required", retryable=False,
+            )
+        args = context.args
+        action = args.get("action")
+        tool_name = args.get("tool_name")
+        if action not in {"pin", "reset"} or not isinstance(tool_name, str) or not tool_name.strip():
+            return SkillResult(
+                output="action 必须是 pin 或 reset，并提供 tool_name。",
+                success=False, error_code="invalid_arguments", retryable=True,
+            )
+        tool_name = tool_name.strip()
+        if action == "pin" and args.get("load") not in {"on_demand", "routed"}:
+            return SkillResult(
+                output="pin 需要 load=on_demand 或 routed。",
+                success=False, error_code="invalid_arguments", retryable=True,
+            )
+        if action == "reset" and "load" in args:
+            return SkillResult(
+                output="reset 不接受 load。",
+                success=False, error_code="invalid_arguments", retryable=True,
+            )
+        from mochi.skills import get_declared_tools
+        from mochi.adaptive_tool_load import AdaptiveLoadError, pin_definition
+
+        definition = next((
+            tool for tool in get_declared_tools()
+            if tool.get("function", {}).get("name") == tool_name
+        ), None)
+        if definition is None:
+            return SkillResult(
+                output=f"Unknown tool: '{tool_name}'",
+                success=False, error_code="unknown_tool", retryable=False,
+            )
+        try:
+            state = pin_definition(
+                definition, args.get("load") if action == "pin" else None,
+                user_id=context.user_id,
+            )
+        except AdaptiveLoadError as exc:
+            message = (
+                f"工具 '{tool_name}' 的加载层级由技能合同固定，不能调整。"
+                if exc.code == "fixed_tool_load"
+                else f"工具 '{tool_name}' 的自适应加载声明无效，未修改。"
+            )
+            return SkillResult(
+                output=message, success=False, error_code=exc.code, retryable=False,
+            )
+        except sqlite3.Error:
+            log.exception("Could not persist adaptive tool load")
+            return SkillResult(
+                output="工具加载设置未能保存，请稍后重试。",
+                success=False, error_code="tool_load_save_failed", retryable=True,
+                state_change_unknown=True,
+            )
+        action_text = (
+            f"已锁定为 {state['effective_load']}" if action == "pin"
+            else "已恢复自动调整"
+        )
+        changed = bool(state["changed"])
+        return SkillResult(
+            output=f"{tool_name} {action_text}。{state['reason']}",
+            summary=(
+                f"Updated adaptive load for {tool_name}." if changed
+                else f"Adaptive load for {tool_name} is unchanged."
+            ),
+            entity_refs=[f"tool:{tool_name}"],
+            state_changed=changed,
         )
 
     # ── toggle_skill ─────────────────────────────────────────

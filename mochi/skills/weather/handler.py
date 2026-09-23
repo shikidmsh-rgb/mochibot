@@ -1,6 +1,6 @@
 """Weather skill — get_weather tool + co-located observer.
 
-Tool: get_weather — returns current weather from wttr.in (via observer cache).
+Tool: get_weather — returns current weather from Open-Meteo (via observer cache).
 Observer: WeatherObserver — collects weather data every 60 minutes.
 """
 

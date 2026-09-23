@@ -109,16 +109,13 @@ def build_turn_tool_plan(transport: str = "") -> TurnToolPlan:
 
 def build_router_catalog(transport: str = "") -> dict[str, str]:
     """Return skills with at least one live, policy-visible routed tool."""
-    catalog: dict[str, str] = {}
-    for name, skill in skill_registry.all_skills().items():
-        definitions = filter_tools(
-            skill_registry.get_tools_by_names(
-                [name],
-                transport=transport,
-                loads={"routed"},
-            ),
-        )
-        if not definitions:
-            continue
-        catalog[name] = skill.description or name
-    return catalog
+    routed_skills = {
+        skill_registry.get_tool_skill(tool["function"]["name"])
+        for tool in filter_tools(skill_registry.get_tools(transport))
+        if tool.get("_load") == "routed"
+    }
+    return {
+        name: skill.description or name
+        for name, skill in skill_registry.all_skills().items()
+        if name in routed_skills
+    }

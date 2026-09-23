@@ -75,20 +75,28 @@ def compute_next_occurrence(
     return None
 
 
+def next_reminder_time(reminder: dict, now: datetime) -> str | None:
+    recurrence = reminder.get("recurrence")
+    if not recurrence:
+        return None
+    due = datetime.fromisoformat(reminder["remind_at"])
+    if due.tzinfo is None:
+        due = due.replace(tzinfo=TZ)
+    next_due = compute_next_occurrence(due, recurrence)
+    if next_due is None:
+        raise ValueError(f"Invalid recurrence: {recurrence!r}")
+    while reminder_deadline(next_due.isoformat()) <= now:
+        next_due = compute_next_occurrence(next_due, recurrence)
+    return next_due.isoformat()
+
+
 def _expire_reminder(conn, reminder: dict, now: datetime) -> bool:
     try:
         deadline = reminder_deadline(reminder["remind_at"])
         recurrence = reminder.get("recurrence")
         next_due = None
         if deadline <= now and recurrence:
-            due = datetime.fromisoformat(reminder["remind_at"])
-            if due.tzinfo is None:
-                due = due.replace(tzinfo=TZ)
-            next_due = compute_next_occurrence(due, recurrence)
-            if next_due is None:
-                raise ValueError(f"Invalid recurrence: {recurrence!r}")
-            while next_due is not None and reminder_deadline(next_due.isoformat()) <= now:
-                next_due = compute_next_occurrence(next_due, recurrence)
+            next_due = next_reminder_time(reminder, now)
     except (ValueError, TypeError, IndexError) as exc:
         conn.execute(
             "UPDATE reminders SET status = 'failed', fired = 1, "
@@ -119,7 +127,7 @@ def _expire_reminder(conn, reminder: dict, now: datetime) -> bool:
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0)",
             (
                 reminder["user_id"], reminder["channel_id"],
-                reminder["message"], next_due.isoformat(), recurrence,
+                reminder["message"], next_due, recurrence,
                 reminder["kind"], reminder["context"], reminder["source"],
                 reminder["transport"],
             ),
@@ -166,14 +174,15 @@ def create_reminder(
     channel_id: int,
     message: str,
     remind_at: str,
+    recurrence: str | None = None,
 ) -> int:
     conn = _connect()
     try:
         cursor = conn.execute(
             "INSERT INTO reminders "
-            "(user_id, channel_id, message, remind_at, kind, status, fired) "
-            "VALUES (?, ?, ?, ?, 'notify', 'pending', 0)",
-            (user_id, channel_id, message, remind_at),
+            "(user_id, channel_id, message, remind_at, recurrence, kind, status, fired) "
+            "VALUES (?, ?, ?, ?, ?, 'notify', 'pending', 0)",
+            (user_id, channel_id, message, remind_at, recurrence),
         )
         conn.commit()
         return int(cursor.lastrowid)
@@ -187,16 +196,17 @@ def create_self_reminder(
     intent: str,
     remind_at: str,
     transport: str,
+    recurrence: str | None = None,
 ) -> int:
-    """Persist a one-time private intent for future Main."""
+    """Persist a private intent for future Main."""
     conn = _connect()
     try:
         cursor = conn.execute(
             "INSERT INTO reminders "
             "(user_id, channel_id, message, remind_at, recurrence, kind, "
             "context, source, transport, status, fired) "
-            "VALUES (?, ?, '', ?, NULL, 'self', ?, 'main', ?, 'pending', 0)",
-            (user_id, channel_id, remind_at, intent, transport or None),
+            "VALUES (?, ?, '', ?, ?, 'self', ?, 'main', ?, 'pending', 0)",
+            (user_id, channel_id, remind_at, recurrence, intent, transport or None),
         )
         conn.commit()
         return int(cursor.lastrowid)
@@ -208,7 +218,7 @@ def get_active_reminders(user_id: int) -> list[dict]:
     conn = _connect()
     try:
         rows = conn.execute(
-            "SELECT id, user_id, channel_id, message, remind_at, kind, "
+            "SELECT id, user_id, channel_id, message, remind_at, recurrence, kind, "
             "context, source, status FROM reminders "
             "WHERE user_id = ? AND kind IN ('notify', 'self') "
             "AND status IN ('pending', 'running', 'ready') "
@@ -216,6 +226,48 @@ def get_active_reminders(user_id: int) -> list[dict]:
             (user_id,),
         ).fetchall()
         return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def update_active_reminder(
+    reminder_id: int, user_id: int, **fields,
+) -> tuple[str, dict | None]:
+    allowed = {"remind_at", "message", "context", "recurrence"}
+    updates = {key: value for key, value in fields.items() if key in allowed}
+    conn = _connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT * FROM reminders WHERE id = ? AND user_id = ? "
+            "AND kind IN ('notify', 'self')",
+            (reminder_id, user_id),
+        ).fetchone()
+        if row is None:
+            return "not_found", None
+        reminder = dict(row)
+        if (
+            reminder["status"] != "pending"
+            or reminder["claimed_at"] is not None
+            or reminder["attempt_count"]
+            or reminder["prepared_text"] is not None
+            or reminder["result_json"] is not None
+            or reminder["delivery_cursor"]
+            or reminder_deadline(reminder["remind_at"]) <= _now()
+        ):
+            return "started", reminder
+        if "remind_at" in updates and reminder_deadline(updates["remind_at"]) <= _now():
+            return "expired_time", reminder
+        if all(reminder[key] == value for key, value in updates.items()):
+            return "unchanged", reminder
+        assignments = ", ".join(f"{key} = ?" for key in updates)
+        conn.execute(
+            f"UPDATE reminders SET {assignments} WHERE id = ? AND user_id = ?",
+            (*updates.values(), reminder_id, user_id),
+        )
+        conn.commit()
+        reminder.update(updates)
+        return "updated", reminder
     finally:
         conn.close()
 
@@ -436,6 +488,30 @@ def complete_without_delivery(
     handled_iso = _iso(handled_at)
     conn = _connect()
     try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT * FROM reminders WHERE id = ? AND kind = 'self' "
+            "AND status IN ('running', 'expired') AND claimed_at = ?",
+            (reminder_id, claimed_at),
+        ).fetchone()
+        if row is None:
+            return False
+        reminder = dict(row)
+        expired = reminder["status"] == "expired"
+        if not expired:
+            expired = _expire_reminder(conn, reminder, handled_at)
+        next_time = None if expired else next_reminder_time(reminder, handled_at)
+        if next_time is not None:
+            conn.execute(
+                "UPDATE reminders SET status = 'pending', fired = 0, remind_at = ?, "
+                "result_json = NULL, outcome = NULL, handled_at = NULL, delivered_at = NULL, "
+                "claimed_at = NULL, lease_until = NULL, attempt_count = 0, "
+                "next_attempt_at = NULL, last_error = NULL, prepared_text = NULL, "
+                "delivery_cursor = 0, delivery_started_at = NULL WHERE id = ?",
+                (next_time, reminder_id),
+            )
+            conn.commit()
+            return True
         cursor = conn.execute(
             "UPDATE reminders SET fired = 1, result_json = ?, "
             "outcome = CASE WHEN status = 'expired' THEN outcome ELSE ? END, "
@@ -571,28 +647,32 @@ def complete_reminder_delivery(
     claimed_at: str,
     *,
     delivered_at: datetime | None = None,
-    next_remind_at: str | None = None,
 ) -> bool:
     delivered_at = (delivered_at or _now()).astimezone(timezone.utc)
     conn = _connect()
     try:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
-            "SELECT status FROM reminders WHERE id = ? AND claimed_at = ? "
+            "SELECT * FROM reminders WHERE id = ? AND claimed_at = ? "
             "AND status IN ('ready', 'expired') AND delivery_started_at IS NOT NULL",
             (reminder_id, claimed_at),
         ).fetchone()
         if row is None:
             conn.rollback()
             return False
+        reminder = dict(row)
+        expired = reminder["status"] == "expired"
+        if not expired:
+            expired = _expire_reminder(conn, reminder, delivered_at)
+        next_remind_at = None if expired else next_reminder_time(reminder, delivered_at)
         # Expiry blocks new sends, not receipts for an already-started send.
         # An expired recurring occurrence already has its successor.
-        if next_remind_at and row["status"] != "expired":
+        if next_remind_at and not expired:
             cursor = conn.execute(
                 "UPDATE reminders SET status = 'pending', fired = 0, "
                 "remind_at = ?, claimed_at = NULL, lease_until = NULL, "
                 "attempt_count = 0, next_attempt_at = NULL, last_error = NULL, "
-                "prepared_text = NULL, result_json = NULL, outcome = NULL, "
+                "prepared_text = NULL, result_json = NULL, outcome = NULL, handled_at = NULL, "
                 "delivery_cursor = 0, delivery_started_at = NULL, "
                 "delivered_at = NULL WHERE id = ? AND status = 'ready' "
                 "AND claimed_at = ?",

@@ -42,3 +42,17 @@ def get_allowed_days(freq: str) -> set[int] | None:
         return None
     days = m.group(1).split(",")
     return {_DAY_MAP[d] for d in days if d in _DAY_MAP}
+
+
+def describe_frequency(freq: str) -> str:
+    parsed = parse_frequency(freq)
+    if not parsed:
+        return "频率未设置"
+    cycle, target = parsed
+    allowed = get_allowed_days(freq)
+    if allowed is not None:
+        labels = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
+        days = "、".join(labels[index] for index in sorted(allowed))
+        return f"每周 {days}，目标 {target} 次"
+    label = "每天" if cycle == "daily" else "每周"
+    return f"{label} {target} 次"

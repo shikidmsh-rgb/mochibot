@@ -1,26 +1,34 @@
-"""MochiBot launcher with automatic restart support.
+"""Launch Main; handle ordinary restarts and prepared stable-release updates."""
 
-Usage:
-    python scripts/start.py
-
-When the bot requests a restart (e.g. via the admin portal's restart button),
-it exits with code 42. This wrapper detects that and relaunches automatically.
-
-For Docker or systemd deployments, use ``python -m mochi.main`` directly —
-those environments already handle process restarts.
-"""
-
+import argparse
+import os
 import subprocess
 import sys
 import time
 
-# Must match mochi.shutdown.RESTART_EXIT_CODE (mochi/shutdown.py:10)
 _RESTART_EXIT_CODE = 42
+_UPDATE_EXIT_CODE = 44
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--open-browser", action="store_true")
+    args = parser.parse_args()
+    child_env = dict(os.environ, MOCHIBOT_UPDATE_LAUNCHER="1")
+    open_browser = args.open_browser
     while True:
-        result = subprocess.run([sys.executable, "-m", "mochi.main"])
+        command = [sys.executable, "-m", "mochi.main"]
+        if open_browser:
+            command.append("--open-browser")
+            open_browser = False
+        result = subprocess.run(command, env=child_env)
+        if result.returncode == _UPDATE_EXIT_CODE:
+            update = subprocess.run(
+                [sys.executable, "-m", "mochi.update_service"], env=child_env,
+            )
+            if update.returncode:
+                print(f"[start.py] Update helper exited with code {update.returncode}.", flush=True)
+            continue
         if result.returncode == _RESTART_EXIT_CODE:
             print()
             print("  [start.py] Restart requested — restarting in 2s...")

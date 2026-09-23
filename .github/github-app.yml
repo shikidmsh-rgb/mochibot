@@ -22,8 +22,8 @@ instructions: |
   explicit owner approval.
 
   Read docs/architecture.md for runtime boundaries and dependency direction.
-  Use docs/SKILL_SPEC.md for skill contracts and CONTRIBUTING.md for development
-  entry points. Keep architecture.md as the single high-level architecture
+  Use docs/SKILL_SPEC.md for skill contracts and development entry points.
+  Keep architecture.md as the single high-level architecture
   document; update it when boundaries or major data flows change, not as a
   progress log. If documentation and code disagree, trace the actual behavior
   and surface the discrepancy rather than treating either as proof of intent.

@@ -315,23 +315,17 @@ _SYSTEM_SKILL_NAME = "_system"
 # Only a small preference subset is user-facing; the rest remain here so legacy
 # DB overrides keep their original types and behavior.
 # Environment-only keys:
-#   PROACTIVE_COOLDOWN_SECONDS, THINK_FALLBACK_MINUTES, LLM_HEARTBEAT_TIMEOUT_SECONDS — internal heartbeat tuning
+#   FREE_TIME_ENABLED, LLM_HEARTBEAT_TIMEOUT_SECONDS — internal heartbeat tuning
 #   BEDTIME_ENTRY_ENABLED, BEDTIME_ENTRY_TIMEOUT_S — no dedicated settings page
 #   Autonomous Main Runtime output tuning
 _ENV_ONLY_SYSTEM_KEYS = frozenset({
     "FREE_TIME_ENABLED",
-    "PROACTIVE_COOLDOWN_SECONDS",
-    "THINK_FALLBACK_MINUTES",
     "LLM_HEARTBEAT_TIMEOUT_SECONDS",
 })
 
 SYSTEM_DEFAULTS: dict[str, tuple[str, any]] = {
     # ── Heartbeat ──
-    "HEARTBEAT_INTERVAL_MINUTES":     ("int",   20),
     "MAX_DAILY_PROACTIVE":            ("int",   5),
-    "ATTENTION_INTERVAL_MINUTES":     ("int",   60),
-    "FREE_TIME_MIN_MINUTES":          ("int",   90),
-    "FREE_TIME_MAX_MINUTES":          ("int",   240),
     "FALLBACK_WAKE_HOUR":             ("int",   10),
     "BEDTIME_ENTRY_ENABLED":          ("bool",  True),
     "BEDTIME_ENTRY_TIMEOUT_S":        ("int",   60),

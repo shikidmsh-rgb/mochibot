@@ -34,6 +34,7 @@ from mochi.knowledge_graph import (
     list_active_relationships,
 )
 from mochi.skills.base import SkillResult
+from mochi.memory_contract import MAX_EVIDENCE_MESSAGE_IDS, MAX_MEMORY_CONTENT_CHARS
 
 
 CORE_TOOL = "update_weekly_core"
@@ -67,16 +68,9 @@ _CURATE_DEFINITION = {
     "function": {
         "name": CURATE_TOOL,
         "description": (
-            "Atomically create, edit, merge, or archive only the visible "
-            "Weekly Memory candidates. Each operation must be one of: "
-            "create(op,content,importance,evidence_message_ids); "
-            "edit(op,item_id,expected_content,expected_updated_at,content,"
-            "importance,evidence_message_ids); "
-            "merge(op,keep:{item_id,expected_content,expected_updated_at},"
-            "remove:[same shape],content,importance,"
-            "evidence_message_ids); archive(op,item_id,expected_content,"
-            "expected_updated_at,evidence_message_ids). "
-            "Use at most one successful batch."
+            "整理眼前这一周的 Memory Items。你只需提交想做的改变、相关 item "
+            "ID 和支持判断的 message ID；框架会核对你看到的版本并原子提交。"
+            "没有需要改变的内容时，operations 可以为空。"
         ),
         "parameters": {
             "type": "object",
@@ -84,7 +78,65 @@ _CURATE_DEFINITION = {
                 "operations": {
                     "type": "array",
                     "maxItems": 20,
-                    "items": {"type": "object"},
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "op": {
+                                "type": "string",
+                                "enum": ["create", "edit", "merge", "archive"],
+                            },
+                            "item_id": {
+                                "type": "integer",
+                                "description": "edit 或 archive 的 Memory Item ID。",
+                            },
+                            "keep_item_id": {
+                                "type": "integer",
+                                "description": "merge 后保留的 Memory Item ID。",
+                            },
+                            "remove_item_ids": {
+                                "type": "array",
+                                "items": {"type": "integer"},
+                                "minItems": 1,
+                                "description": "merge 后归档的 Memory Item IDs。",
+                            },
+                            "content": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": MAX_MEMORY_CONTENT_CHARS,
+                                "description": "create、edit 或 merge 后的记忆内容。",
+                            },
+                            "importance": {"type": "integer", "enum": [1, 2, 3]},
+                            "evidence_message_ids": {
+                                "type": "array",
+                                "items": {"type": "integer"},
+                                "maxItems": MAX_EVIDENCE_MESSAGE_IDS,
+                                "description": "直接支持这项决定的可见用户消息 ID。",
+                            },
+                        },
+                        "required": ["op", "evidence_message_ids"],
+                        "anyOf": [
+                            {
+                                "properties": {"op": {"enum": ["create"]}},
+                                "required": ["content", "importance"],
+                            },
+                            {
+                                "properties": {"op": {"enum": ["edit"]}},
+                                "required": ["item_id", "content", "importance"],
+                            },
+                            {
+                                "properties": {"op": {"enum": ["merge"]}},
+                                "required": [
+                                    "keep_item_id", "remove_item_ids", "content",
+                                    "importance",
+                                ],
+                            },
+                            {
+                                "properties": {"op": {"enum": ["archive"]}},
+                                "required": ["item_id"],
+                            },
+                        ],
+                        "additionalProperties": False,
+                    },
                 },
             },
             "required": ["operations"],
@@ -98,12 +150,11 @@ _RELATIONSHIP_DEFINITION = {
     "function": {
         "name": RELATIONSHIP_TOOL,
         "description": (
-            "Atomically upsert or archive durable relationships among the user's "
-            "people, pets, and places. Every upsert cites an exact visible Memory "
-            "Item snapshot with user-message evidence; Core is context, not "
-            "evidence. Complete Memory curation first when that tool is available, "
-            "then use its refreshed relationship context. An empty operations "
-            "array records that no change is needed."
+            "整理用户与人物、宠物、地点之间值得长期保留的关系。每次新增或"
+            "更新只需引用支持它的可见 Memory Item ID；归档只需引用可见关系 "
+            "ID。框架会核对当时可见的版本、证据和范围并原子提交。没有变化时 "
+            "operations 可以为空。如果本轮也有 Memory 整理能力，先调用 "
+            "curate_weekly_memory（即使 operations 为空），再整理关系。"
         ),
         "parameters": {
             "type": "object",
@@ -147,35 +198,25 @@ _RELATIONSHIP_DEFINITION = {
                                 "type": "object",
                                 "properties": {
                                     "item_id": {"type": "integer"},
-                                    "content": {"type": "string"},
-                                    "updated_at": {"type": "string"},
                                 },
-                                "required": ["item_id", "content", "updated_at"],
+                                "required": ["item_id"],
                                 "additionalProperties": False,
                             },
-                            "expected": {
-                                "type": "object",
-                                "properties": {
-                                    "triple_id": {"type": "integer"},
-                                    "subject": {"type": "string"},
-                                    "subject_type": {"type": "string"},
-                                    "predicate": {"type": "string"},
-                                    "object": {"type": "string"},
-                                    "object_type": {"type": "string"},
-                                    "source_memory_id": {
-                                        "type": ["integer", "null"],
-                                    },
-                                    "created_at": {"type": "string"},
-                                },
-                                "required": [
-                                    "triple_id", "subject", "subject_type",
-                                    "predicate", "object", "object_type",
-                                    "source_memory_id", "created_at",
-                                ],
-                                "additionalProperties": False,
-                            },
+                            "triple_id": {"type": "integer"},
                         },
                         "required": ["op"],
+                        "anyOf": [
+                            {
+                                "properties": {"op": {"enum": ["upsert"]}},
+                                "required": [
+                                    "subject", "predicate", "object", "source_memory",
+                                ],
+                            },
+                            {
+                                "properties": {"op": {"enum": ["archive"]}},
+                                "required": ["triple_id"],
+                            },
+                        ],
                         "additionalProperties": False,
                     },
                 },
@@ -324,7 +365,80 @@ class WeeklyMaintenanceSession:
     core_succeeded: bool = False
     curation_succeeded: bool = False
     relationships_succeeded: bool = False
-    curated_relationship_item_ids: set[int] = field(default_factory=set)
+    memory_snapshots: dict[int, dict] = field(default_factory=dict, init=False)
+    relationship_snapshots: dict[int, dict] = field(default_factory=dict, init=False)
+    _pending_relationship_context: tuple[dict, dict] | None = field(
+        default=None, init=False, repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        self.memory_snapshots = {
+            item.id: {
+                "item_id": item.id, "content": item.content,
+                "updated_at": item.updated_at,
+            }
+            for item in (
+                *self.context.package.window_items, *self.context.package.related_items,
+            )
+        }
+        self.relationship_snapshots = {
+            item["triple_id"]: dict(item) for item in self.context.active_relationships
+        }
+
+    def advance_visible_context(self) -> None:
+        """Advance only when the next model round can see the previous results."""
+        if self._pending_relationship_context is not None:
+            self.memory_snapshots, self.relationship_snapshots = (
+                self._pending_relationship_context
+            )
+            self._pending_relationship_context = None
+
+    def _memory_snapshot(self, item_id: int) -> dict:
+        if item_id not in self.memory_snapshots:
+            raise MemoryCurationError(
+                f"Memory item {item_id} is outside the visible Weekly scope."
+            )
+        return dict(self.memory_snapshots[item_id])
+
+    def _memory_expected(self, item_id: int) -> dict:
+        snapshot = self._memory_snapshot(item_id)
+        return {
+            "item_id": item_id, "expected_content": snapshot["content"],
+            "expected_updated_at": snapshot["updated_at"],
+        }
+
+    def _memory_operations(self, operations: list[dict]) -> list[dict]:
+        hydrated = []
+        for raw in operations:
+            operation = dict(raw)
+            if operation["op"] in {"edit", "archive"}:
+                operation.update(self._memory_expected(operation["item_id"]))
+            elif operation["op"] == "merge":
+                operation["keep"] = self._memory_expected(operation.pop("keep_item_id"))
+                operation["remove"] = [
+                    self._memory_expected(item_id)
+                    for item_id in operation.pop("remove_item_ids")
+                ]
+            hydrated.append(operation)
+        return hydrated
+
+    def _relationship_operations(self, operations: list[dict]) -> list[dict]:
+        hydrated = []
+        for raw in operations:
+            operation = dict(raw)
+            if operation["op"] == "upsert":
+                operation["source_memory"] = self._memory_snapshot(
+                    operation["source_memory"]["item_id"],
+                )
+            elif operation["op"] == "archive":
+                triple_id = operation.pop("triple_id")
+                if triple_id not in self.relationship_snapshots:
+                    raise RelationshipCurationError(
+                        f"Relationship {triple_id} is outside the visible Weekly scope."
+                    )
+                operation["expected"] = dict(self.relationship_snapshots[triple_id])
+            hydrated.append(operation)
+        return hydrated
 
     def definitions(self) -> list[dict]:
         definitions = []
@@ -417,7 +531,7 @@ class WeeklyMaintenanceSession:
                 self.user_id,
                 self.context.allowed_item_ids,
                 self.context.allowed_evidence_message_ids,
-                args["operations"],
+                self._memory_operations(args["operations"]),
                 period_key=self.context.period_key,
             )
         except (MemoryCurationError, TypeError, KeyError) as exc:
@@ -440,12 +554,23 @@ class WeeklyMaintenanceSession:
             self.user_id,
             current_item_ids,
         )
-        self.curated_relationship_item_ids.update(
-            item["id"] for item in current_items
-        )
+        next_memories = dict(self.memory_snapshots)
+        for item_id in result.archived_ids:
+            next_memories.pop(item_id, None)
+        next_memories.update({
+            item["id"]: {
+                "item_id": item["id"], "content": item["content"],
+                "updated_at": item["updated_at"],
+            }
+            for item in current_items
+        })
         active_relationships = await asyncio.to_thread(
             list_active_relationships,
             self.user_id,
+        )
+        self._pending_relationship_context = (
+            next_memories,
+            {item["triple_id"]: dict(item) for item in active_relationships},
         )
         receipt_payload = {
             "status": "replayed" if result.replayed else "committed",
@@ -502,13 +627,10 @@ class WeeklyMaintenanceSession:
             result = await asyncio.to_thread(
                 curate_relationships,
                 self.user_id,
-                (
-                    set(self.context.allowed_item_ids)
-                    | self.curated_relationship_item_ids
-                ),
-                args["operations"],
+                set(self.memory_snapshots),
+                self._relationship_operations(args["operations"]),
             )
-        except (RelationshipCurationError, TypeError, KeyError) as exc:
+        except (RelationshipCurationError, MemoryCurationError, TypeError, KeyError) as exc:
             return SkillResult(
                 output=f"Weekly relationship curation rejected: {exc}",
                 success=False,

@@ -6,7 +6,7 @@ type: tool
 
 ## Tools
 
-### run_checkup (on_demand)
+### run_checkup (on_demand, adaptive)
 汇总当前 prompt 体积、数据库、记忆和运行状态，适合了解 MochiBot 自身是否健康。
 
 无需参数。

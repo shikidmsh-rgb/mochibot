@@ -19,31 +19,30 @@ def save_health_log(user_id: int, date: str, log_type: str, content: str,
     """
     now = datetime.now(TZ).isoformat()
     conn = _connect()
-    existing = conn.execute(
-        "SELECT id FROM health_log "
-        "WHERE user_id = ? AND date = ? AND type = ? AND source = ? LIMIT 1",
-        (user_id, date, log_type, source),
-    ).fetchone()
-
-    if existing:
-        conn.execute(
-            "UPDATE health_log SET content = ?, metrics = ?, importance = MAX(importance, ?), "
-            "updated_at = ? WHERE id = ?",
-            (content, metrics, importance, now, existing["id"]),
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        existing = conn.execute(
+            "SELECT id FROM health_log "
+            "WHERE user_id = ? AND date = ? AND type = ? AND source = ? LIMIT 1",
+            (user_id, date, log_type, source),
+        ).fetchone()
+        if existing:
+            conn.execute(
+                "UPDATE health_log SET content = ?, metrics = ?, importance = MAX(importance, ?), "
+                "updated_at = ? WHERE id = ?",
+                (content, metrics, importance, now, existing["id"]),
+            )
+            conn.commit()
+            return existing["id"]
+        cursor = conn.execute(
+            "INSERT INTO health_log (user_id, date, type, source, content, metrics, "
+            "importance, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_id, date, log_type, source, content, metrics, importance, now, now),
         )
         conn.commit()
+        return int(cursor.lastrowid)
+    finally:
         conn.close()
-        return existing["id"]
-
-    conn.execute(
-        "INSERT INTO health_log (user_id, date, type, source, content, metrics, "
-        "importance, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (user_id, date, log_type, source, content, metrics, importance, now, now),
-    )
-    row_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-    conn.commit()
-    conn.close()
-    return row_id
 
 
 def query_health_log(user_id: int, types: list[str] | None = None,
@@ -64,7 +63,7 @@ def query_health_log(user_id: int, types: list[str] | None = None,
         sql += " AND date = ?"
         params.append(date)
     else:
-        cutoff = logical_days_ago(days)
+        cutoff = logical_days_ago(days - 1)
         sql += " AND date >= ?"
         params.append(cutoff)
 
@@ -81,13 +80,14 @@ def query_health_log(user_id: int, types: list[str] | None = None,
     return [dict(r) for r in rows]
 
 
-def delete_health_log_items(item_ids: list[int]) -> int:
-    """Hard delete health_log rows by id list. Returns count deleted."""
-    if not item_ids:
-        return 0
+def delete_health_log_item(user_id: int, item_id: int) -> bool:
     conn = _connect()
-    ph = ",".join("?" * len(item_ids))
-    conn.execute(f"DELETE FROM health_log WHERE id IN ({ph})", item_ids)
-    conn.commit()
-    conn.close()
-    return len(item_ids)
+    try:
+        cursor = conn.execute(
+            "DELETE FROM health_log WHERE id = ? AND user_id = ? AND type = 'meal'",
+            (item_id, user_id),
+        )
+        conn.commit()
+        return cursor.rowcount == 1
+    finally:
+        conn.close()

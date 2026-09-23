@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import datetime, timedelta, timezone
+from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 
 from mochi.config import (
@@ -26,11 +27,11 @@ from mochi.heartbeat_runtime import (
     complete_delivery,
     complete_without_delivery,
     delivery_lease_valid,
-    delivery_wait_seconds,
-    ensure_schedules,
+    ensure_daily_free_time_plan,
     entry_from_claim,
     expire_abandoned_runs,
-    materialize_due_runs,
+    expire_unusable_free_time_runs,
+    get_schedulable_runs,
     record_failure,
     recover_prior_tool_attempt,
     remove_delivered_component,
@@ -47,6 +48,7 @@ SLEEPING = "SLEEPING"
 AWAKE = "AWAKE"
 TRANSITIONING = "TRANSITIONING"
 RESLEEP_WINDOW_HOURS = 6
+HEARTBEAT_TICK_SECONDS = 30
 
 
 def _effective(key: str):
@@ -113,6 +115,8 @@ _weekly_callback = None
 _runtime_prepare_callback = None
 _runtime_delivery_callback = None
 _runtime_transport = ""
+_active_chat_tokens: set[object] = set()
+_chat_activity_generation = 0
 
 
 def reload_state_after_config_seed() -> None:
@@ -137,6 +141,78 @@ def set_main_runtime_callbacks(prepare_callback, delivery_callback, transport: s
     _runtime_prepare_callback = prepare_callback
     _runtime_delivery_callback = delivery_callback
     _runtime_transport = transport
+
+
+def begin_active_chat() -> object:
+    """Begin one owner-message handling scope, independent of polling-task life."""
+    global _chat_activity_generation
+    token = object()
+    _active_chat_tokens.add(token)
+    _chat_activity_generation += 1
+    return token
+
+
+def end_active_chat(token: object) -> None:
+    try:
+        # Short conversations can start and finish between heartbeat ticks.
+        expire_unusable_free_time_runs(
+            now=datetime.now(TZ), active_chat=True, awake=_state == AWAKE,
+        )
+    finally:
+        _active_chat_tokens.remove(token)
+
+
+@contextmanager
+def active_chat():
+    """Keep the scope open through the transport's final outgoing component."""
+    token = begin_active_chat()
+    try:
+        yield token
+    finally:
+        end_active_chat(token)
+
+
+def has_active_chat() -> bool:
+    return bool(_active_chat_tokens)
+
+
+def chat_activity_generation() -> int:
+    return _chat_activity_generation
+
+
+def free_time_turn_available(
+    chat_generation: int | None, state_changed_at: str | None = None,
+) -> bool:
+    return (
+        _state == AWAKE and not _silent_pause
+        and bool(_effective("FREE_TIME_ENABLED"))
+        and int(_effective("MAX_DAILY_PROACTIVE")) > 0
+        and not has_active_chat()
+        and (
+            chat_generation is None
+            or chat_generation == _chat_activity_generation
+        )
+        and (
+            state_changed_at is None
+            or state_changed_at == _state_changed_at.isoformat()
+        )
+    )
+
+
+def _claim_available(claimed: dict) -> bool:
+    return free_time_turn_available(
+        claimed.get("_chat_generation"), claimed.get("_state_changed_at"),
+    ) and delivery_lease_valid(claimed)
+
+
+def _finish_unavailable_claim(claimed: dict, durable: DurableChatResult) -> None:
+    generation = claimed.get("_chat_generation")
+    interrupted_by_chat = has_active_chat() or (
+        generation is not None and generation != chat_activity_generation()
+    )
+    outcome = "active_chat" if interrupted_by_chat else "expired"
+    complete_without_delivery(claimed, durable, outcome)
+    log_heartbeat(_state, f"free_time_{outcome}", "turn no longer available")
 
 
 def wake_up(reason: str = "unknown") -> None:
@@ -282,17 +358,12 @@ def _check_silence_pause() -> None:
 
 def get_stats() -> dict:
     now = datetime.now(TZ)
-    day = logical_today(now)
-    start = datetime.strptime(day, "%Y-%m-%d").replace(
-        hour=_effective("MAINTENANCE_HOUR"), tzinfo=TZ,
-    ).astimezone(timezone.utc)
-    end = start + timedelta(days=1)
     conn = _connect()
     try:
         count = conn.execute(
-            "SELECT COUNT(*) FROM heartbeat_runs WHERE text_delivered_at >= ? "
-            "AND text_delivered_at < ?",
-            (start.isoformat(), end.isoformat()),
+            "SELECT COUNT(*) FROM heartbeat_runs WHERE entry_kind = 'free_time' "
+            "AND run_key LIKE ? AND attempt_count > 0",
+            (f"free_time:{now.date().isoformat()}:%",),
         ).fetchone()[0]
     finally:
         conn.close()
@@ -300,7 +371,7 @@ def get_stats() -> dict:
         "state": _state,
         "state_changed_at": _state_changed_at.isoformat(),
         "proactive_today": count,
-        "proactive_limit": _effective("MAX_DAILY_PROACTIVE"),
+        "proactive_limit": max(0, min(10, int(_effective("MAX_DAILY_PROACTIVE")))),
         "wake_reason": _wake_reason,
     }
 
@@ -409,6 +480,9 @@ async def _prepare_autonomous(claimed: dict) -> DurableChatResult | None:
             _state, f"{claimed['entry_kind']}_failure", str(exc)[:200],
         )
         return None
+    if not _claim_available(claimed):
+        _finish_unavailable_claim(claimed, durable)
+        return None
     if durable.disposition == "skip" and not durable.successful_effects:
         complete_without_delivery(claimed, durable, "skip")
         log_heartbeat(_state, f"{claimed['entry_kind']}_skip")
@@ -438,30 +512,14 @@ async def _deliver_autonomous(
     if _runtime_delivery_callback is None:
         record_failure(claimed, "Runtime delivery callback is not registered")
         return False
-    wait_seconds = delivery_wait_seconds(
-        now=datetime.now(TZ),
-        max_daily=int(_effective("MAX_DAILY_PROACTIVE")),
-        cooldown_seconds=int(_effective("PROACTIVE_COOLDOWN_SECONDS")),
-    )
-    if (durable.text or durable.stickers) and wait_seconds:
-        complete_without_delivery(claimed, durable, "suppressed")
-        log_heartbeat(_state, f"{claimed['entry_kind']}_delivery_suppressed")
-        return False
-    if not begin_delivery(claimed):
-        complete_without_delivery(claimed, durable, "expired")
-        log_heartbeat(_state, f"{claimed['entry_kind']}_expired")
+    if not _claim_available(claimed) or not begin_delivery(claimed):
+        _finish_unavailable_claim(claimed, durable)
         return False
     from mochi.ai_client import ChatResult
     from mochi.transport import DeliveryError
 
-    state_changed_at = _state_changed_at
-
     def can_deliver() -> bool:
-        return (
-            _state == AWAKE and not _silent_pause
-            and _state_changed_at == state_changed_at
-            and delivery_lease_valid(claimed)
-        )
+        return _claim_available(claimed)
 
     remaining = durable
     components = []
@@ -470,8 +528,7 @@ async def _deliver_autonomous(
     components.extend(("sticker", item) for item in remaining.stickers)
     for kind, value in components:
         if not can_deliver():
-            complete_without_delivery(claimed, remaining, "expired")
-            log_heartbeat(_state, f"{claimed['entry_kind']}_expired", "state changed")
+            _finish_unavailable_claim(claimed, remaining)
             return False
         component = (
             ChatResult(text=value)
@@ -484,12 +541,12 @@ async def _deliver_autonomous(
             )
         except DeliveryError as exc:
             if exc.outcome == "expired":
-                complete_without_delivery(claimed, remaining, "expired")
+                _finish_unavailable_claim(claimed, remaining)
             else:
                 record_failure(claimed, str(exc), outcome=exc.outcome)
-            log_heartbeat(
-                _state, f"{claimed['entry_kind']}_{exc.outcome}", str(exc),
-            )
+                log_heartbeat(
+                    _state, f"{claimed['entry_kind']}_{exc.outcome}", str(exc),
+                )
             return False
         except Exception as exc:
             record_failure(
@@ -535,16 +592,14 @@ async def _deliver_autonomous(
 
 
 async def _run_claimed_entry(claimed: dict) -> None:
-    state_changed_at = _state_changed_at
+    if not _claim_available(claimed):
+        _finish_unavailable_claim(claimed, DurableChatResult())
+        return
     durable = await _prepare_autonomous(claimed)
     if durable is None:
         return
-    if (
-        _state != AWAKE or _silent_pause
-        or _state_changed_at != state_changed_at
-    ):
-        complete_without_delivery(claimed, durable, "expired")
-        log_heartbeat(_state, f"{claimed['entry_kind']}_expired", "state changed")
+    if not _claim_available(claimed):
+        _finish_unavailable_claim(claimed, durable)
         return
     await _deliver_autonomous(claimed, durable)
 
@@ -554,59 +609,63 @@ async def run_main_runtime_tick(
     *,
     now: datetime | None = None,
 ) -> list[str]:
-    """Collect facts, advance independent clocks, and run each durable claim."""
-    now = now or datetime.now(TZ)
+    """Refresh observer caches and claim at most one present-time opportunity."""
+    fixed_now = now
+    now = fixed_now or datetime.now(TZ)
     expire_abandoned_runs(now=now)
-    if _state != AWAKE or _silent_pause:
+    enabled = bool(_effective("FREE_TIME_ENABLED"))
+    created = []
+    if enabled:
+        created = ensure_daily_free_time_plan(
+            user_id=user_id,
+            channel_id=user_id,
+            transport=_runtime_transport,
+            now=now,
+            max_daily=int(_effective("MAX_DAILY_PROACTIVE")),
+        )
+    awake = _state == AWAKE and not _silent_pause and enabled
+    expire_unusable_free_time_runs(
+        now=now, active_chat=has_active_chat(), awake=awake,
+    )
+    if not awake:
         return []
-    from mochi.observers import collect_attention_facts
+    from mochi.observers import collect_all
 
-    changed = await collect_attention_facts()
+    await collect_all()
     try:
         from mochi.diary import refresh_diary_status
 
         refresh_diary_status(user_id)
     except Exception as exc:
         log.warning("Diary status refresh failed: %s", exc)
-    free_time_enabled = _effective("FREE_TIME_ENABLED")
-    ensure_schedules(
-        now=now,
-        attention_interval_minutes=int(_effective("ATTENTION_INTERVAL_MINUTES")),
-        free_time_min_minutes=int(_effective("FREE_TIME_MIN_MINUTES")),
-        free_time_max_minutes=int(_effective("FREE_TIME_MAX_MINUTES")),
-        free_time_enabled=free_time_enabled,
+    now = fixed_now or datetime.now(TZ)
+    expire_unusable_free_time_runs(
+        now=now, active_chat=has_active_chat(),
+        awake=free_time_turn_available(None),
     )
-    if changed:
-        from mochi.heartbeat_runtime import advance_attention
-
-        advance_attention(now=now)
-    created = materialize_due_runs(
-        user_id=user_id,
-        channel_id=user_id,
-        transport=_runtime_transport,
-        now=now,
-        attention_interval_minutes=int(_effective("ATTENTION_INTERVAL_MINUTES")),
-        free_time_min_minutes=int(_effective("FREE_TIME_MIN_MINUTES")),
-        free_time_max_minutes=int(_effective("FREE_TIME_MAX_MINUTES")),
-        free_time_enabled=free_time_enabled,
-    )
-    for run_key in created:
-        if _state != AWAKE or _silent_pause:
-            break
-        claimed = claim_run(run_key)
+    if not free_time_turn_available(None):
+        return created
+    for row in get_schedulable_runs(now=now):
+        claimed = claim_run(
+            row["run_key"], now=now,
+            max_daily=int(_effective("MAX_DAILY_PROACTIVE")),
+        )
         if claimed is not None:
+            claimed["_chat_generation"] = chat_activity_generation()
+            claimed["_state_changed_at"] = _state_changed_at.isoformat()
             await _run_claimed_entry(claimed)
+            break
     return created
 
 
 async def heartbeat_loop() -> None:
     log.info(
-        "Heartbeat started: interval=%dm, state=%s",
-        _effective("HEARTBEAT_INTERVAL_MINUTES"),
+        "Heartbeat started: internal_tick=%ds, state=%s",
+        HEARTBEAT_TICK_SECONDS,
         _state,
     )
     while True:
-        interval = int(_effective("HEARTBEAT_INTERVAL_MINUTES")) * 60
+        interval = HEARTBEAT_TICK_SECONDS
         try:
             from mochi.config import OWNER_USER_ID as user_id
 
@@ -616,6 +675,18 @@ async def heartbeat_loop() -> None:
             now = datetime.now(TZ)
             await _run_maintenance_if_due(user_id, now)
             await _run_weekly_if_due(user_id, now)
+            now = datetime.now(TZ)
+            if _effective("FREE_TIME_ENABLED"):
+                ensure_daily_free_time_plan(
+                    user_id=user_id, channel_id=user_id,
+                    transport=_runtime_transport, now=now,
+                    max_daily=int(_effective("MAX_DAILY_PROACTIVE")),
+                )
+            expire_abandoned_runs(now=now)
+            expire_unusable_free_time_runs(
+                now=now, active_chat=has_active_chat(),
+                awake=free_time_turn_available(None),
+            )
             if _state == TRANSITIONING:
                 log_heartbeat(_state, "sleep_transition")
                 await asyncio.sleep(interval)
@@ -643,7 +714,7 @@ async def heartbeat_loop() -> None:
                 log_heartbeat(_state, "silent_pause")
                 await asyncio.sleep(interval)
                 continue
-            await run_main_runtime_tick(user_id, now=now)
+            await run_main_runtime_tick(user_id)
         except Exception as exc:
             log.error("Heartbeat error: %s", exc, exc_info=True)
             log_heartbeat(_state, "error", str(exc)[:200])

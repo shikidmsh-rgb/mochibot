@@ -162,18 +162,13 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS idx_heartbeat_runs_due
             ON heartbeat_runs(status, next_attempt_at, lease_until);
 
-        CREATE TABLE IF NOT EXISTS attention_facts (
-            source       TEXT NOT NULL,
-            stable_key   TEXT NOT NULL,
-            observed_at  TEXT NOT NULL,
-            fresh_until  TEXT NOT NULL,
-            status       TEXT NOT NULL DEFAULT 'unresolved',
-            facts_json   TEXT NOT NULL,
-            updated_at   TEXT NOT NULL,
-            PRIMARY KEY(source, stable_key)
+        CREATE TABLE IF NOT EXISTS adaptive_tool_loads (
+            tool_name TEXT PRIMARY KEY,
+            effective_load TEXT NOT NULL,
+            changed_at TEXT NOT NULL,
+            pinned_load TEXT DEFAULT NULL,
+            reason TEXT NOT NULL DEFAULT ''
         );
-        CREATE INDEX IF NOT EXISTS idx_attention_facts_status
-            ON attention_facts(status, observed_at DESC);
 
         CREATE TABLE IF NOT EXISTS weekly_curation_batches (
             user_id            INTEGER NOT NULL,
@@ -811,6 +806,79 @@ def save_message_once(
     except Exception:
         conn.rollback()
         raise
+    finally:
+        conn.close()
+
+
+def search_conversation_messages(
+    user_id: int, query: str, limit: int = 5,
+    exclude_turn_id: str | None = None,
+) -> list[dict]:
+    escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    conditions = [
+        "user_id = ?", "role IN ('user', 'assistant')", "content LIKE ? ESCAPE '\\'",
+    ]
+    params: list = [user_id, f"%{escaped}%"]
+    if exclude_turn_id is not None:
+        conditions.append("(turn_id IS NULL OR turn_id != ?)")
+        params.append(exclude_turn_id)
+    params.append(max(1, min(10, limit)))
+    conn = _connect()
+    try:
+        return [
+            dict(row) for row in conn.execute(
+                "SELECT id, role, content, created_at FROM messages WHERE "
+                + " AND ".join(conditions) + " ORDER BY id DESC LIMIT ?",
+                params,
+            ).fetchall()
+        ]
+    finally:
+        conn.close()
+
+
+def get_adaptive_tool_load_states() -> dict[str, dict]:
+    conn = _connect()
+    try:
+        return {
+            row["tool_name"]: dict(row)
+            for row in conn.execute("SELECT * FROM adaptive_tool_loads").fetchall()
+        }
+    finally:
+        conn.close()
+
+
+def save_adaptive_tool_load_state(
+    tool_name: str, *, effective_load: str, changed_at: str,
+    pinned_load: str | None, reason: str,
+) -> None:
+    conn = _connect()
+    try:
+        conn.execute(
+            "INSERT INTO adaptive_tool_loads "
+            "(tool_name,effective_load,changed_at,pinned_load,reason) VALUES (?,?,?,?,?) "
+            "ON CONFLICT(tool_name) DO UPDATE SET "
+            "effective_load=excluded.effective_load, changed_at=excluded.changed_at, "
+            "pinned_load=excluded.pinned_load, reason=excluded.reason",
+            (tool_name, effective_load, changed_at, pinned_load, reason),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_successful_chat_tool_turn_counts(*, user_id: int, since: str) -> dict[str, int]:
+    conn = _connect()
+    try:
+        return {
+            row["tool_name"]: row["turn_count"]
+            for row in conn.execute(
+                "SELECT tool_name, COUNT(DISTINCT turn_id) AS turn_count "
+                "FROM tool_executions WHERE user_id=? AND source='chat' "
+                "AND status='success' AND finished_at IS NOT NULL AND turn_id != '' "
+                "AND julianday(started_at) >= julianday(?) GROUP BY tool_name",
+                (user_id, since),
+            ).fetchall()
+        }
     finally:
         conn.close()
 

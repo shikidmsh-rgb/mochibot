@@ -403,9 +403,31 @@ def collect_diary_status(user_id: int, today: str, now: datetime) -> list[str]:
     return all_lines
 
 
+def get_declared_tools() -> list[dict]:
+    """Return contracts without changing eligibility or importing inactive code."""
+    return [tool for skill in _skills.values() for tool in skill.get_tools()]
+
+
+def get_effective_tools_for_skill(
+    skill_name: str, *, available: bool = True, states: dict | None = None,
+) -> list[dict]:
+    from mochi.adaptive_tool_load import resolve_definition
+    from mochi.db import get_adaptive_tool_load_states
+
+    skill = _skills.get(skill_name)
+    if skill is None:
+        return []
+    if states is None:
+        states = get_adaptive_tool_load_states()
+    definitions = skill.available_tools() if available else skill.get_tools()
+    return [resolve_definition(tool, states=states) for tool in definitions]
+
+
 def get_tools(transport: str = "") -> list[dict]:
     """Get every eligible registered tool definition."""
     disabled = _get_disabled_skills()
+    from mochi.db import get_adaptive_tool_load_states
+    states = get_adaptive_tool_load_states()
     tools = []
     for skill in _skills.values():
         if skill.name in disabled:
@@ -414,7 +436,7 @@ def get_tools(transport: str = "") -> list[dict]:
             continue
         if transport and transport in skill.exclude_transports:
             continue
-        tools.extend(skill.available_tools())
+        tools.extend(get_effective_tools_for_skill(skill.name, states=states))
     return tools
 
 
@@ -425,6 +447,8 @@ def get_tools_by_names(
 ) -> list[dict]:
     """Get eligible tools for named skills, optionally filtered by load."""
     disabled = _get_disabled_skills()
+    from mochi.db import get_adaptive_tool_load_states
+    states = get_adaptive_tool_load_states()
     tools = []
     for name in skill_names:
         skill = _skills.get(name)
@@ -437,7 +461,7 @@ def get_tools_by_names(
             continue
         if transport and transport in skill.exclude_transports:
             continue
-        for tool in skill.available_tools():
+        for tool in get_effective_tools_for_skill(name, states=states):
             if loads is not None and tool.get("_load") not in loads:
                 continue
             tools.append(tool)
@@ -445,7 +469,7 @@ def get_tools_by_names(
 
 
 def get_tools_by_load(load: str, transport: str = "") -> list[dict]:
-    """Get eligible tools with one declared load in stable registry order."""
+    """Get eligible tools with one effective load in stable registry order."""
     skill_names = list(_skills)
     if load == "resident":
         # Preserve the provider-schema order used before metadata discovery:
@@ -468,6 +492,8 @@ def get_tools_by_tool_names(
 ) -> list[dict]:
     """Get live definitions for exact tool names without loading siblings."""
     disabled = _get_disabled_skills()
+    from mochi.db import get_adaptive_tool_load_states
+    states = get_adaptive_tool_load_states()
     tools: list[dict] = []
     for tool_name in tool_names:
         skill_name = _tool_map.get(tool_name)
@@ -481,7 +507,7 @@ def get_tools_by_tool_names(
         definition = next(
             (
                 tool
-                for tool in skill.available_tools()
+                for tool in get_effective_tools_for_skill(skill_name, states=states)
                 if tool.get("function", {}).get("name") == tool_name
             ),
             None,
@@ -504,6 +530,8 @@ async def dispatch(tool_name: str, args: dict, user_id: int = 0,
                    channel_id: int = 0, transport: str = "",
                    actor: str = "",
                    owner_authorized: bool = False,
+                   source: str = "",
+                   turn_id: str = "",
                    bound_skill: Skill | None = None) -> SkillResult:
     """Dispatch a tool call to the appropriate skill."""
     skill_name = bound_skill.name if bound_skill else _tool_map.get(tool_name)
@@ -559,6 +587,8 @@ async def dispatch(tool_name: str, args: dict, user_id: int = 0,
         transport=transport,
         actor=actor,
         owner_authorized=owner_authorized,
+        source=source,
+        turn_id=turn_id,
         tool_name=tool_name,
         args=args,
     )
@@ -614,6 +644,8 @@ def get_capability_context_for_tools(
     seen_skills: set[str] = set()
     context_parts: list[str] = []
     tool_set = set(tool_names)
+    from mochi.db import get_adaptive_tool_load_states
+    load_states = get_adaptive_tool_load_states()
 
     for tn in tool_names:
         sn = _tool_map.get(tn)
@@ -627,7 +659,7 @@ def get_capability_context_for_tools(
 
         on_demand_not_loaded = sorted(
             tool["function"]["name"]
-            for tool in skill.available_tools()
+            for tool in get_effective_tools_for_skill(sn, states=load_states)
             if tool.get("_load") == "on_demand"
             and tool["function"]["name"] not in tool_set
         )
@@ -660,7 +692,10 @@ def get_capability_context_for_tools(
 def get_skill_info_all() -> list[dict]:
     """Return live skills and metadata-only personal packages for management."""
     from mochi.extensions import loader, store
+    from mochi.adaptive_tool_load import resolve_definition
+    from mochi.db import get_adaptive_tool_load_states
 
+    load_states = get_adaptive_tool_load_states()
     disabled = _get_disabled_skills()
     packages = {p["name"]: p for p in store.list_extensions()}
     skills = dict(_skills)
@@ -699,6 +734,9 @@ def get_skill_info_all() -> list[dict]:
                         "declared": None, "effective": None,
                         "status": "unavailable", "error": str(exc)[:1000],
                     }
+        effective_definitions = [
+            resolve_definition(tool, states=load_states) for tool in s.get_tools()
+        ]
         result.append({
             **packages.get(s.name, {}),
             "name": s.name,
@@ -707,6 +745,18 @@ def get_skill_info_all() -> list[dict]:
             "multi_turn": s.multi_turn,
             "triggers": s.triggers,
             "tools": [t["function"]["name"] for t in s.available_tools()],
+            "tool_loads": [
+                {
+                    "name": tool["function"]["name"],
+                    "declared": tool.get("_declared_load", tool.get("_load")),
+                    "effective": tool.get("_load"),
+                    "adaptive": bool(tool.get("_adaptive_load")),
+                    "pinned": tool.get("_load_pinned"),
+                    "reason": tool.get("_load_reason", ""),
+                    "changed_at": tool.get("_load_changed_at"),
+                }
+                for tool in effective_definitions
+            ],
             "has_capability_context": bool(s.capability_context),
             "requires_config": getattr(s, "requires_config", []),
             "config_required": configuration.requires_config,

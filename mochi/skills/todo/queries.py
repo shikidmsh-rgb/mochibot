@@ -4,6 +4,7 @@ Canonical source for todo CRUD and domain queries.
 """
 
 from datetime import datetime
+import unicodedata
 
 from mochi.db import _connect
 from mochi.config import TZ
@@ -61,6 +62,28 @@ def complete_todo(user_id: int, todo_id: int) -> bool:
     return updated
 
 
+def normalize_todo_match(value: str) -> str:
+    return " ".join(unicodedata.normalize("NFKC", value).split()).casefold()
+
+
+def find_todos_by_exact_match(
+    user_id: int, match: str, *, done: bool | None = None,
+) -> list[dict]:
+    normalized = normalize_todo_match(match)
+    return [
+        todo for todo in get_todos(user_id, include_done=True)
+        if (done is None or todo["done"] is done)
+        and normalize_todo_match(todo["task"]) == normalized
+    ]
+
+
+def set_todo_done(user_id: int, todo_id: int, done: bool) -> str:
+    return mutate_todo(
+        user_id, todo_id, done=int(done),
+        completed_at=datetime.now(TZ).isoformat() if done else None,
+    )
+
+
 def delete_todo(user_id: int, todo_id: int) -> bool:
     """Delete a todo. Returns True if deleted."""
     conn = _connect()
@@ -78,24 +101,35 @@ def update_todo(user_id: int, todo_id: int, **fields) -> bool:
 
     Supported fields: task, nudge_date.
     """
-    allowed = {"task", "nudge_date"}
+    return mutate_todo(user_id, todo_id, **{
+        key: value for key, value in fields.items() if key in {"task", "nudge_date"}
+    }) == "updated"
+
+
+def mutate_todo(user_id: int, todo_id: int, **fields) -> str:
+    allowed = {"task", "nudge_date", "done", "completed_at"}
     to_set = {k: v for k, v in fields.items() if k in allowed}
-    if not to_set:
-        return False
-    set_clause = ", ".join(f"{k} = ?" for k in to_set)
-    changed_clause = " OR ".join(f"NOT ({k} IS ?)" for k in to_set)
-    values = list(to_set.values())
-    params = values + [todo_id, user_id] + values
     conn = _connect()
-    cursor = conn.execute(
-        f"UPDATE todos SET {set_clause} WHERE id = ? AND user_id = ? "
-        f"AND ({changed_clause})",
-        params,
-    )
-    updated = cursor.rowcount > 0
-    conn.commit()
-    conn.close()
-    return updated
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        current = conn.execute(
+            "SELECT * FROM todos WHERE id = ? AND user_id = ?", (todo_id, user_id),
+        ).fetchone()
+        if current is None:
+            return "not_found"
+        if "done" in to_set and current["done"] == to_set["done"]:
+            return "unchanged"
+        if all(current[key] == value for key, value in to_set.items()):
+            return "unchanged"
+        assignments = ", ".join(f"{key} = ?" for key in to_set)
+        conn.execute(
+            f"UPDATE todos SET {assignments} WHERE id = ? AND user_id = ?",
+            (*to_set.values(), todo_id, user_id),
+        )
+        conn.commit()
+        return "updated"
+    finally:
+        conn.close()
 
 
 def get_visible_todos(today_str: str) -> list[dict]:

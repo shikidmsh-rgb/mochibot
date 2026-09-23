@@ -7,7 +7,7 @@ requires_config: [WEATHER_CITY]
 skill_name: weather
 ---
 
-Provides current weather data for the user's location via wttr.in (no API key required).
+Provides current weather data for the user's location via Open-Meteo (no API key required).
 
 ## Fields
 | Field | Type | Description |

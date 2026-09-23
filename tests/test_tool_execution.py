@@ -11,6 +11,35 @@ from mochi.skills.base import SkillResult
 from mochi.tool_execution import outcome_for, recent_operations_context, serialized_arguments
 
 
+def test_skill_schema_preserves_name_and_validates_nested_food_items():
+    from mochi.skills.base import _build_tool_schema, _parse_param_table
+    from mochi.tool_availability import ToolAvailability
+
+    params, required = _parse_param_table("""
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| name | string | yes | Entry name |
+| items | array (items: object {name:string, calories:integer, protein_g:number, carbs_g:number, fat_g:number}) | yes | Food estimates |
+""")
+    availability = ToolAvailability.from_definitions(
+        [_build_tool_schema("record_food", "Record food", params, required)],
+        source="test",
+    )
+    food = {"name": "rice", "calories": 100, "protein_g": 2.5, "carbs_g": 20, "fat_g": 1}
+    assert availability.validate_arguments(
+        "record_food", {"name": "lunch", "items": [food]},
+    ) is None
+    for arguments in (
+        {"items": [food]},
+        {"name": "lunch", "items": json.dumps([food])},
+        {"name": "lunch", "items": [{"name": "rice"}]},
+        {"name": "lunch", "items": [{**food, "calories": True}]},
+        {"name": "lunch", "items": [{**food, "protein_g": float("inf")}]},
+        {"name": "lunch", "items": [{**food, "unexpected": 1}]},
+    ):
+        assert availability.validate_arguments("record_food", arguments) is not None
+
+
 def _turn(turn_id, user_id=1):
     db.save_message(user_id, "user", "Build my tool", turn_id=turn_id)
     db.save_message(user_id, "assistant", "Work in progress", turn_id=turn_id)

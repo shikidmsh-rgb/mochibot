@@ -14,9 +14,9 @@ setup, not broad provider or multi-user infrastructure.
 - **Runtime entries** (`mochi/main_runtime.py`) describe system-owned
   situations, such as bedtime and Weekly curation, that need Main's semantic
   judgment without inventing a user message.
-- **Heartbeat** (`mochi/heartbeat.py`) owns sleep gates and independent durable
-  clocks for autonomous situations. It creates runtime entries but does not
-  interpret observer facts or author companion responses.
+- **Heartbeat** (`mochi/heartbeat.py`) owns sleep gates and the durable daily
+  Free Time plan. It creates runtime entries but does not interpret observer
+  facts or author companion responses.
 - **Skills** (`mochi/skills/`) contain feature behavior and deterministic tool
   operations. Transports and heartbeat call them only through Main or the skill
   registry.
@@ -30,11 +30,9 @@ setup, not broad provider or multi-user infrastructure.
   points Main to the default-enabled workspace; tools and the on-demand guide
   supply details. Disabling development blocks source mutation, execution and
   activation, not documents, inspection or installed tools.
-- **Observers** (`mochi/observers/`) are read-only factual producers. Each
-  source projects only bounded, provenance-safe unresolved facts; omission on
-  a later successful source scan resolves them. Their cached safe views expose
-  only allowlisted, bounded fields and can be read without collecting again or
-  consuming Attention state.
+- **Observers** (`mochi/observers/`) are read-only factual producers. Their
+  cached safe views expose only allowlisted, bounded fields and can be read
+  without collecting again. Observations do not independently wake Main.
 - **Persistence** (`mochi/db.py`) stores conversation, memory, configuration,
   usage, and tool execution facts.
 - **Document storage** (`mochi/mochi_files_store.py`) retains Main's private
@@ -64,7 +62,7 @@ changing the development setting can hide execution tools without losing their
 registration.
 
 Main 可通过 resident `look_around` 读取 Observer 已有缓存的安全视图。
-该工具只读，不触发采集、外部请求或 Attention 状态变化；Free Time 默认
+该工具只读，不触发采集或外部请求；Free Time 默认
 仍不注入生活上下文，只有 Main 主动查看时才获得有界事实。
 
 Main is the semantic judge and author of its actions. The harness gives Main a
@@ -109,9 +107,15 @@ Lite selection call. Repeat cooldown applies only to the same query context
 after Main has received it. Reference counts describe actual Main exposure, not
 unshown search candidates.
 
+Explicit personal-history search uses local conversation, Diary journal bodies,
+and text-only Memory recall. Unlike automatic context, an explicit search may
+cross a conversation reset; it excludes the current turn and does not change
+reset boundaries. Querying does not count as Memory exposure: returned IDs are
+counted only after a subsequent successful Main call has received the results.
+
 The existing execution ledger supplies bounded receipts for the completed turns
 visible in Main's conversation context, independent of message wording or routing,
-plus the last 24 hours of Free Time, Attention and Self Reminder work. Silent
+plus the last 24 hours of autonomous runtime work. Silent
 operations remain visible without inventing an assistant message or implying
 delivery. These receipts share one count/text budget and respect context resets.
 Receipts include read-only, failed and unfinished calls as well as successful
@@ -182,11 +186,34 @@ explicit configured limits remain effective. Defaults belong in configuration
 and the extension guide rather than this architecture overview.
 
 Explicit owner requests to change sleep/wake hours, timezone, or the daily
-Free Time/Attention limit route `manage_agent_settings` into Main's turn.
+Free Time limit route `manage_agent_settings` into Main's turn.
 Transport-authenticated owner status is carried into tool dispatch before the
 tool writes the existing system-override store. Heartbeat resolves sleep/wake
 values at each decision boundary. Core may remember a preference but is never
 runtime configuration authority.
+
+Only explicitly adaptive tools may move between declared `on_demand` and
+effective `routed` loading. Nightly derives that projection from successful,
+distinct ordinary chat turns; autonomous work does not count. Main can pin or
+reset eligible tool visibility. This never grants resident loading, bypasses
+eligibility, or expands an in-flight round's allowlist. Definitions remain the
+source of declared contracts; SQLite stores only the current loading projection.
+
+## Stable-release updates
+
+Admin and the system-update skill share one framework update service. Main
+interprets the owner's update request; code enforces owner-chat authorization,
+the fixed official stable-release source, a clean Git worktree, fast-forward
+history, and untouched configuration/data paths. Preparation pins one exact
+commit and is not an installation success.
+
+Only confirmation of the complete final reply, or completion of the Admin HTTP
+response, hands a prepared update to the launcher. Exit 44 runs a fresh updater
+process; ordinary restart 42 never installs a pending request. The updater
+records real complete or partial outcomes, without resetting local changes.
+After restart, the result is acknowledged only after successful delivery.
+Direct Main/systemd and container starts can check releases but cannot install
+through this launcher-only path.
 
 ## Bedtime flow
 
@@ -225,6 +252,10 @@ recent conversation context, at most 40 new Memory Items, and at most 40
 text-related older items. Counts and truncation flags are explicit; unseen rows
 are never in scope. Memory edits compare both content and update time, and
 Memory/Trash/FTS/vector/KG invalidation commits as one SQLite transaction.
+Main submits the intended changes and visible IDs; the framework retains the
+exact Memory and relationship snapshots instead of asking Main to transcribe
+content, timestamps, or whole triples. Successful Memory curation refreshes the
+visible relationship evidence before relationship changes are accepted.
 The relationship graph is intentionally limited to people, pets, places, and a
 small vocabulary of concrete life relationships. Main may upsert a relationship
 only from an exact visible Memory Item snapshot backed by user-message evidence;
@@ -257,8 +288,9 @@ embedding is available, and recent-only rows are never semantic recall filler.
 
 ## Self Reminder flow
 
-`manage_reminder(kind="self")` stores a private future intent, not a prewritten
-user notification. At the scheduled time, the reminder scheduler claims the
+The resident `schedule_self_reminder` and routed `manage_reminder(kind="self")`
+store a private future intent, not a prewritten user notification.
+At the scheduled time, the reminder scheduler claims the
 row and creates `MainRuntimeEntry(kind="self_reminder")`; Main sees current
 Core, conversation, Diary, and the capabilities available on the pinned
 transport, without a synthetic user message.
@@ -276,8 +308,9 @@ history is written idempotently after delivery and marked processed so an
 assistant-only system turn does not enter memory extraction.
 
 Ordinary `notify` reminders remain authorized, deterministic deliveries. Their
-voice rendering is prepared once and persisted; transport retry reuses that
-outbox. SQLite claims and leases prevent concurrent workers, while the external
+stored message, prefixed with `⏰ `, is prepared without any model call and
+persisted; transport retry reuses that outbox. SQLite claims and leases prevent
+concurrent workers, while the external
 send boundary remains at-least-once because transport and SQLite cannot commit
 atomically.
 
@@ -287,15 +320,16 @@ that original deadline. Expired reminders retain their prepared content and
 execution evidence but cannot re-enter Main or send, even after restart or
 transport recovery. A request issued before expiry can still finish afterward;
 its receipt is recorded, but no further chunk may start. Already completed tool
-effects are not undone. Legacy
-recurring reminders retain the expired occurrence and schedule only the next
-unexpired occurrence, without replaying missed dates.
+effects are not undone. Recurring reminders retain the expired occurrence and
+schedule only the next unexpired occurrence, without replaying missed dates.
+Updating an occurrence is allowed only before processing starts; it cannot
+erase already performed tool work or prepared delivery evidence.
 
-Autonomous Free Time/Attention delivery is single-attempt: unavailable transport,
+Autonomous Free Time delivery is single-attempt: unavailable transport,
 explicit rejection, and uncertain delivery are terminal, separately audited
 outcomes. No prepared text or tool loop is replayed on a later heartbeat or
 restart. An abandoned turn expires, retaining its result and execution evidence.
-The next clock creates a new present-time situation, not a retry of an old one.
+The next opportunity creates a new present-time situation, not a retry of an old one.
 Explicit reminders retain independent durable retries within their five-minute
 delivery window.
 
@@ -306,39 +340,42 @@ token without erasing a newer inbound token. Missing context is a local
 unavailable state, not a blind API attempt. Send diagnostics retain numeric
 HTTP/API error codes, never reply tokens or raw response bodies.
 
-WeChat sends each runtime-initiated text result (Free Time, Attention, reminders,
+WeChat sends each runtime-initiated text result (Free Time, reminders,
 and silent bedtime) as one message, preserving paragraph breaks and converting
 bubble delimiters to paragraph breaks. Only the transport length limit splits
 that text, and each chunk still requires delivery authorization. Ordinary chat
 keeps conversational bubbles; other transports retain their existing formatting.
 
-## Free Time and Attention flow
+## Free Time flow
 
-Heartbeat keeps two independent clocks. Free Time is randomized, unassigned
-companion time; Attention runs periodically and can be advanced by a changed
-observer fact without moving the Free Time clock. Sleeping and long-silence
-pause gates run before observer or model work.
+Heartbeat persists a bounded random plan for each local day. The configured
+limit bounds Free Time opportunities, not a quota of messages. Missed,
+sleep-conflicting and active-chat-conflicting opportunities expire rather than
+being queued for later. Sleeping and long-silence pause gates run before
+observer or model work.
 
-Both situations enter the standard Main personality and Agent First tool loop.
+Free Time enters the standard Main personality and Agent First tool loop.
 Free Time receives the last two role-true conversation turns, up to five recent
 standalone deliveries, and bounded execution receipts for continuity. Standalone
 history starts with the selected conversation window, or uses the latest five
 deliveries since reset when there are no complete turns; midnight does not clear
 it. Free Time deliberately excludes Agenda, Diary, summaries, auto-recall, and semantic routing,
 so recent conversation remains background rather than an assigned topic.
-Attention receives bounded unresolved facts plus Diary, conversation summary,
-temporal context, role-true recent history and execution receipts. Both start with resident tools
-and may request other tools; neither inherits a sticky routed skill.
+It starts with resident tools and may request other tools; it does not inherit
+a sticky routed skill.
 
 Observers own factual source state, Main owns meaning/action/expression, and
-the transport owns delivery. A Main skip does not resolve observer facts.
+the transport owns delivery. Main can inspect cached facts through `look_around`.
 Heartbeat stores the prepared result before delivery for audit, not as a retry
-outbox. Only the current tick's newly created turns can run; retired clock kinds
-are not materialized. Each unsent bubble/chunk requires the current lease and
-awake situation; ordinary replies do not inherit this gate, and reminders use their own deadline
+outbox. Only currently due opportunities can run. An incoming owner
+conversation invalidates an earlier Free Time turn even if that conversation
+finishes before the model returns. The active-chat boundary includes reply
+delivery; it does not undo effects already completed. Each unsent bubble/chunk
+requires the current lease, awake situation, and unchanged chat generation.
+Ordinary replies do not inherit this gate, and reminders use their own deadline
 rather than the awake-state gate.
 History and proactive delivery logs are written only after confirmed text
 delivery, even if a later sticker fails. SQLite cannot commit atomically with an
 external transport: a crash can leave delivery uncertain, but does not authorize
-replay. Daily limits and cooldowns apply to every new delivery; they do not
-filter topics, suppress private tool activity, or decide what facts mean.
+replay. The scheduler bounds opportunities without filtering topics or deciding
+what facts mean.

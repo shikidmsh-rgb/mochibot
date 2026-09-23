@@ -12,6 +12,7 @@ import logging
 import os
 import signal
 import socket
+import sqlite3
 import sys
 from collections.abc import Callable
 
@@ -27,7 +28,7 @@ from mochi.config import (
 from mochi.db import init_db
 import mochi.skills as skill_registry
 from mochi.ai_client import chat, ChatResult
-from mochi.transport import Transport, IncomingMessage
+from mochi.transport import DeliveryError, Transport, IncomingMessage
 from mochi.heartbeat import (
     heartbeat_loop,
     reload_state_after_config_seed,
@@ -46,7 +47,7 @@ from mochi.shutdown import (
     init_restart_event,
     is_agent_enabled,
     set_agent_enabled,
-    RESTART_EXIT_CODE,
+    requested_exit_code,
 )
 
 configure_safe_logging(
@@ -88,6 +89,33 @@ async def handle_message(msg: IncomingMessage) -> ChatResult:
             text="我还在准备中～请在管理后台完成配置，之后就能正常聊天了"
         )
     return await chat(msg)
+
+
+async def _deliver_update_result(transport: Transport | None) -> None:
+    if transport is None:
+        return
+    from mochi.db import save_message_once
+    from mochi.update_service import ack_update_result, peek_update_result
+
+    try:
+        result = peek_update_result()
+        if result is None:
+            return
+        if result["transport"] not in {transport.name, "admin"}:
+            log.warning("Update result awaits its original transport")
+            return
+        delivered = await transport.send_message(result["channel_id"], result["message"])
+        if not delivered:
+            log.warning("Update result delivery was not confirmed; retaining it")
+            return
+        save_message_once(
+            result["user_id"], "assistant", result["message"],
+            turn_id=f"system_update:{result['request_id']}", processed=True,
+        )
+        if not ack_update_result(result["request_id"]):
+            log.warning("Update result changed before acknowledgement; retaining it")
+    except (OSError, ValueError, sqlite3.Error, DeliveryError):
+        log.exception("Could not deliver and acknowledge update result; retaining it")
 
 
 async def main():
@@ -197,6 +225,8 @@ async def main():
                      restart_info["channel_id"])
         except Exception as e:
             log.warning("Failed to send restart-complete notification: %s", e)
+
+    await _deliver_update_result(transport)
 
     # 4. Heartbeat — wire up send callback to transport
     if transport:
@@ -329,6 +359,15 @@ async def main():
             register_runtime_controls(runtime_status)
             asyncio.create_task(start_admin_server(ADMIN_PORT, ADMIN_BIND))
             _log_admin_startup(ADMIN_BIND, ADMIN_PORT, ADMIN_TOKEN)
+            if "--open-browser" in sys.argv:
+                import webbrowser
+                browser_host = "127.0.0.1" if ADMIN_BIND in {"0.0.0.0", "::"} else ADMIN_BIND
+                asyncio.get_running_loop().call_later(
+                    1,
+                    lambda: asyncio.create_task(asyncio.to_thread(
+                        webbrowser.open, build_admin_base_url(browser_host, ADMIN_PORT),
+                    )),
+                )
         except ImportError:
             log.warning("Admin portal dependencies missing; run setup again")
         except Exception as exc:
@@ -379,15 +418,16 @@ async def main():
             for t in pending:
                 t.cancel()
             if restart_event.is_set():
-                log.info("Restart requested — shutting down (exit code %d)",
-                         RESTART_EXIT_CODE)
+                exit_code = requested_exit_code()
+                log.info("Process exit requested — shutting down (exit code %d)",
+                         exit_code)
                 await stop_runtime()
-                sys.exit(RESTART_EXIT_CODE)
+                sys.exit(exit_code)
     except KeyboardInterrupt:
         log.info("Shutting down...")
         await stop_runtime()
     except SystemExit:
-        raise  # preserve exit code (42 = restart)
+        raise
 
 
 if __name__ == "__main__":

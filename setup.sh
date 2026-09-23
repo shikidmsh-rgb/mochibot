@@ -72,44 +72,25 @@ echo "  =========================================="
 echo ""
 
 if [ "$HAS_DESKTOP" = true ]; then
-    echo "  Opening admin portal at http://127.0.0.1:8080"
+    echo "  Opening the configured local admin portal..."
     echo ""
     echo "  Configure your API keys and bot token in the browser."
     echo "  When done, click \"启动 Bot\" in the admin portal to start the bot."
     echo ""
 
-    # Open browser (best-effort)
-    if command -v open &>/dev/null; then
-        open http://127.0.0.1:8080 2>/dev/null &
-    elif command -v xdg-open &>/dev/null; then
-        xdg-open http://127.0.0.1:8080 2>/dev/null &
-    fi
 else
     echo "  No desktop detected (cloud server?)."
     echo "  Admin portal will start at http://127.0.0.1:8080"
     echo "  A token will be auto-generated for security."
     echo ""
-    echo "  Option 1: SSH tunnel (zero config)"
+    echo "  Use an SSH tunnel:"
     echo "    ssh -L 8080:localhost:8080 user@your-server-ip"
     echo "    Then open http://localhost:8080?token=YOUR_TOKEN"
     echo ""
-    echo "  Option 2: Phone setup via /admin"
-    echo "    Only fill in the transport token (Telegram or WeChat) below."
-    echo "    The bot starts in setup mode — send /admin from your phone"
-    echo "    to get the admin portal link, then finish config on mobile."
-    echo ""
 fi
 
-set +e
-.venv/bin/python -m mochi.admin
-EXIT_CODE=$?
-set -e
-while [ "$EXIT_CODE" -eq 43 ]; do
-    echo ""
-    echo "  [INFO] Admin server restarting..."
-    echo ""
-    set +e
-    .venv/bin/python -m mochi.admin --no-browser
-    EXIT_CODE=$?
-    set -e
-done
+if [ "$HAS_DESKTOP" = true ]; then
+    .venv/bin/python scripts/start.py --open-browser
+else
+    .venv/bin/python scripts/start.py
+fi

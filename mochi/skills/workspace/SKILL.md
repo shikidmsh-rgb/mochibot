@@ -19,7 +19,7 @@ locked: true
 | content | string | yes | 修订后的完整“今日日記”正文，不包含当天日期页头 |
 | day | string (enum: today, tomorrow) | no | 写今天或明天，默认 today |
 
-### read_diary (on_demand)
+### read_diary (on_demand, adaptive)
 读取今天或指定日期的日记归档，为回顾当天经历提供原始记录。
 
 | Parameter | Type | Required | Description |

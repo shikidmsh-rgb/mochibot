@@ -7,7 +7,7 @@ requires_config: []
 skill_name: reminder
 ---
 
-Surfaces unfired reminders due within the next 2 hours so heartbeat can trigger timely nudges.
+Caches upcoming reminders due within the next 2 hours for Main to inspect through look_around. Reminder delivery remains owned by the reminder timer.
 
 ## Fields
 | Field | Type | Description |

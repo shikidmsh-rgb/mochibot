@@ -15,6 +15,7 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 log = logging.getLogger(__name__)
 
@@ -72,6 +73,8 @@ class SkillContext:
     transport: str = ""     # "telegram" | "wechat" — from IncomingMessage
     actor: str = ""          # "main" only when invoked by a Main tool loop
     owner_authorized: bool = False
+    source: str = ""
+    turn_id: str = ""
     tool_name: str = ""     # only set for trigger="tool_call"
     args: dict = field(default_factory=dict)
     observation: dict | None = None  # only set for trigger="heartbeat"
@@ -105,6 +108,8 @@ class SkillResult:
     state_change_unknown: bool = False
     content_source: str = ""
     document_snapshot: str | None = None
+    after_delivery: Callable[[], None] | None = None
+    exposed_memory_ids: list[int] = field(default_factory=list)
 
 
 @dataclass
@@ -414,15 +419,24 @@ def _parse_config_schema(content: str) -> list[dict]:
     return schema
 
 
-def _extract_tool_load(heading: str) -> tuple[str, str | None]:
-    """Extract one current load annotation from a tool heading."""
+def _extract_tool_load(heading: str) -> tuple[str, str | None, bool]:
+    """Extract loading metadata without exposing it in provider schemas."""
     match = re.fullmatch(r"(\S+)\s*\(([^)]+)\)\s*", heading)
     if not match:
-        return (heading.split()[0] if heading else ""), None
-    tool_name, load = match.group(1), match.group(2).strip()
+        return (heading.split()[0] if heading else ""), None, False
+    tool_name = match.group(1)
+    annotations = [part.strip() for part in match.group(2).split(",")]
+    load, flags = annotations[0], annotations[1:]
     if load not in VALID_TOOL_LOADS:
         raise ValueError(f"Invalid tool load '{load}' for '{tool_name}'")
-    return tool_name, load
+    if flags and flags != ["adaptive"]:
+        raise ValueError(
+            f"Invalid tool annotation(s) {', '.join(flags)} for '{tool_name}'"
+        )
+    adaptive = flags == ["adaptive"]
+    if adaptive and load != "on_demand":
+        raise ValueError(f"Adaptive tool '{tool_name}' must default to on_demand")
+    return tool_name, load, adaptive
 
 
 def _parse_tools_v2(content: str) -> list[dict]:
@@ -439,7 +453,7 @@ def _parse_tools_v2(content: str) -> list[dict]:
         lines = block.strip().split("\n")
         heading = lines[0].strip()
         try:
-            tool_name, load = _extract_tool_load(heading)
+            tool_name, load, adaptive = _extract_tool_load(heading)
         except ValueError as exc:
             raise ValueError(f"{exc} in SKILL.md tool heading '{heading}'") from exc
 
@@ -457,6 +471,7 @@ def _parse_tools_v2(content: str) -> list[dict]:
         params, required_params = _parse_param_table(block)
         tool_def = _build_tool_schema(tool_name, desc, params, required_params)
         tool_def["_load"] = load
+        tool_def["_adaptive_load"] = adaptive
         tools.append(tool_def)
     return tools
 
@@ -466,7 +481,7 @@ def _parse_param_table(block: str) -> tuple[dict, list[str]]:
 
     Supports:
       - Enum types: ``string (enum: list, restore)``
-      - Array types: string items by default, or ``array (items: object)``
+      - Array types: string items by default, or typed object fields
       - Required column: ✅, yes, true, Y
     """
     params: dict = {}
@@ -506,7 +521,7 @@ def _parse_param_table(block: str) -> tuple[dict, list[str]]:
         preq = cells[2].strip()
         pdesc = cells[3].strip()
 
-        if pname.lower() in ("name", "parameter") or pname.startswith("("):
+        if pname.lower() == "parameter" or pname.startswith("("):
             continue
         if not ptype:
             continue
@@ -519,10 +534,23 @@ def _parse_param_table(block: str) -> tuple[dict, list[str]]:
             prop["type"] = enum_match.group(1)
             prop["enum"] = [e.strip() for e in enum_match.group(2).split(",")]
 
-        array_items_match = re.match(r"array\s*\(items:\s*(\w+)\)", ptype)
+        array_items_match = re.fullmatch(
+            r"array\s*\(items:\s*(\w+)(?:\s*\{([^}]+)\})?\)", ptype,
+        )
         if array_items_match:
             prop["type"] = "array"
             prop["items"] = {"type": array_items_match.group(1)}
+            fields = array_items_match.group(2)
+            if fields:
+                properties = {}
+                for declaration in fields.split(","):
+                    field_name, field_type = declaration.strip().split(":", 1)
+                    properties[field_name.strip()] = {"type": field_type.strip()}
+                prop["items"].update({
+                    "properties": properties,
+                    "required": list(properties),
+                    "additionalProperties": False,
+                })
 
         # OpenAI requires array types to have an "items" schema
         if prop["type"] == "array" and "items" not in prop:

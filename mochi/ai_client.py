@@ -19,6 +19,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from typing import Callable
 
 from mochi.llm import get_client_for_tier, LLMResponse
 from mochi.prompt_loader import get_prompt, get_system_chat_modules
@@ -359,27 +360,32 @@ class ChatResult:
     disposition: str = "deliver"
     _pending_history: dict | None = field(default=None, repr=False)
     _delivery_confirmed: bool = field(default=False, init=False, repr=False)
+    _after_delivery: list[Callable[[], None]] = field(default_factory=list, repr=False)
+    _final_delivery_confirmed: bool = field(default=False, init=False, repr=False)
 
-    def confirm_delivered(self) -> bool:
-        """Persist deferred assistant history exactly once after delivery."""
-        if self._delivery_confirmed or not self._pending_history:
-            return False
-        pending = self._pending_history
-        processed = bool(pending.get("processed", True))
-        inserted = save_message_once(
-            pending["user_id"],
-            "assistant",
-            pending["content"],
-            tool_history=pending["tool_history"],
-            turn_id=pending["turn_id"],
-            processed=processed,
-            reasoning_content=pending.get("reasoning_content"),
-            reasoning_source=pending.get("reasoning_source", ""),
-        )
-        self._delivery_confirmed = True
-        if inserted and not processed:
-            _schedule_continuous_memory(pending["user_id"])
-        return True
+    def confirm_delivered(self, *, final: bool = False) -> bool:
+        """Persist text once; lifecycle actions also require the whole reply."""
+        confirmed = False
+        if not self._delivery_confirmed and self._pending_history:
+            pending = self._pending_history
+            processed = bool(pending.get("processed", True))
+            inserted = save_message_once(
+                pending["user_id"], "assistant", pending["content"],
+                tool_history=pending["tool_history"], turn_id=pending["turn_id"],
+                processed=processed, reasoning_content=pending.get("reasoning_content"),
+                reasoning_source=pending.get("reasoning_source", ""),
+            )
+            self._delivery_confirmed = True
+            confirmed = True
+            if inserted and not processed:
+                _schedule_continuous_memory(pending["user_id"])
+        if final and not self._final_delivery_confirmed:
+            self._final_delivery_confirmed = True
+            callbacks, self._after_delivery = self._after_delivery, []
+            for callback in callbacks:
+                callback()
+            confirmed = confirmed or bool(callbacks)
+        return confirmed
 
     def to_durable(self) -> DurableChatResult:
         return DurableChatResult(
@@ -445,7 +451,8 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
                          recent_operations: str = "",
                          runtime_entry: MainRuntimeEntry | None = None,
                          weekly_context: str = "",
-                         policy: ContextPolicy | None = None) -> str:
+                         policy: ContextPolicy | None = None,
+                         habit_progress_context: str = "") -> str:
     """Assemble explicit identity, situation, capability, and live-context zones."""
 
     modules = get_system_chat_modules()
@@ -457,7 +464,7 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
         runtime_entry and runtime_entry.kind == "weekly_maintenance"
     )
     is_autonomous = bool(
-        runtime_entry and runtime_entry.kind in {"free_time", "attention"}
+        runtime_entry and runtime_entry.kind == "free_time"
     )
 
     stable_identity = []
@@ -472,31 +479,7 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
         )
     early_runtime_situation = []
     if policy.early_runtime_situation and runtime_entry:
-        if runtime_entry.kind == "free_time":
-            situation = get_prompt("free_time_entry")
-        else:
-            situation = get_prompt("attention_entry")
-            if not situation:
-                raise RuntimeError("attention entry prompt is missing")
-            fact_lines = []
-            for fact in runtime_entry.attention_facts:
-                encoded = json.dumps(
-                    fact.facts,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                    sort_keys=True,
-                )
-                fact_lines.append(
-                    f"- source={fact.source}; key={fact.stable_key}; "
-                    f"observed_at={fact.observed_at}; freshness={fact.freshness}; "
-                    f"status={fact.status}; facts={encoded}"
-                )
-            situation = situation.replace(
-                "{{wake_reason}}", runtime_entry.wake_reason or "periodic",
-            ).replace(
-                "{{attention_facts}}",
-                "\n".join(fact_lines) if fact_lines else "- 当前没有未解决观察事实",
-            )
+        situation = get_prompt("free_time_entry")
         if not situation:
             raise RuntimeError(f"{runtime_entry.kind} entry prompt is missing")
         early_runtime_situation.append(situation)
@@ -515,11 +498,16 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
     if capability_context:
         capability_parts.append(f"## 能力上下文\n{capability_context}")
 
-    if user_id and tool_names and habits:
-        habit_tool_names = {"query_habit", "checkin_habit", "edit_habit"}
+    if habit_progress_context:
+        capability_parts.append(
+            f"## 本轮习惯进度快照（只读事实）\n{habit_progress_context}"
+        )
+    elif tool_names and habits:
+        from mochi.skills.habit.logic import describe_frequency
+        habit_tool_names = {"habit_progress", "edit_habit"}
         if habit_tool_names & set(tool_names):
             habit_lines = "  ".join(
-                f"#{h['id']} {h['name']} ({h['frequency']})"
+                f"#{h['id']} {h['name']} ({describe_frequency(h['frequency'])})"
                 for h in habits
             )
             if habit_lines:
@@ -666,7 +654,7 @@ async def chat(
     if (
         message is not None
         and runtime_entry is not None
-        and runtime_entry.kind in {"self_reminder", "free_time", "attention"}
+        and runtime_entry.kind in {"self_reminder", "free_time"}
     ):
         raise ValueError(f"{runtime_entry.kind} runtime entries are system-only")
 
@@ -691,7 +679,7 @@ async def chat(
         runtime_entry and runtime_entry.kind == "weekly_maintenance"
     )
     is_autonomous = bool(
-        runtime_entry and runtime_entry.kind in {"free_time", "attention"}
+        runtime_entry and runtime_entry.kind == "free_time"
     )
     prompt_policy = context_policy(runtime_entry)
     turn_id = (
@@ -701,6 +689,9 @@ async def chat(
         else uuid.uuid4().hex
     )
     pending_stickers: list[str] = []
+    after_delivery: list[Callable[[], None]] = []
+    pending_exposure_ids: set[int] = set()
+    exposed_memory_ids: set[int] = set()
 
     # ── Sticker learning: intercept sticker metadata from transport ──
     raw = message.raw or {} if message is not None else {}
@@ -950,6 +941,16 @@ async def chat(
         include_requestable_tools=escalation_available,
         transport=transport,
     )
+    from mochi.skills.habit.handler import HabitSkill
+    habit_skill = skill_registry.all_skills().get("habit")
+
+    async def _habit_progress_context() -> str:
+        if isinstance(habit_skill, HabitSkill) and "habit_progress" in availability.names:
+            return await asyncio.to_thread(habit_skill.progress_context, user_id)
+        return ""
+
+    habit_progress_context = await _habit_progress_context()
+    habit_context_loaded = bool(habit_progress_context)
 
     from mochi.tool_execution import recent_operations_context
     recent_operations = (
@@ -964,7 +965,7 @@ async def chat(
     # Fetch diary data for Zone C runtime context
     # Only journal (events) — status panel (habits/todos) excluded from chat
     # to avoid LLM parroting progress in every reply. Status is available
-    # via tools (query_habit, manage_todo) when the user asks.
+    # via tools (habit_progress, manage_todo) when the user asks.
     from mochi.diary import diary as _diary
     _ds = (
         _diary.read(section="今日状態")
@@ -1003,6 +1004,7 @@ async def chat(
             weekly_session.context.rendered if weekly_session else ""
         ),
         policy=prompt_policy,
+        habit_progress_context=habit_progress_context,
     )
 
     # Build messages array
@@ -1052,7 +1054,22 @@ async def chat(
             cached_prompt_tokens=response.cached_prompt_tokens,
         )
 
-    def _final_result(reply: str) -> ChatResult:
+    def _free_time_cancelled() -> bool:
+        if not is_autonomous:
+            return False
+        from mochi.heartbeat import free_time_turn_available
+
+        return not free_time_turn_available(
+            runtime_entry.chat_generation, runtime_entry.state_changed_at,
+        )
+
+    def _cancelled_result() -> ChatResult:
+        return ChatResult(
+            tool_audit=tool_audit, successful_effects=successful_effects,
+            disposition="handled" if successful_effects else "skip",
+        )
+
+    def _final_result(reply: str, *, final_reply: bool = True) -> ChatResult:
         reasoning_metadata = (
             {
                 "reasoning_content": history_response.reasoning_content,
@@ -1128,6 +1145,7 @@ async def chat(
             text=reply,
             stickers=pending_stickers,
             bedtime_requested=bedtime_requested,
+            _after_delivery=list(after_delivery) if final_reply else [],
             _pending_history={
                 "user_id": user_id,
                 "content": reply,
@@ -1176,10 +1194,24 @@ async def chat(
         return "" if reply == "[SKIP]" else reply
 
     for round_num in range(max_tool_rounds):
+        if _free_time_cancelled():
+            return _cancelled_result()
+        if weekly_session:
+            weekly_session.advance_visible_context()
+        if not habit_context_loaded:
+            habit_progress_context = await _habit_progress_context()
+            if habit_progress_context:
+                messages.append({
+                    "role": "system",
+                    "content": f"## 本轮习惯进度快照（只读事实）\n{habit_progress_context}",
+                })
+                habit_context_loaded = True
         document_updates: dict[str, str] = {}
         availability = availability.refresh_extensions(transport)
         round_availability = availability
         for _attempt in range(2):
+            if _free_time_cancelled():
+                return _cancelled_result()
             try:
                 response = await asyncio.to_thread(
                     client.chat,
@@ -1213,9 +1245,22 @@ async def chat(
                 return ChatResult(text=f"API 报错：{e}")
 
         _log_main_usage(response)
+        if _free_time_cancelled():
+            return _cancelled_result()
         if recalled_memories and not recall_exposure_recorded:
             _record_recalled_memories_exposed(user_id, recalled_memories)
+            exposed_memory_ids.update(
+                item["memory_id"] for item in recalled_memories if "memory_id" in item
+            )
             recall_exposure_recorded = True
+        newly_exposed = pending_exposure_ids - exposed_memory_ids
+        if newly_exposed:
+            try:
+                mark_memory_items_accessed(user_id, list(newly_exposed))
+            except sqlite3.Error as exc:
+                log.warning("Memory reference accounting failed: %s", exc)
+            exposed_memory_ids.update(newly_exposed)
+        pending_exposure_ids.clear()
         history_response = response
 
         # No tool calls — we have the final response
@@ -1248,6 +1293,8 @@ async def chat(
 
         next_availability = round_availability
         for tc in response.tool_calls:
+            if _free_time_cancelled():
+                return _cancelled_result()
             if not response.tool_calls_complete:
                 messages.append({
                     "role": "tool",
@@ -1409,19 +1456,16 @@ async def chat(
                 if round_availability.binding_for(tc["name"]) is not None
                 else skill_registry.get_tool_skill(tc["name"]) or ""
             )
+            execution_source = (
+                "weekly" if is_weekly_tool
+                else f"runtime:{runtime_entry.kind}" if runtime_entry is not None
+                else "chat"
+            )
             execution_id = start_tool_execution(
                 turn_id=turn_id,
                 tool_call_id=tc["id"],
                 user_id=user_id,
-                source=(
-                    "runtime:self_reminder"
-                    if is_self_reminder
-                    else f"runtime:{runtime_entry.kind}"
-                    if is_autonomous
-                    else "weekly"
-                    if is_weekly_tool
-                    else "chat"
-                ),
+                source=execution_source,
                 skill_name=skill_name,
                 tool_name=tc["name"],
                 action=action_for(tc["name"], arguments),
@@ -1449,6 +1493,8 @@ async def chat(
                         user_id=user_id, channel_id=channel_id,
                         transport=transport,
                         actor="main",
+                        source=execution_source,
+                        turn_id=turn_id,
                         bound_skill=round_availability.binding_for(tc["name"]),
                         owner_authorized=(
                             message.owner_authorized
@@ -1486,6 +1532,10 @@ async def chat(
 
             # Extract [STICKER:file_id] markers from tool result
             if outcome["status"] == "success":
+                if result.after_delivery is not None and runtime_entry is None:
+                    if result.after_delivery not in after_delivery:
+                        after_delivery.append(result.after_delivery)
+                pending_exposure_ids.update(result.exposed_memory_ids)
                 for m in STICKER_RE.finditer(result.output):
                     pending_stickers.append(m.group(1).strip())
 
@@ -1519,4 +1569,4 @@ async def chat(
         reply = "处理过程出了点问题，你再说一次试试？"
     if _health_warning and reply:
         reply += _health_warning
-    return _final_result(reply)
+    return _final_result(reply, final_reply=False)

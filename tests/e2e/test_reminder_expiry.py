@@ -2,7 +2,7 @@
 
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -50,16 +50,16 @@ def _update(rid, **values):
 
 def _wire(monkeypatch, kind, *, prepare=None, deliver=None):
     if prepare is None:
-        prepare = AsyncMock(
-            return_value=ChatResult(text="Time for bed.") if kind == "self"
-            else "Time for bed.",
+        prepare = (
+            AsyncMock(return_value=ChatResult(text="Time for bed."))
+            if kind == "self" else Mock(wraps=timer._notification_text)
         )
     if deliver is None:
         deliver = AsyncMock(return_value=True)
     if kind == "self":
         timer.set_self_reminder_callbacks(prepare, deliver, "fake")
     else:
-        monkeypatch.setattr(timer, "_rephrase_reminder", prepare)
+        monkeypatch.setattr(timer, "_notification_text", prepare)
         timer.set_send_callback(deliver)
     return prepare, deliver
 
@@ -92,7 +92,7 @@ async def test_restart_expires_old_work_without_preparing_or_sending(
     assert row["attempt_count"] == 44
     assert row["result_json"] == prepared
     assert row["prepared_text"] == "It is 11pm."
-    prepare.assert_not_awaited()
+    prepare.assert_not_called()
     deliver.assert_not_awaited()
     assert get_recent_messages(1) == []
 
@@ -123,7 +123,7 @@ async def test_retry_wakes_only_to_expire_at_original_deadline(
     clock["now"] = deadline
     await timer._fire_reminder(row)
     assert _row(rid)["status"] == "expired"
-    assert prepare.await_count == deliver.await_count == 1
+    assert prepare.call_count == deliver.await_count == 1
 
 
 @pytest.mark.asyncio
@@ -133,15 +133,16 @@ async def test_preparation_crossing_deadline_never_sends(
 ):
     rid = _create(kind, (clock["now"] - timedelta(seconds=299)).isoformat())
 
-    async def slow_prepare(*args, **kwargs):
+    def slow_prepare(*args, **kwargs):
         clock["now"] += timedelta(seconds=2)
-        return ChatResult(text="Too late.") if kind == "self" else "Too late."
+        return ChatResult(text="Too late.") if kind == "self" else f"⏰ {args[0]}"
 
     prepare, deliver = _wire(
-        monkeypatch, kind, prepare=AsyncMock(side_effect=slow_prepare),
+        monkeypatch, kind,
+        prepare=(AsyncMock if kind == "self" else Mock)(side_effect=slow_prepare),
     )
     await timer._fire_reminder(_row(rid))
-    assert prepare.await_count == 1
+    assert prepare.call_count == 1
     deliver.assert_not_awaited()
     assert _row(rid)["status"] == "expired"
     assert get_recent_messages(1) == []
@@ -158,6 +159,7 @@ async def test_expiry_between_chunks_stops_remaining_sends(
 
     rid = _create(kind, (clock["now"] - timedelta(seconds=299)).isoformat())
     text = "First bubble here.|||Second bubble here."
+    _update(rid, message=text)
 
     async def first_chunk(*args, **kwargs):
         clock["now"] += timedelta(seconds=2)
@@ -188,7 +190,7 @@ async def test_expiry_between_chunks_stops_remaining_sends(
 
     _wire(
         monkeypatch, kind,
-        prepare=AsyncMock(return_value=ChatResult(text=text) if kind == "self" else text),
+        prepare=AsyncMock(return_value=ChatResult(text=text)) if kind == "self" else None,
         deliver=deliver,
     )
     await timer._fire_reminder(_row(rid))
@@ -219,18 +221,55 @@ def test_abandoned_claim_wakes_at_deadline_not_later_lease(clock):
 
 
 @pytest.mark.asyncio
-async def test_notify_retry_inside_window_reuses_prepared_text(monkeypatch, clock):
+@pytest.mark.parametrize("recurrence", [None, "daily"])
+async def test_notify_retry_inside_window_reuses_prepared_text(monkeypatch, clock, recurrence):
+    import mochi.llm as llm
+    model = Mock(side_effect=AssertionError("notify must not request a model"))
+    monkeypatch.setattr(llm, "get_client_for_tier", model)
     rid = _create("notify", clock["now"].isoformat())
+    _update(rid, recurrence=recurrence)
+    next_due = clock["now"] + timedelta(days=1)
     prepare, deliver = _wire(
         monkeypatch, "notify", deliver=AsyncMock(side_effect=[False, True]),
     )
     await timer._fire_reminder(_row(rid))
     clock["now"] += timedelta(seconds=61)
     await timer._fire_reminder(_row(rid))
-    assert _row(rid)["status"] == "delivered"
-    assert prepare.await_count == 1
+    assert _row(rid)["status"] == ("pending" if recurrence else "delivered")
+    if recurrence:
+        assert _row(rid)["remind_at"] == next_due.isoformat()
+        assert _row(rid)["prepared_text"] is None
+    assert prepare.call_count == 1
     assert deliver.await_count == 2
-    assert len(get_recent_messages(1)) == 1
+    assert all(call.args[1] == "⏰ Time for bed." for call in deliver.call_args_list)
+    assert [m["content"] for m in get_recent_messages(1)] == ["⏰ Time for bed."]
+    model.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome,sweep", [("skip", True), ("handled", False)])
+async def test_recurring_silent_result_after_deadline_preserves_one_successor(
+    monkeypatch, clock, outcome, sweep,
+):
+    rid = _create("self", clock["now"].isoformat())
+    _update(rid, recurrence="daily")
+
+    async def prepare(entry):
+        clock["now"] += timedelta(seconds=301)
+        if sweep:
+            queries.expire_overdue_reminders(now=clock["now"])
+        return ChatResult(disposition=outcome, successful_effects=(outcome == "handled"))
+
+    _, deliver = _wire(monkeypatch, "self", prepare=prepare)
+    await timer._fire_reminder(_row(rid))
+    row = _row(rid)
+    assert row["status"] == row["outcome"] == "expired"
+    assert row["result_json"] and row["delivered_at"] is None
+    pending = queries.get_schedulable_reminders(now=clock["now"])
+    assert len(pending) == 1 and pending[0]["id"] != rid
+    assert pending[0]["result_json"] is None
+    assert queries.get_schedulable_reminders(now=clock["now"]) == pending
+    deliver.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -308,19 +347,21 @@ async def test_sweep_during_preparation_retains_result_without_sending(
 ):
     rid = _create(kind, (clock["now"] - timedelta(seconds=299)).isoformat())
 
-    async def prepare(*args, **kwargs):
+    def prepare(*args, **kwargs):
         clock["now"] += timedelta(seconds=2)
         queries.expire_overdue_reminders(now=clock["now"])
-        return ChatResult(text="Prepared.") if kind == "self" else "Prepared."
+        return ChatResult(text="Prepared.") if kind == "self" else f"⏰ {args[0]}"
 
-    _, deliver = _wire(monkeypatch, kind, prepare=AsyncMock(side_effect=prepare))
+    _, deliver = _wire(
+        monkeypatch, kind, prepare=(AsyncMock if kind == "self" else Mock)(side_effect=prepare),
+    )
     await timer._fire_reminder(_row(rid))
     row = _row(rid)
     assert row["status"] == "expired"
     if kind == "self":
         assert DurableChatResult.from_json(row["result_json"]).text == "Prepared."
     else:
-        assert row["prepared_text"] == "Prepared."
+        assert row["prepared_text"] == "⏰ Time for bed."
     deliver.assert_not_awaited()
 
 
@@ -334,6 +375,7 @@ async def test_started_send_can_record_success_after_expiry_sweep(
     if recurring:
         _update(rid, recurrence="daily")
     text = "A send already in flight."
+    _update(rid, message=text)
     result = ChatResult(text=text, _pending_history={
         "user_id": 1, "content": text, "turn_id": "in-flight-reminder",
         "tool_history": None, "processed": True,
@@ -348,11 +390,11 @@ async def test_started_send_can_record_success_after_expiry_sweep(
 
     _wire(
         monkeypatch, kind, deliver=deliver,
-        prepare=AsyncMock(return_value=result if kind == "self" else text),
+        prepare=AsyncMock(return_value=result) if kind == "self" else None,
     )
     await timer._fire_reminder(_row(rid))
     row = _row(rid)
     assert row["status"] == row["outcome"] == "delivered"
     assert row["delivered_at"] == clock["now"].isoformat()
-    assert get_recent_messages(1)[0]["content"] == text
+    assert get_recent_messages(1)[0]["content"] == (text if kind == "self" else f"⏰ {text}")
     assert len(queries.get_schedulable_reminders(now=clock["now"])) == int(recurring)

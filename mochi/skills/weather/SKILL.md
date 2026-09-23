@@ -1,6 +1,6 @@
 ---
 name: weather
-description: "天气查询 — 通过 wttr.in 获取当前天气数据"
+description: "天气查询 — 通过 Open-Meteo 获取当前天气数据"
 type: hybrid
 requires:
   env: [WEATHER_CITY]
@@ -20,9 +20,9 @@ config:
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| force_refresh | boolean | no | 设为 true 可绕过缓存，从 wttr.in 拉取最新数据 |
+| force_refresh | boolean | no | 设为 true 可绕过缓存，从 Open-Meteo 拉取最新数据 |
 
 ## Capability Context
 
 - 这个能力只返回当前实况，不提供明天、后天或更远的预报。当前数据不能作为未来天气已经确定的证据。
-- `force_refresh` 会绕过本地缓存并访问 wttr.in；普通读取可能使用缓存。
+- `force_refresh` 会绕过本地缓存并访问 Open-Meteo；普通读取可能使用缓存。

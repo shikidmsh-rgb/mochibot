@@ -5,6 +5,7 @@ the full chat → tool-call → response cycle without any real API calls.
 """
 
 import uuid
+from copy import deepcopy
 
 from mochi.llm import LLMProvider, LLMResponse, ToolCallDict
 
@@ -24,8 +25,8 @@ class MockLLMProvider(LLMProvider):
         max_tokens: int = 2048,
     ) -> LLMResponse:
         self.call_log.append({
-            "messages": messages,
-            "tools": tools,
+            "messages": deepcopy(messages),
+            "tools": deepcopy(tools),
             "max_tokens": max_tokens,
         })
         if not self._responses:

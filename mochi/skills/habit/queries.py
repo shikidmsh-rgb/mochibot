@@ -20,17 +20,43 @@ def add_habit(user_id: int, name: str, frequency: str,
     importance: "important" or "normal".
     context: descriptive note (e.g. "morning and evening, after meals").
     """
-    now = datetime.now(TZ).isoformat()
+    return create_or_reactivate_habit(
+        user_id, name, frequency, category, importance, context,
+    )[0]
+
+
+def create_or_reactivate_habit(
+    user_id: int, name: str, frequency: str, category: str = "",
+    importance: str = "normal", context: str = "",
+) -> tuple[int, bool]:
     conn = _connect()
-    cursor = conn.execute(
-        "INSERT INTO habits (user_id, name, frequency, category, "
-        "importance, context, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (user_id, name, frequency, category, importance, context, now),
-    )
-    habit_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
-    return habit_id
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        existing = conn.execute(
+            "SELECT id, active FROM habits WHERE user_id = ? AND name = ?",
+            (user_id, name),
+        ).fetchone()
+        if existing is not None:
+            if existing["active"]:
+                raise ValueError(name)
+            conn.execute(
+                "UPDATE habits SET frequency = ?, category = ?, importance = ?, "
+                "context = ?, active = 1, paused_until = NULL, snoozed_until = NULL "
+                "WHERE id = ? AND user_id = ?",
+                (frequency, category, importance, context, existing["id"], user_id),
+            )
+            conn.commit()
+            return existing["id"], True
+        cursor = conn.execute(
+            "INSERT INTO habits (user_id, name, frequency, category, "
+            "importance, context, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (user_id, name, frequency, category, importance, context,
+             datetime.now(TZ).isoformat()),
+        )
+        conn.commit()
+        return int(cursor.lastrowid), False
+    finally:
+        conn.close()
 
 
 def list_habits(user_id: int, active_only: bool = True) -> list[dict]:
@@ -64,26 +90,99 @@ def deactivate_habit(user_id: int, habit_id: int) -> bool:
     return updated
 
 
-def update_habit(habit_id: int, **fields) -> bool:
+def update_habit(user_id: int, habit_id: int, **fields) -> bool:
     """Update mutable fields on a habit. Returns True if updated.
 
     Allowed fields: name, context, importance, frequency.
     """
-    allowed = {"name", "context", "importance", "frequency"}
-    updates = {k: v for k, v in fields.items() if k in allowed and v is not None}
-    if not updates:
-        return False
-    set_clause = ", ".join(f"{k} = ?" for k in updates)
-    values = list(updates.values()) + [habit_id]
+    return mutate_habit(user_id, habit_id, **fields) == "updated"
+
+
+def mutate_habit(user_id: int, habit_id: int, **fields) -> str:
+    allowed = {"name", "context", "importance", "frequency", "category",
+               "paused_until", "active"}
+    updates = {k: v for k, v in fields.items() if k in allowed}
     conn = _connect()
-    cursor = conn.execute(
-        f"UPDATE habits SET {set_clause} WHERE id = ? AND active = 1",
-        values,
-    )
-    updated = cursor.rowcount > 0
-    conn.commit()
-    conn.close()
-    return updated
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        current = conn.execute(
+            "SELECT * FROM habits WHERE id = ? AND user_id = ?",
+            (habit_id, user_id),
+        ).fetchone()
+        if current is None or (not current["active"] and updates != {"active": 0}):
+            return "not_found"
+        if all(current[key] == value for key, value in updates.items()):
+            return "unchanged"
+        assignments = ", ".join(f"{key} = ?" for key in updates)
+        conn.execute(
+            f"UPDATE habits SET {assignments} WHERE id = ? AND user_id = ?",
+            (*updates.values(), habit_id, user_id),
+        )
+        conn.commit()
+        return "updated"
+    finally:
+        conn.close()
+
+
+def record_habit_progress(
+    habit_id: int, user_id: int, period: str, *, count: int | None = None,
+    total: int | None = None, note: str = "",
+) -> tuple[int, int]:
+    """Return committed total and added count from one owner-scoped transaction."""
+    conn = _connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        if conn.execute(
+            "SELECT 1 FROM habits WHERE id = ? AND user_id = ? AND active = 1",
+            (habit_id, user_id),
+        ).fetchone() is None:
+            raise LookupError(habit_id)
+        current = conn.execute(
+            "SELECT COUNT(*) FROM habit_logs WHERE habit_id = ? "
+            "AND user_id = ? AND period = ?",
+            (habit_id, user_id, period),
+        ).fetchone()[0]
+        if total is not None and total < current:
+            raise ValueError(current)
+        added = total - current if total is not None else count
+        conn.executemany(
+            "INSERT INTO habit_logs (habit_id, user_id, note, logged_at, period) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [(habit_id, user_id, note, datetime.now(TZ).isoformat(), period)
+             for _ in range(added)],
+        )
+        conn.commit()
+        return current + added, added
+    finally:
+        conn.close()
+
+
+def undo_latest_habit_checkin(habit_id: int, user_id: int, period: str) -> int | None:
+    conn = _connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        if conn.execute(
+            "SELECT 1 FROM habits WHERE id = ? AND user_id = ? AND active = 1",
+            (habit_id, user_id),
+        ).fetchone() is None:
+            raise LookupError(habit_id)
+        latest = conn.execute(
+            "SELECT id FROM habit_logs WHERE habit_id = ? AND user_id = ? "
+            "AND period = ? ORDER BY logged_at DESC, id DESC LIMIT 1",
+            (habit_id, user_id, period),
+        ).fetchone()
+        if latest is None:
+            return None
+        conn.execute("DELETE FROM habit_logs WHERE id = ?", (latest["id"],))
+        remaining = conn.execute(
+            "SELECT COUNT(*) FROM habit_logs WHERE habit_id = ? "
+            "AND user_id = ? AND period = ?",
+            (habit_id, user_id, period),
+        ).fetchone()[0]
+        conn.commit()
+        return remaining
+    finally:
+        conn.close()
 
 
 def checkin_habit(habit_id: int, user_id: int, period: str,

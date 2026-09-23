@@ -231,3 +231,110 @@ async def test_other_transports_keep_proactive_formatting(monkeypatch):
     guard = lambda: True
     assert await transport.send_proactive_result_checked(1, result, can_deliver=guard)
     send.assert_awaited_once_with(1, result, can_deliver=guard)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["telegram", "wechat"])
+@pytest.mark.parametrize("complete", [True, False])
+async def test_owner_chat_stays_active_until_whole_final_reply(monkeypatch, name, complete):
+    import mochi.heartbeat as heartbeat
+    import mochi.transport.telegram as telegram
+    import mochi.transport.weixin as weixin
+
+    callbacks = []
+    result = ChatResult(
+        text="First bubble here.|||Second bubble here.",
+        stickers=["sticker"] if name == "telegram" else [],
+        _after_delivery=[lambda: callbacks.append("update")],
+    )
+
+    async def main_turn(_message):
+        assert heartbeat._active_chat_tokens
+        return result
+
+    if name == "telegram":
+        transport = telegram.TelegramTransport()
+        transport._app = SimpleNamespace(bot=SimpleNamespace(
+            send_message=AsyncMock(), send_chat_action=AsyncMock(),
+        ))
+        monkeypatch.setattr(telegram, "_on_message_callback", main_turn)
+        monkeypatch.setattr(transport, "_check_owner", AsyncMock(return_value=1))
+
+        async def sticker(*args, **kwargs):
+            assert heartbeat._active_chat_tokens
+            assert callbacks == []
+            return complete
+
+        monkeypatch.setattr(transport, "send_sticker", sticker)
+        update = SimpleNamespace(
+            effective_chat=SimpleNamespace(id=1),
+            message=SimpleNamespace(
+                caption="", sticker=SimpleNamespace(file_id="input", emoji="", set_name=""),
+            ),
+        )
+        await transport._handle_sticker(update, None)
+    else:
+        transport = WeixinTransport()
+        transport.restore_owner_id("owner")
+        transport._session = object()
+        monkeypatch.setattr(weixin, "WEIXIN_BUBBLE_DELAY_S", 0)
+        monkeypatch.setattr(weixin, "WEIXIN_ALLOWED_USERS", [])
+        monkeypatch.setattr(weixin, "_on_message_callback", main_turn)
+        monkeypatch.setattr(transport, "_get_typing_ticket", AsyncMock(return_value=None))
+        chunks = []
+
+        async def send(*args, **kwargs):
+            assert heartbeat._active_chat_tokens
+            assert callbacks == []
+            chunks.append(args)
+            return {"ret": -1, "errcode": 42} if not complete and len(chunks) == 2 else {}
+
+        monkeypatch.setattr(transport, "_api_post", send)
+        await transport._handle_message({
+            "from_user_id": "owner", "context_token": "test-token",
+            "item_list": [{"type": 1, "text_item": {"text": "Hello"}}],
+        })
+        assert len(chunks) == 2
+
+    assert not heartbeat._active_chat_tokens
+    assert callbacks == (["update"] if complete else [])
+    if complete:
+        result.confirm_delivered(final=True)
+        assert callbacks == ["update"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("delivered", [True, False])
+async def test_update_result_acknowledges_only_confirmed_delivery(monkeypatch, delivered):
+    import mochi.update_service as updates
+    from mochi.db import get_recent_messages
+    from mochi.main import _deliver_update_result
+
+    receipt = {
+        "request_id": "update-result", "user_id": 1, "channel_id": 1,
+        "transport": "fake", "message": "Update outcome",
+    }
+    monkeypatch.setattr(updates, "peek_update_result", lambda: receipt)
+    acknowledgements = []
+
+    def acknowledge(request_id):
+        acknowledgements.append(request_id)
+        return True
+
+    monkeypatch.setattr(updates, "ack_update_result", acknowledge)
+    transport = SimpleNamespace(name="fake", send_message=AsyncMock(return_value=delivered))
+    await _deliver_update_result(transport)
+
+    assert acknowledgements == (["update-result"] if delivered else [])
+    messages = get_recent_messages(1)
+    assert len(messages) == int(delivered)
+    if delivered:
+        assert messages[0]["role"] == "assistant"
+        assert messages[0]["turn_id"] == "system_update:update-result"
+        from mochi.db import _connect
+        conn = _connect()
+        processed = conn.execute(
+            "SELECT processed FROM messages WHERE turn_id=?", ("system_update:update-result",),
+        ).fetchone()[0]
+        conn.close()
+        assert processed == 1

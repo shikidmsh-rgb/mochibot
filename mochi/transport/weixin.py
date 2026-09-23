@@ -488,6 +488,11 @@ class WeixinTransport(Transport):
                      from_user)
             return
 
+        from mochi.heartbeat import active_chat
+        with active_chat():
+            await self._handle_allowed_message(msg, from_user)
+
+    async def _handle_allowed_message(self, msg: dict, from_user: str) -> None:
         text = _extract_text(msg.get("item_list", []))
         # Learn the owner's WeChat ID from the first allowed message
         if self._owner_weixin_id is None and text:
@@ -726,7 +731,7 @@ class WeixinTransport(Transport):
                         context_token=context_token,
                     )
                     if delivered:
-                        result.confirm_delivered()
+                        result.confirm_delivered(final=True)
 
             try:
                 await _process_main_turn()

@@ -176,9 +176,15 @@ def build_catalog(transport: str = "") -> RequestCatalog:
     resident_tools: dict[str, tuple[str, ...]] = {}
     denied_tools: set[str] = set()
     unavailable_tools: dict[str, str] = {}
+    from mochi.db import get_adaptive_tool_load_states
+    load_states = get_adaptive_tool_load_states()
 
     for name, skill in skill_registry.all_skills().items():
-        definitions = _normalized_definitions(skill.get_tools())
+        definitions = _normalized_definitions(
+            skill_registry.get_effective_tools_for_skill(
+                name, available=False, states=load_states,
+            ),
+        )
         for definition in definitions:
             tool_name = _tool_name(definition)
             if tool_name:
@@ -196,7 +202,9 @@ def build_catalog(transport: str = "") -> RequestCatalog:
             unavailable[name] = reason
             continue
 
-        available_definitions = _normalized_definitions(skill.available_tools())
+        available_definitions = _normalized_definitions(
+            skill_registry.get_effective_tools_for_skill(name, states=load_states),
+        )
         available_names = {_tool_name(item) for item in available_definitions}
         unavailable_tools.update({
             _tool_name(item): "disabled"

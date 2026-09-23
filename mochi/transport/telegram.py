@@ -40,12 +40,12 @@ _TOOL_STATUS_LABELS: dict[str, str] = {
     "update_core": "正在更新 Core…",
     "list_memories": "正在查记忆…",
     "manage_todo": "正在整理待办…",
-    "checkin_habit": "正在打卡…",
-    "query_habit": "正在查习惯…",
+    "habit_progress": "正在查看或记录习惯进度…",
     "edit_habit": "正在编辑习惯…",
     "log_meal": "正在记录饮食…",
     "query_meals": "正在查饮食…",
     "manage_reminder": "正在设置提醒…",
+    "schedule_self_reminder": "正在安排稍后回望…",
     "get_weather": "正在查天气…",
     "run_checkup": "正在检查…",
     "send_sticker": "正在选贴纸…",
@@ -382,6 +382,13 @@ class TelegramTransport(Transport):
         if user_id is None:
             return
 
+        from mochi.heartbeat import active_chat
+        with active_chat():
+            await self._handle_owner_message(update, context, user_id)
+
+    async def _handle_owner_message(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int,
+    ) -> None:
         image = None
         text = update.message.text or update.message.caption or "请看看这张图片。"
         if update.message.photo:
@@ -555,7 +562,7 @@ class TelegramTransport(Transport):
                     else:
                         delivered = await self.send_chat_result(chat_id, result)
                     if delivered:
-                        result.confirm_delivered()
+                        result.confirm_delivered(final=True)
 
             try:
                 await _process_main_turn()
@@ -577,6 +584,13 @@ class TelegramTransport(Transport):
         if user_id is None:
             return
 
+        from mochi.heartbeat import active_chat
+        with active_chat():
+            await self._handle_owner_sticker(update, context, user_id)
+
+    async def _handle_owner_sticker(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int,
+    ) -> None:
         self._dispatch_state_signals()
 
         sticker = update.message.sticker
@@ -602,6 +616,6 @@ class TelegramTransport(Transport):
                     update.effective_chat.id, result,
                 )
                 if delivered:
-                    result.confirm_delivered()
+                    result.confirm_delivered(final=True)
         else:
             await update.message.reply_text("I'm still waking up... try again in a moment.")
