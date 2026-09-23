@@ -35,11 +35,43 @@ def test_history_dates_both_speakers_without_changing_stored_content(monkeypatch
         },
     ]
     messages = _expand_history(history)
-    assert messages[0]["content"] == "[2025-01-02 03:04] Hello"
-    assert messages[1]["content"] == "[2025-01-02 03:05] Hi"
+    assert messages[0]["content"] == "Hello"
+    assert messages[1]["content"] == "Hi"
     assert messages[1]["reasoning_content"] == "private"
     assert history[1]["content"] == "Hi"
-    assert any(name in _build_system_prompt(1) for name in _WEEKDAY_NAMES)
+    from mochi.ai_client import _format_history_timestamps
+
+    timestamps = _format_history_timestamps(history)
+    assert timestamps == "1. user: 2025-01-02 03:04\n2. assistant: 2025-01-02 03:05"
+    prompt = _build_system_prompt(1, history_timestamps=timestamps)
+    assert timestamps in prompt
+    assert "{{history_timestamps}}" not in prompt
+    assert any(name in prompt for name in _WEEKDAY_NAMES)
+
+    history[1]["content"] = "[2025-01-02 03:05] [2025-01-02 03:05] Hi"
+    assert _expand_history(history)[1]["content"] == history[1]["content"]
+
+
+def test_current_image_preserves_history_time_indices():
+    from mochi.ai_client import _expand_history, _replace_current_user_with_image
+    from mochi.transport import ImageAttachment
+
+    history = [
+        {"role": "assistant", "content": "Earlier reply"},
+        {"role": "user", "content": "[图片] Hello"},
+    ]
+    messages = [{"role": "system", "content": "Context"}, *_expand_history(history)]
+    image = ImageAttachment(data=b"image")
+    _replace_current_user_with_image(messages, "[图片] Hello", "Hello", image)
+    assert len(messages) == 3
+    assert messages[1] == history[0]
+    assert messages[2] == {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "Hello"},
+            {"type": "image_url", "image_url": {"url": image.data_url(), "detail": "auto"}},
+        ],
+    }
 
 
 class TestSimpleReply:
@@ -47,12 +79,24 @@ class TestSimpleReply:
 
     @pytest.mark.asyncio
     async def test_simple_reply(self, mock_llm_factory):
+        save_message(1, "user", "Earlier message")
+        save_message(1, "assistant", "Earlier reply")
         mock = mock_llm_factory([make_response("Hello there!")])
 
         reply = await chat(_msg("Hi"))
 
         assert reply.text == "Hello there!"
         assert len(mock.call_log) == 1
+        messages = mock.call_log[0]["messages"]
+        assert messages[1:] == [
+            {"role": "user", "content": "Earlier message"},
+            {"role": "assistant", "content": "Earlier reply"},
+            {"role": "user", "content": "Hi"},
+        ]
+        system = messages[0]["content"]
+        assert "## 历史消息时间表" in system
+        assert "1. user:" in system and "2. assistant:" in system and "3. user:" in system
+        assert "{{history_timestamps}}" not in system
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("provider_fails", [False, True])

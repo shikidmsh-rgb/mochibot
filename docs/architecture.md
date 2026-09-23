@@ -101,6 +101,9 @@ Main's recent conversation includes bounded, timestamped standalone assistant
 messages only after confirmed delivery, alongside complete ordinary turns.
 These messages do not become user turns or enter Lite summary/extraction batches.
 User isolation and conversation resets apply to both kinds of history.
+Absolute message times are supplied as a separate, ordered system-context table.
+User and assistant message bodies remain unchanged; framework metadata is never
+prepended to speech, where it could become a self-reinforcing reply pattern.
 
 Automatic recall searches the current sentence and a bounded recent completed
 conversation independently, prioritizing the current topic and deduplicating

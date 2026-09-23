@@ -88,7 +88,7 @@ async def test_free_time_keeps_only_immediate_conversation_context(
     assert [item["role"] for item in history] == [
         "user", "assistant", "user", "assistant",
     ]
-    assert [item["content"].split("] ", 1)[-1] for item in history] == [
+    assert [item["content"] for item in history] == [
         "user-1", "assistant-1", "user-2", "assistant-2",
     ]
 
@@ -128,7 +128,9 @@ async def test_main_sees_delivered_autonomous_history_only(
     ]
     assert len(delivered_messages) == 1
     assert delivered_messages[0]["role"] == "assistant"
-    assert delivered_messages[0]["content"].startswith("[")
+    assert delivered_messages[0]["content"] == "ALREADY_SAID_GOODNIGHT"
+    history_index = messages.index(delivered_messages[0])
+    assert f"{history_index}. assistant: " in messages[0]["content"]
     assert not any(
         value in message.get("content", "")
         for message in messages for value in ("UNSENT_DRAFT", "OTHER_USER")

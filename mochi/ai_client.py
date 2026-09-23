@@ -90,10 +90,9 @@ def _replace_current_user_with_image(
     if messages:
         message = messages[-1]
         existing = message.get("content")
-        # _expand_history prefixes persisted user turns with an absolute timestamp.
         if (message.get("role") == "user"
                 and isinstance(existing, str)
-                and (existing == stored_text or existing.endswith(stored_text))):
+                and existing == stored_text):
             message["content"] = content
             return
     # Defensive fallback for tests or custom DB adapters that omit the new row.
@@ -294,9 +293,9 @@ _WEEKDAY_NAMES = ("星期一", "星期二", "星期三", "星期四", "星期五
 
 
 def _format_history_timestamp(created_at) -> str:
-    """Format a message timestamp as `[YYYY-MM-DD HH:MM] ` for history prefix.
+    """Format a message timestamp as local `YYYY-MM-DD HH:MM` metadata.
 
-    Returns empty string on missing/invalid input — caller leaves content as-is.
+    Returns empty string on missing/invalid input.
     """
     if not created_at:
         return ""
@@ -308,32 +307,31 @@ def _format_history_timestamp(created_at) -> str:
             dt = dt.replace(tzinfo=tz)
         else:
             dt = dt.astimezone(tz)
-        return f"[{dt.strftime('%Y-%m-%d %H:%M')}] "
+        return dt.strftime("%Y-%m-%d %H:%M")
     except (ValueError, TypeError):
         return ""
 
 
-def _expand_history(history: list[dict]) -> list[dict]:
-    """Convert stored conversation history into ordinary chat messages.
+def _format_history_timestamps(history: list[dict]) -> str:
+    lines = []
+    for index, msg in enumerate(history, start=1):
+        timestamp = _format_history_timestamp(msg.get("created_at"))
+        if timestamp and msg.get("role") in {"user", "assistant"}:
+            lines.append(f"{index}. {msg['role']}: {timestamp}")
+    return "\n".join(lines)
 
-    Both speakers get an absolute timestamp prefix. Stored tool history is not replayed as provider-
-    native tool calls; real executions are kept in the tool execution ledger.
+
+def _expand_history(history: list[dict]) -> list[dict]:
+    """Preserve stored speech without inserting metadata into either role.
+
+    Stored tool history is not replayed as provider-native tool calls;
+    real executions are kept in the tool execution ledger.
     """
     messages: list[dict] = []
     for msg in history:
         role = msg.get("role")
         content = msg.get("content")
-        ts_prefix = _format_history_timestamp(msg.get("created_at"))
-
-        def _prefixed(text, msg_role):
-            if (
-                msg_role in {"user", "assistant"}
-                and isinstance(text, str) and text and ts_prefix
-            ):
-                return ts_prefix + text
-            return text
-
-        expanded = {"role": role, "content": _prefixed(content, role)}
+        expanded = {"role": role, "content": content}
         if role == "assistant" and "reasoning_content" in msg:
             expanded["reasoning_content"] = msg["reasoning_content"]
         messages.append(expanded)
@@ -452,7 +450,8 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
                          runtime_entry: MainRuntimeEntry | None = None,
                          weekly_context: str = "",
                          policy: ContextPolicy | None = None,
-                         habit_progress_context: str = "") -> str:
+                         habit_progress_context: str = "",
+                         history_timestamps: str = "") -> str:
     """Assemble explicit identity, situation, capability, and live-context zones."""
 
     modules = get_system_chat_modules()
@@ -523,11 +522,13 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
         if bubble_inst:
             capability_parts.append(bubble_inst)
 
-    hist_ts_inst = get_prompt("system_chat/_history_timestamp")
-    if hist_ts_inst and not is_weekly and policy.recent_history:
-        capability_parts.append(hist_ts_inst)
-
     dynamic_live_context = []
+    if history_timestamps and not is_weekly and policy.recent_history:
+        hist_ts_inst = get_prompt("system_chat/_history_timestamp")
+        if hist_ts_inst:
+            dynamic_live_context.append(
+                hist_ts_inst.replace("{{history_timestamps}}", history_timestamps)
+            )
     if "runtime_context" in modules:
         rendered_rc = _render_runtime_context(
             modules["runtime_context"], diary_status, diary_journal,
@@ -1005,6 +1006,7 @@ async def chat(
         ),
         policy=prompt_policy,
         habit_progress_context=habit_progress_context,
+        history_timestamps=_format_history_timestamps(history),
     )
 
     # Build messages array
