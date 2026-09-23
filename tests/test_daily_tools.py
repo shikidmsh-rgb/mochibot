@@ -226,3 +226,43 @@ async def test_recurring_reminder_update_preserves_started_occurrence(monkeypatc
     assert reminders.get_active_reminders(1)[0]["context"] == "Review progress"
     friday = datetime(2026, 9, 25, 9, tzinfo=timezone.utc)
     assert reminders.compute_next_occurrence(friday, "weekdays") == friday + timedelta(days=3)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner_id", [0, 1])
+async def test_self_reminder_accepts_current_main_owner_including_wechat_zero(
+    monkeypatch, owner_id,
+):
+    import mochi.config as config
+
+    monkeypatch.setattr(config, "OWNER_USER_ID", owner_id)
+    context = SkillContext(
+        trigger="tool_call", user_id=owner_id, channel_id=owner_id,
+        transport="wechat", actor="main", source="runtime:self_reminder",
+        tool_name="schedule_self_reminder",
+        args={
+            "intent": "Review progress",
+            "remind_at": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+        },
+    )
+    skill = skills.get_skill("reminder")
+    result = await skill.execute(context)
+    assert result.success and result.state_changed
+    reminder = reminders.get_active_reminders(owner_id)[0]
+    assert reminder["source"] == "main" and reminder["user_id"] == owner_id
+
+    context.tool_name = "manage_reminder"
+    context.args = {
+        "action": "update", "reminder_id": reminder["id"], "intent": "Review tomorrow",
+    }
+    assert (await skill.execute(context)).state_changed
+    context.actor = "script"
+    assert not (await skill.execute(context)).success
+    context.actor = "main"
+    context.user_id = owner_id + 1
+    context.tool_name = "schedule_self_reminder"
+    context.args = {
+        "intent": "Another owner",
+        "remind_at": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+    }
+    assert not (await skill.execute(context)).success

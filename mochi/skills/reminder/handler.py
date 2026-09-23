@@ -26,11 +26,11 @@ def _current_owner_main(context: SkillContext) -> bool:
     if (
         isinstance(context.user_id, bool)
         or not isinstance(context.user_id, int)
-        or context.user_id <= 0
+        or context.user_id < 0
     ):
         return False
     from mochi.config import OWNER_USER_ID
-    return not OWNER_USER_ID or context.user_id == OWNER_USER_ID
+    return context.user_id == OWNER_USER_ID
 
 
 class ReminderSkill(Skill):

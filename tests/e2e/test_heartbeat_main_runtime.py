@@ -315,26 +315,30 @@ async def test_disable_switch_skips_due_turn_without_replay(monkeypatch):
     async def unexpected(*args, **kwargs):
         pytest.fail("disabled or missed Free Time must not run")
 
-    monkeypatch.setattr(observers, "collect_all", unexpected)
+    collections = []
+
+    async def collect():
+        collections.append(True)
+        return {}
+
+    monkeypatch.setattr(observers, "collect_all", collect)
     heartbeat.set_main_runtime_callbacks(unexpected, unexpected, "fake")
     run_key = _schedule_due(now)
     monkeypatch.setattr(cfg, "FREE_TIME_ENABLED", False)
     assert await heartbeat.run_main_runtime_tick(1, now=now) == []
+    assert len(collections) == 1
     conn = _connect()
     row = conn.execute(
-        "SELECT status, attempt_count FROM heartbeat_runs WHERE run_key = ?",
+        "SELECT status, attempt_count, outcome FROM heartbeat_runs WHERE run_key = ?",
         (run_key,),
     ).fetchone()
     conn.close()
-    assert tuple(row) == ("expired", 0)
+    assert tuple(row) == ("expired", 0, "expired")
 
     monkeypatch.setattr(cfg, "FREE_TIME_ENABLED", True)
 
-    async def collect():
-        return {}
-
-    monkeypatch.setattr(observers, "collect_all", collect)
     await heartbeat.run_main_runtime_tick(1, now=now + timedelta(seconds=30))
+    assert len(collections) == 2
     assert get_recent_messages(1) == []
 
 

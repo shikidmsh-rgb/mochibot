@@ -33,6 +33,8 @@ setup, not broad provider or multi-user infrastructure.
 - **Observers** (`mochi/observers/`) are read-only factual producers. Their
   cached safe views expose only allowlisted, bounded fields and can be read
   without collecting again. Observations do not independently wake Main.
+  Disabling Free Time stops autonomous opportunities, not awake-state cache
+  refresh or Diary status maintenance.
 - **Persistence** (`mochi/db.py`) stores conversation, memory, configuration,
   usage, and tool execution facts.
 - **Document storage** (`mochi/mochi_files_store.py`) retains Main's private

@@ -623,9 +623,9 @@ async def run_main_runtime_tick(
             now=now,
             max_daily=int(_effective("MAX_DAILY_PROACTIVE")),
         )
-    awake = _state == AWAKE and not _silent_pause and enabled
+    awake = _state == AWAKE and not _silent_pause
     expire_unusable_free_time_runs(
-        now=now, active_chat=has_active_chat(), awake=awake,
+        now=now, active_chat=has_active_chat(), awake=awake, enabled=enabled,
     )
     if not awake:
         return []
@@ -641,7 +641,8 @@ async def run_main_runtime_tick(
     now = fixed_now or datetime.now(TZ)
     expire_unusable_free_time_runs(
         now=now, active_chat=has_active_chat(),
-        awake=free_time_turn_available(None),
+        awake=_state == AWAKE and not _silent_pause,
+        enabled=bool(_effective("FREE_TIME_ENABLED")),
     )
     if not free_time_turn_available(None):
         return created
@@ -676,7 +677,8 @@ async def heartbeat_loop() -> None:
             await _run_maintenance_if_due(user_id, now)
             await _run_weekly_if_due(user_id, now)
             now = datetime.now(TZ)
-            if _effective("FREE_TIME_ENABLED"):
+            enabled = bool(_effective("FREE_TIME_ENABLED"))
+            if enabled:
                 ensure_daily_free_time_plan(
                     user_id=user_id, channel_id=user_id,
                     transport=_runtime_transport, now=now,
@@ -685,7 +687,8 @@ async def heartbeat_loop() -> None:
             expire_abandoned_runs(now=now)
             expire_unusable_free_time_runs(
                 now=now, active_chat=has_active_chat(),
-                awake=free_time_turn_available(None),
+                awake=_state == AWAKE and not _silent_pause,
+                enabled=enabled,
             )
             if _state == TRANSITIONING:
                 log_heartbeat(_state, "sleep_transition")

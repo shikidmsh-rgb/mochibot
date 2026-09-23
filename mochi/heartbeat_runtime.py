@@ -127,12 +127,12 @@ def ensure_daily_free_time_plan(
 
 
 def expire_unusable_free_time_runs(
-    *, now: datetime, active_chat: bool, awake: bool,
+    *, now: datetime, active_chat: bool, awake: bool, enabled: bool = True,
 ) -> int:
     """Consume missed or currently blocked opportunities without a catch-up turn."""
     now_iso = _iso(now)
     cutoff = _iso(now.astimezone(UTC) - FREE_TIME_MISSED_GRACE)
-    due_before = now_iso if active_chat or not awake else cutoff
+    due_before = now_iso if active_chat or not awake or not enabled else cutoff
     outcome = "active_chat" if active_chat else "asleep" if not awake else "expired"
     conn = _connect()
     try:
