@@ -319,6 +319,7 @@ _SYSTEM_SKILL_NAME = "_system"
 #   BEDTIME_ENTRY_ENABLED, BEDTIME_ENTRY_TIMEOUT_S — no dedicated settings page
 #   Autonomous Main Runtime output tuning
 _ENV_ONLY_SYSTEM_KEYS = frozenset({
+    "FREE_TIME_ENABLED",
     "PROACTIVE_COOLDOWN_SECONDS",
     "THINK_FALLBACK_MINUTES",
     "LLM_HEARTBEAT_TIMEOUT_SECONDS",

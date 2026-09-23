@@ -361,12 +361,17 @@ MochiBot 有两个配置入口：**`.env` 文件**和**管理后台（Admin Port
 | `WEIXIN_ENABLED` | `false` | 启用 WeChat 平台（与 Telegram 二选一） |
 | `HEARTBEAT_INTERVAL_MINUTES` | `20` | 心跳循环间隔 † |
 | `ATTENTION_INTERVAL_MINUTES` | `60` | Attention 定期检查间隔 † |
+| `FREE_TIME_ENABLED` | `true` | Free Time 调度开关；仅从 `.env` 读取，重启生效 |
 | `FREE_TIME_MIN_MINUTES` / `FREE_TIME_MAX_MINUTES` | `90` / `240` | Free Time 随机间隔范围 † |
 | `WAKE_EARLIEST_HOUR` / `SLEEP_AFTER_HOUR` | `6` / `23` | 起床与夜间睡眠窗口 |
 | `MAX_DAILY_PROACTIVE` | `5` | 每日主动消息上限 † |
 | `TIMEZONE_OFFSET_HOURS` | `8` | 你的 UTC 偏移 † |
 
 > † 首次启动导入数据库，之后在管理后台修改。手动编辑 `.env` + 重启也可覆盖。
+
+`FREE_TIME_ENABLED=false` 停止创建 Free Time 回合，不再为它调用模型或工具；
+不影响聊天、Attention、定时提醒和记忆维护。重新开启后从正常间隔重新计时，
+不补跑关闭期间的回合。`MAX_DAILY_PROACTIVE=0` 只限制主动消息送达，不等同于停用后台运行。
 
 <details>
 <summary>进阶：Main / Lite、Pre-Router、向量嵌入</summary>

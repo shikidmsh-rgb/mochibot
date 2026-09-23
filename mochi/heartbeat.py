@@ -568,11 +568,13 @@ async def run_main_runtime_tick(
         refresh_diary_status(user_id)
     except Exception as exc:
         log.warning("Diary status refresh failed: %s", exc)
+    free_time_enabled = _effective("FREE_TIME_ENABLED")
     ensure_schedules(
         now=now,
         attention_interval_minutes=int(_effective("ATTENTION_INTERVAL_MINUTES")),
         free_time_min_minutes=int(_effective("FREE_TIME_MIN_MINUTES")),
         free_time_max_minutes=int(_effective("FREE_TIME_MAX_MINUTES")),
+        free_time_enabled=free_time_enabled,
     )
     if changed:
         from mochi.heartbeat_runtime import advance_attention
@@ -586,6 +588,7 @@ async def run_main_runtime_tick(
         attention_interval_minutes=int(_effective("ATTENTION_INTERVAL_MINUTES")),
         free_time_min_minutes=int(_effective("FREE_TIME_MIN_MINUTES")),
         free_time_max_minutes=int(_effective("FREE_TIME_MAX_MINUTES")),
+        free_time_enabled=free_time_enabled,
     )
     for run_key in created:
         if _state != AWAKE or _silent_pause:

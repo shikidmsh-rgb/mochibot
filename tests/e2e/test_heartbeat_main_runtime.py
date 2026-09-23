@@ -319,6 +319,7 @@ async def test_proactive_cooldown_suppresses_instead_of_queuing(
 
 @pytest.mark.asyncio
 async def test_restart_expires_abandoned_turns_and_ignores_retired_clocks(monkeypatch):
+    import mochi.config as cfg
     import mochi.heartbeat as heartbeat
     import mochi.heartbeat_runtime as runtime
     import mochi.observers as observers
@@ -371,6 +372,50 @@ async def test_restart_expires_abandoned_turns_and_ignores_retired_clocks(monkey
     assert ready["result_json"] == old_result
     assert ready["outcome"] == "delivery_unknown"
     assert get_recent_messages(1) == []
+
+    monkeypatch.setattr(cfg, "FREE_TIME_ENABLED", False)
+    set_schedule_due("free_time", now - timedelta(minutes=1))
+    assert runtime.materialize_due_runs(
+        user_id=1, channel_id=1, transport="fake", now=now,
+        attention_interval_minutes=60, free_time_min_minutes=90,
+        free_time_max_minutes=240, free_time_enabled=False,
+    ) == []
+    assert await heartbeat.run_main_runtime_tick(1, now=now) == []
+    conn = _connect()
+    assert conn.execute(
+        "SELECT 1 FROM heartbeat_schedules WHERE entry_kind = 'free_time'",
+    ).fetchone() is None
+    assert conn.execute("SELECT COUNT(*) FROM heartbeat_runs").fetchone()[0] == 3
+    conn.close()
+
+    prepared = []
+
+    async def prepare(entry):
+        prepared.append(entry.kind)
+        return ChatResult(disposition="skip")
+
+    heartbeat.set_main_runtime_callbacks(prepare, unexpected, "fake")
+    runtime.sync_attention_facts(
+        "test", [{"stable_key": "due", "facts": {"pending": True}}],
+        observed_at=now, freshness_seconds=3600,
+    )
+    set_schedule_due("attention", now)
+    assert len(await heartbeat.run_main_runtime_tick(1, now=now)) == 1
+    assert prepared == ["attention"]
+
+    monkeypatch.setattr(cfg, "FREE_TIME_ENABLED", True)
+    assert await heartbeat.run_main_runtime_tick(1, now=now) == []
+    conn = _connect()
+    due = conn.execute(
+        "SELECT next_due_at FROM heartbeat_schedules WHERE entry_kind = 'free_time'",
+    ).fetchone()[0]
+    conn.close()
+    assert now + timedelta(minutes=90) <= datetime.fromisoformat(due) <= (
+        now + timedelta(minutes=240)
+    )
+    set_schedule_due("free_time", now)
+    assert len(await heartbeat.run_main_runtime_tick(1, now=now)) == 1
+    assert prepared == ["attention", "free_time"]
 
 
 @pytest.mark.asyncio

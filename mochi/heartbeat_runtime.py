@@ -146,20 +146,26 @@ def ensure_schedules(
     attention_interval_minutes: int,
     free_time_min_minutes: int,
     free_time_max_minutes: int,
+    free_time_enabled: bool = True,
     rng: random.Random | random.SystemRandom | None = None,
 ) -> None:
     rng = rng or random.SystemRandom()
     now = now.astimezone(UTC)
-    free_delay = rng.randint(
-        min(free_time_min_minutes, free_time_max_minutes),
-        max(free_time_min_minutes, free_time_max_minutes),
-    )
-    rows = (
+    rows = [
         ("attention", now + timedelta(minutes=attention_interval_minutes)),
-        ("free_time", now + timedelta(minutes=free_delay)),
-    )
+    ]
+    if free_time_enabled:
+        free_delay = rng.randint(
+            min(free_time_min_minutes, free_time_max_minutes),
+            max(free_time_min_minutes, free_time_max_minutes),
+        )
+        rows.append(("free_time", now + timedelta(minutes=free_delay)))
     conn = _connect()
     try:
+        if not free_time_enabled:
+            conn.execute(
+                "DELETE FROM heartbeat_schedules WHERE entry_kind = 'free_time'",
+            )
         for kind, due in rows:
             conn.execute(
                 "INSERT OR IGNORE INTO heartbeat_schedules "
@@ -215,6 +221,7 @@ def materialize_due_runs(
     attention_interval_minutes: int,
     free_time_min_minutes: int,
     free_time_max_minutes: int,
+    free_time_enabled: bool = True,
     rng: random.Random | random.SystemRandom | None = None,
 ) -> list[str]:
     """Snapshot all due independent clocks and advance each one atomically."""
@@ -243,9 +250,10 @@ def materialize_due_runs(
         conn.execute("BEGIN IMMEDIATE")
         due_rows = conn.execute(
             "SELECT entry_kind, next_due_at, wake_reason FROM heartbeat_schedules "
-            "WHERE entry_kind IN ('free_time', 'attention') AND next_due_at <= ? "
+            "WHERE (entry_kind = 'attention' OR (entry_kind = 'free_time' AND ?)) "
+            "AND next_due_at <= ? "
             "ORDER BY next_due_at, entry_kind",
-            (now_iso,),
+            (free_time_enabled, now_iso),
         ).fetchall()
         for row in due_rows:
             kind = row["entry_kind"]

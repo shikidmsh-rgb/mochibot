@@ -45,6 +45,7 @@ def mock_config(monkeypatch):
     monkeypatch.setattr(cfg, "MAX_DAILY_PROACTIVE", 10)
     monkeypatch.setattr(cfg, "PROACTIVE_COOLDOWN_SECONDS", 0)
     monkeypatch.setattr(cfg, "ATTENTION_INTERVAL_MINUTES", 60)
+    monkeypatch.setattr(cfg, "FREE_TIME_ENABLED", True)
     monkeypatch.setattr(cfg, "FREE_TIME_MIN_MINUTES", 90)
     monkeypatch.setattr(cfg, "FREE_TIME_MAX_MINUTES", 240)
     monkeypatch.setattr(cfg, "BEDTIME_ENTRY_ENABLED", True)
