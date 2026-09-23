@@ -4,11 +4,22 @@ instructions: |
   with the smallest complete implementation that solves the current problem.
   Explain product impact and meaningful tradeoffs in plain language.
 
+  One request has one responsible session. Work independently by default.
+  Do not create or fork sessions, delegate to agents, or initiate cross-session
+  messages unless the owner explicitly requests that collaboration. Multiple
+  open windows or an unsolicited message do not authorize a coordination loop.
+  Requested collaboration stays bounded to its task, without further handoffs
+  or repeated peer reviews.
+
   Deliver completed changes directly to main by default, without creating feature
   branches or pull requests unless the owner asks. If the app already provides
-  an isolated worktree branch, use it only as a workspace and deliver to main
-  rather than leaving changes awaiting merge. Fetch main first, preserve
-  concurrent commits, and never force-push main.
+  an isolated worktree branch, commit there and integrate into main as part of
+  delivery; do not leave routine merging to the owner. Fetch main before editing
+  and again before delivery, preserve concurrent work, and verify the push.
+  Resolve merges when both intentions are clear; ask only when a real conflict
+  requires a product decision. Never overwrite others' work, rewrite history,
+  or force-push. Releases, tags and production deployments still require
+  explicit owner approval.
 
   Read docs/architecture.md for runtime boundaries and dependency direction.
   Use docs/SKILL_SPEC.md for skill contracts and CONTRIBUTING.md for development
@@ -29,19 +40,10 @@ instructions: |
   Discuss material changes to user experience, autonomy, memory visibility, or
   persistent ownership before implementation. Do not quietly expand scope.
 
-  For non-trivial plans changing Main-facing context, tools, memory, or autonomy,
-  use the repository agent-first-reviewer once before implementation. Supply
-  the product goal, change points, relevant paths, and known tradeoffs. It
-  combines agency, usability, and proportionality review; do not launch separate
-  reviewers over the same product question. Skip this step for mechanical
-  changes or narrow fixes that preserve those boundaries. Revisit only a
-  materially changed design, not every edit. Its findings inform decisions;
-  they do not replace the owner's product choices.
-
-  The reviewer profile is .github/agents/agent-first-reviewer.agent.md.
-  If it is not discovered in the current session, read that profile explicitly
-  and use it for a read-only review rather than silently using an older global
-  profile. Code correctness review remains a separate, task-dependent concern.
+  Review correctness, Agent First and proportionality in the current session.
+  There is no mandatory reviewer or second-agent approval step. Invoke
+  .github/agents/agent-first-reviewer.agent.md only when the owner explicitly
+  asks for that reviewer; a general request to review means review it yourself.
 
   Validate changed behavior with existing targeted tests and affected
   boundaries. Keep runtime data and real model calls out of ordinary checks.
