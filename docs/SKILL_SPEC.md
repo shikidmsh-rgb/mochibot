@@ -127,7 +127,7 @@ Nightly 统计最近 30 天不同普通聊天轮次的成功调用，达到 3 �
 
 ### Capability Context 区段
 
-`## Capability Context` 是唯一会随当前工具注入 Main 的正文区段。它描述能力适用的事实、确定性效果和真实硬边界，让 Main 自己判断是否以及如何行动。尚未加载的按需技能在 system prompt 中只列名称和工具名，其 Capability Context 随 `request_tools` 的加载结果返回。只写 Main 做判断需要的事实；工具回执已会报告的执行细节和 schema 里已有的参数说明不必重复。`Usage Rules`、`Behavior Rules` 等命令式区段不会进入 Main：
+`## Capability Context` 是唯一会随当前工具注入 Main 的正文区段，渲染到 `agent.md` 的 `{{capability_context}}` 位置。它描述能力适用的事实、确定性效果和真实硬边界，让 Main 自己判断是否以及如何行动。尚未加载的按需技能只在 `{{requestable_tools}}` 中列出名称和工具名，其 Capability Context 随 `request_tools` 的加载结果返回。只写 Main 做判断需要的事实；工具回执已会报告的执行细节和 schema 里已有的参数说明不必重复。`Usage Rules`、`Behavior Rules` 等命令式区段不会进入 Main：
 
 ```markdown
 ## Capability Context
@@ -149,7 +149,7 @@ exclude_transports: [wechat]
 
 **框架行为**：被排除平台上，该 skill 的工具：
 - 不出现在 LLM 工具列表中（`get_tools()` 过滤）
-- 不出现在能力摘要中（`_build_capability_summary()` 过滤）
+- 不出现在可加载工具清单中（`build_catalog()` 过滤）
 - 即使被直接调用也会被拒绝（`dispatch()` 返回 "not available on this platform"）
 
 **实际示例** — `sticker` skill 排除 wechat：

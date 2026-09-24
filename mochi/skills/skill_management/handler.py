@@ -313,7 +313,7 @@ class SkillManagementSkill(Skill):
 
     def _toggle_skill(self, skill_name: str, enabled: bool) -> SkillResult:
         from mochi.extensions.store import ExtensionError
-        from mochi.skills import get_skill_for_management, load_installed_extension, refresh_capability_summary
+        from mochi.skills import get_skill_for_management, load_installed_extension
         from mochi.db import get_disabled_skills, set_skill_enabled
 
         if type(enabled) is not bool:
@@ -361,7 +361,6 @@ class SkillManagementSkill(Skill):
                 loaded = False
                 load_error = str(exc)
                 unknown_effects = exc.state_change_unknown
-        refresh_capability_summary()
         action = "已启用" if enabled else "已禁用"
         effect = (
             f"加载失败：{load_error}" if load_error

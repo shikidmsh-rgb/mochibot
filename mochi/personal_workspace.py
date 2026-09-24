@@ -37,12 +37,10 @@ def set_development_enabled(enabled: bool) -> bool:
     if type(enabled) is not bool:
         raise ValueError("enabled must be a boolean")
     from mochi.db import set_skill_enabled
-    from mochi.skills import refresh_capability_summary
 
     changed = development_enabled() != enabled
     if changed:
         set_skill_enabled("development", enabled)
-        refresh_capability_summary()
     return changed
 
 

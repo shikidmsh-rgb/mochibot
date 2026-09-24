@@ -40,7 +40,6 @@ def extension_state(tmp_path, monkeypatch):
     for tool, owner in list(skill_registry._tool_map.items()):
         if owner in external:
             skill_registry._tool_map.pop(tool)
-    skill_registry._capability_summary.clear()
 
 
 @pytest.fixture(autouse=True)

@@ -436,7 +436,18 @@ def _render_runtime_context(template: str, diary_status: str = "",
     return result.strip()
 
 
+def _fill_agent_section(agent: str, name: str, value: str) -> str:
+    """Fill an agent.md placeholder, dropping its heading when empty."""
+    placeholder = "{{" + name + "}}"
+    if value:
+        return agent.replace(placeholder, value)
+    return re.sub(
+        r"\n*#+ [^\n]*\n+" + re.escape(placeholder), "", agent,
+    )
+
+
 def _build_system_prompt(user_id: int, capability_context: str = "",
+                         requestable_tools: str = "",
                          tool_names: list[str] | None = None,
                          core_memory: str = "",
                          habits: list[dict] | None = None,
@@ -451,8 +462,7 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
                          weekly_context: str = "",
                          policy: ContextPolicy | None = None,
                          habit_progress_context: str = "",
-                         history_timestamps: str = "",
-                         image_generation_available: bool = False) -> str:
+                         history_timestamps: str = "") -> str:
     """Assemble explicit identity, situation, capability, and live-context zones."""
 
     modules = get_system_chat_modules()
@@ -471,16 +481,12 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
     if core_memory:
         stable_identity.append(core_memory)
     if "agent" in modules:
-        image_capability = (
-            "\n\n你有图片生成能力，可随时按需调用。"
-            if image_generation_available else ""
+        agent = modules["agent"].replace(
+            "{{deployment_environment}}", _deployment_environment(),
         )
-        stable_identity.append(
-            modules["agent"].replace(
-                "{{deployment_environment}}",
-                _deployment_environment(),
-            ).replace("\n\n{{image_generation_capability}}", image_capability)
-        )
+        agent = _fill_agent_section(agent, "capability_context", capability_context)
+        agent = _fill_agent_section(agent, "requestable_tools", requestable_tools)
+        stable_identity.append(agent)
     early_runtime_situation = []
     if policy.early_runtime_situation and runtime_entry:
         situation = get_prompt("free_time_entry")
@@ -493,21 +499,6 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
         early_runtime_situation.append(protocol)
 
     capability_parts = []
-    if not is_weekly:
-        from mochi.skills import get_capability_summary
-        cap = get_capability_summary(
-            transport=transport,
-            excluded_skills=(
-                frozenset() if image_generation_available
-                else frozenset({"image_generation"})
-            ),
-        )
-        if cap:
-            capability_parts.append(cap)
-
-    if capability_context:
-        capability_parts.append(f"## 能力上下文\n{capability_context}")
-
     if habit_progress_context:
         capability_parts.append(
             f"## 本轮习惯进度快照（只读事实）\n{habit_progress_context}"
@@ -742,7 +733,6 @@ async def chat(
         save_message(user_id, "user", stored_text, turn_id=turn_id)
 
     # ── Parallel pre-fetch: router classification + DB queries ──
-    capability_context = ""
     tier = "main"
     client = get_client_for_tier(tier)
     routed_skill_names: list[str] = []
@@ -969,9 +959,14 @@ async def chat(
     active_tool_names = list(availability.names)
     capability_context = skill_registry.get_capability_context_for_tools(
         active_tool_names,
-        include_requestable_tools=escalation_available,
-        transport=transport,
-        excluded_skills=excluded_skills,
+    )
+    requestable_tools = (
+        skill_registry.get_requestable_tool_lines(
+            active_tool_names,
+            transport=transport,
+            excluded_skills=excluded_skills,
+        )
+        if escalation_available else ""
     )
     from mochi.skills.habit.handler import HabitSkill
     habit_skill = skill_registry.all_skills().get("habit")
@@ -1025,7 +1020,8 @@ async def chat(
         weekly_session.expected_core = core_memory
 
     system_prompt = _build_system_prompt(
-        user_id, capability_context=capability_context, tool_names=active_tool_names,
+        user_id, capability_context=capability_context,
+        requestable_tools=requestable_tools, tool_names=active_tool_names,
         core_memory=core_memory, habits=habits, transport=transport,
         recalled_memories=recalled_memories,
         diary_status=_ds, diary_journal=_dj, diary_tomorrow=diary_tomorrow,
@@ -1038,7 +1034,6 @@ async def chat(
         policy=prompt_policy,
         habit_progress_context=habit_progress_context,
         history_timestamps=_format_history_timestamps(history),
-        image_generation_available=image_generation_available,
     )
 
     # Build messages array

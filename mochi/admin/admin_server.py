@@ -850,7 +850,6 @@ if HAS_FASTAPI:
         from mochi.extensions.store import ExtensionError
         from mochi.skills import (
             get_skill, get_skill_for_management, load_installed_extension,
-            refresh_capability_summary,
         )
 
         body = await request.json()
@@ -878,13 +877,11 @@ if HAS_FASTAPI:
             try:
                 load_installed_extension(name)
             except ExtensionError as exc:
-                refresh_capability_summary()
                 return JSONResponse(status_code=409, content={
                     "ok": False, "enabled": enabled, "loaded": False,
                     "activation_required": True, "load_error": str(exc),
                     "error": f"启用开关已保存，但工具加载失败：{exc}",
                 })
-        refresh_capability_summary()
         loaded = get_skill(name) is not None
         return {
             "ok": True, "enabled": enabled, "loaded": loaded,

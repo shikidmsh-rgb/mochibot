@@ -11,6 +11,7 @@ Usage:
 
 Additional APIs:
     get_capability_context_for_tools() # collect capability facts for active tools
+    get_requestable_tool_lines()       # list unloaded requestable tools
     skill_for_tool()                   # tool_name → skill_name lookup
     get_skill_info_all()               # admin metadata
 """
@@ -143,7 +144,6 @@ def _load_external(name: str, *, activate: bool = False) -> Skill:
             state_changed=bool(getattr(exc, "state_changed", False)),
             state_change_unknown=entered_code or bool(getattr(exc, "state_change_unknown", False)),
         ) from exc
-    refresh_capability_summary()
     return skill
 
 
@@ -256,7 +256,6 @@ def refresh_skill_configuration(name: str) -> None:
     skill = get_skill(name)
     if skill is not None:
         skill.refresh_config()
-    refresh_capability_summary()
 
 
 def init_all_skill_schemas() -> None:
@@ -365,7 +364,6 @@ def discover() -> list[str]:
 
     registered.extend(_discover_external())
     log.info("Skill discovery complete: %d skills registered", len(registered))
-    refresh_capability_summary()
     return registered
 
 
@@ -630,24 +628,14 @@ def get_prompt_sections(compact: bool = False) -> list[str]:
 # v2 API additions
 # ---------------------------------------------------------------------------
 
-def get_capability_context_for_tools(
-    tool_names: list[str],
-    *,
-    include_requestable_tools: bool = False,
-    transport: str = "",
-    excluded_skills: frozenset[str] = frozenset(),
-) -> str:
-    """Collect Main-facing capability context for the given tools.
+def get_capability_context_for_tools(tool_names: list[str]) -> str:
+    """Collect capability context for skills represented in ``tool_names``.
 
-    Returns facts, deterministic effects, and hard boundaries from each skill
-    represented in ``tool_names``. With ``include_requestable_tools``, every
-    requestable tool that is not loaded is listed by skill name only; its
-    capability context is returned by request_tools when it is loaded.
-    Legacy directive sections are never included.
+    Returns facts, deterministic effects, and hard boundaries from each
+    skill's SKILL.md. Legacy directive sections are never included.
     """
     seen_skills: set[str] = set()
     context_parts: list[str] = []
-    tool_set = set(tool_names)
 
     for tn in tool_names:
         sn = _tool_map.get(tn)
@@ -656,23 +644,31 @@ def get_capability_context_for_tools(
         seen_skills.add(sn)
         skill = _skills.get(sn)
         if skill and skill.capability_context:
-            context_parts.append(f"### {skill.name}\n{skill.capability_context}")
+            context_parts.append(f"#### {skill.name}\n{skill.capability_context}")
 
-    if include_requestable_tools:
-        from mochi.request_tools import build_catalog
+    return "\n\n".join(context_parts)
 
-        catalog = build_catalog(transport=transport, excluded_skills=excluded_skills)
-        requestable_lines = []
-        for skill_name, namespace in catalog.eligible.items():
-            unloaded = [name for name in namespace.tool_names if name not in tool_set]
-            if unloaded:
-                requestable_lines.append(f"- {skill_name}: {', '.join(unloaded)}")
-        if requestable_lines:
-            context_parts.append(
-                "### 可通过 request_tools 加载\n" + "\n".join(requestable_lines)
-            )
 
-    return "\n\n".join(context_parts) if context_parts else ""
+def get_requestable_tool_lines(
+    tool_names: list[str],
+    *,
+    transport: str = "",
+    excluded_skills: frozenset[str] = frozenset(),
+) -> str:
+    """List requestable tools that are not loaded, grouped by skill name.
+
+    Their capability context is returned by request_tools when loaded.
+    """
+    from mochi.request_tools import build_catalog
+
+    tool_set = set(tool_names)
+    catalog = build_catalog(transport=transport, excluded_skills=excluded_skills)
+    lines = []
+    for skill_name, namespace in catalog.eligible.items():
+        unloaded = [name for name in namespace.tool_names if name not in tool_set]
+        if unloaded:
+            lines.append(f"- {skill_name}: {', '.join(unloaded)}")
+    return "\n".join(lines)
 
 
 def get_skill_info_all() -> list[dict]:
@@ -775,64 +771,3 @@ def get_skill_info_all() -> list[dict]:
     return result
 
 
-# ---------------------------------------------------------------------------
-# Dynamic capability summary (for system prompt)
-# ---------------------------------------------------------------------------
-
-_capability_summary: dict[tuple[str, frozenset[str]], str] = {}
-
-
-def _build_capability_summary(
-    transport: str = "", excluded_skills: frozenset[str] = frozenset(),
-) -> str:
-    """Build a Chinese markdown section listing currently available skills.
-
-    Filters:
-    - Excludes admin-disabled skills
-    - Excludes skills with missing required config
-    - Excludes type=automation (internal, e.g. maintenance)
-    - Excludes skills incompatible with the given transport (noted separately)
-    """
-    disabled = _get_disabled_skills()
-    lines: list[str] = []
-    excluded_names: list[str] = []
-
-    for s in _skills.values():
-        if s.name in excluded_skills:
-            continue
-        if s.name in disabled:
-            continue
-        if get_missing_config(s):
-            continue
-        if s.skill_type == "automation":
-            continue
-        if transport and transport in s.exclude_transports:
-            excluded_names.append(s.description or s.name)
-            continue
-        if s.description:
-            short = s.description.split("—")[0].strip(" \"") if "—" in s.description else s.description
-            lines.append(f"- {short}")
-
-    if excluded_names:
-        lines.append(f"- (此平台不可用: {', '.join(excluded_names)})")
-
-    if not lines:
-        return ""
-    return "### 你的技能\n" + "\n".join(lines)
-
-
-def get_capability_summary(
-    transport: str = "", excluded_skills: frozenset[str] = frozenset(),
-) -> str:
-    """Return cached capability summary for system prompt injection."""
-    global _capability_summary
-    key = (transport, excluded_skills)
-    if key not in _capability_summary:
-        _capability_summary[key] = _build_capability_summary(transport, excluded_skills)
-    return _capability_summary[key]
-
-
-def refresh_capability_summary() -> None:
-    """Rebuild the cached capability summary (call after skill toggle/config change)."""
-    global _capability_summary
-    _capability_summary = {}

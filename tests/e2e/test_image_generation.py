@@ -72,7 +72,7 @@ async def test_generated_image_is_delivered_then_shown_to_main_without_persistin
     assert reply.text == "我看到雪山和月亮了。"
     assert generated == ["月亮和雪山"]
     assert delivered == [IMAGE]
-    assert "你有图片生成能力，可随时按需调用。" in mock.call_log[0]["messages"][0]["content"]
+    assert f"- image_generation: {IMAGE_TOOL}" in mock.call_log[0]["messages"][0]["content"]
     assert IMAGE_TOOL not in _tools(mock.call_log[0])
     assert IMAGE_TOOL in _tools(mock.call_log[1])
     assert mock.call_log[2]["tools"] is None
@@ -223,7 +223,7 @@ async def test_image_capability_tracks_config_toggle_and_chat_context(
             make_response("No image."),
         ])
         await chat(message)
-        assert "你有图片生成能力" not in mock.call_log[0]["messages"][0]["content"]
+        assert "image_generation" not in mock.call_log[0]["messages"][0]["content"]
         assert "生成并发送图片" not in mock.call_log[0]["messages"][0]["content"]
         assert IMAGE_TOOL not in _tools(mock.call_log[0])
         assert IMAGE_TOOL not in _tools(mock.call_log[1])

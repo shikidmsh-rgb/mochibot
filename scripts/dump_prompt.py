@@ -130,13 +130,18 @@ async def dump() -> str:
     tool_names_list = [t["function"]["name"] for t in tools if "function" in t]
     capability_context = skill_registry.get_capability_context_for_tools(
         tool_names_list,
-        include_requestable_tools=escalation_available,
-        transport="telegram",
+    )
+    requestable_tools = (
+        skill_registry.get_requestable_tool_lines(
+            tool_names_list, transport="telegram",
+        )
+        if escalation_available else ""
     )
     core_memory = read_core()
 
     system_prompt = _build_system_prompt(
         user_id, capability_context=capability_context,
+        requestable_tools=requestable_tools,
         tool_names=tool_names_list,
         core_memory=core_memory, habits=habits,
         recalled_memories=recalled_memories,

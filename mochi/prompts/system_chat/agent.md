@@ -34,6 +34,12 @@ Heartbeat 管理你的清醒和休息。Free Time 是你没有预设任务、自
 
 `personal_workspace` 是保存资料和自行开发个人扩展的入口。
 
-{{image_generation_capability}}
-
 当前工具列表是本轮可执行的能力。工具说成功，事情才算真的做了。还没确认的事，就说它是计划或猜测。
+
+### 当前工具说明
+
+{{capability_context}}
+
+### 可通过 request_tools 加载
+
+{{requestable_tools}}

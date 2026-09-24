@@ -91,14 +91,10 @@ def save_image_config(protocol: str, base_url: str, model: str, api_key: str) ->
         "protocol": protocol, "base_url": base_url.strip().rstrip("/"),
         "model": model, "api_key": encrypted,
     }))
-    from mochi.skills import refresh_capability_summary
-    refresh_capability_summary()
 
 
 def clear_image_config() -> None:
     delete_skill_config(_CONFIG_SCOPE, "config")
-    from mochi.skills import refresh_capability_summary
-    refresh_capability_summary()
 
 
 async def _read_bounded(response: aiohttp.ClientResponse, limit: int) -> bytes:
