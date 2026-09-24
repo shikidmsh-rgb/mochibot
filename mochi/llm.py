@@ -67,6 +67,7 @@ class LLMResponse:
     reasoning_tokens: int | None = None
     cached_prompt_tokens: int | None = None
     reasoning_source: str = ""
+    response_items: list[dict] = field(default_factory=list)
 
 
 class LLMProvider(ABC):
@@ -231,6 +232,113 @@ def _openai_response(choice, usage, model: str, tool_calls: list[ToolCallDict]) 
         tool_calls_complete=choice.finish_reason == "tool_calls",
         reasoning_tokens=reasoning,
         cached_prompt_tokens=cached,
+    )
+
+
+def _responses_input(messages: list[dict]) -> list[dict]:
+    """Translate the current conversation and its tool round into Responses items."""
+    items: list[dict] = []
+    for message in messages:
+        role = message["role"]
+        if role == "tool":
+            items.append({
+                "type": "function_call_output",
+                "call_id": message["tool_call_id"],
+                "output": message["content"],
+            })
+        elif role == "assistant" and "response_items" in message:
+            items.extend(message["response_items"])
+        else:
+            if role == "assistant" and message.get("reasoning_content"):
+                items.extend(json.loads(message["reasoning_content"]))
+            content = message["content"]
+            if isinstance(content, list):
+                content = [
+                    (
+                        {"type": "input_text", "text": block["text"]}
+                        if block["type"] == "text"
+                        else {
+                            "type": "input_image",
+                            "image_url": block["image_url"]["url"],
+                            "detail": block["image_url"].get("detail", "auto"),
+                        }
+                    )
+                    for block in content
+                ]
+            items.append({"role": role, "content": content})
+    return items
+
+
+def _responses_tools(tools: list[dict]) -> list[dict]:
+    return [
+        {
+            "type": "function",
+            **tool["function"],
+            "strict": False,
+        }
+        for tool in tools
+    ]
+
+
+def _responses_result(resp, model: str, source: str) -> LLMResponse:
+    if resp.status not in ("completed", "incomplete"):
+        raise ValueError(f"Responses API returned status {resp.status!r}")
+
+    content: list[str] = []
+    tool_calls: list[ToolCallDict] = []
+    reasoning_items: list[dict] = []
+    response_items: list[dict] = []
+    calls_complete = resp.status == "completed"
+    for item in resp.output:
+        response_items.append(item.model_dump(exclude_none=True))
+        if item.type == "reasoning" and item.encrypted_content:
+            reasoning_items.append(response_items[-1])
+        elif item.type == "message":
+            if item.status != "completed":
+                calls_complete = False
+            if getattr(item, "phase", None) in (None, "final_answer"):
+                content.extend(
+                    block.text for block in item.content
+                    if block.type == "output_text"
+                )
+        elif item.type == "function_call":
+            try:
+                arguments = json.loads(item.arguments)
+            except (json.JSONDecodeError, TypeError):
+                log.warning("Malformed tool_call arguments for %s", item.name)
+                arguments = None
+                argument_error = "arguments were not valid JSON"
+            else:
+                argument_error = None
+            tool_calls.append({
+                "id": item.call_id,
+                "name": item.name,
+                "arguments": arguments,
+                "argument_error": argument_error,
+            })
+            if getattr(item, "status", None) not in (None, "completed"):
+                calls_complete = False
+
+    if not calls_complete and not tool_calls:
+        raise ValueError(f"Responses API returned incomplete output: {resp.incomplete_details}")
+
+    usage = resp.usage
+    input_details = getattr(usage, "input_tokens_details", None)
+    output_details = getattr(usage, "output_tokens_details", None)
+    return LLMResponse(
+        content="".join(content),
+        reasoning_content=json.dumps(reasoning_items) if reasoning_items else "",
+        reasoning_source=source,
+        response_items=response_items,
+        tool_calls=tool_calls,
+        tool_calls_complete=calls_complete,
+        prompt_tokens=usage.input_tokens if usage else 0,
+        completion_tokens=usage.output_tokens if usage else 0,
+        total_tokens=usage.total_tokens if usage else 0,
+        model=model,
+        finish_reason=resp.status,
+        reasoning_tokens=getattr(output_details, "reasoning_tokens", None),
+        cached_prompt_tokens=getattr(input_details, "cached_tokens", None),
     )
 
 
@@ -412,11 +520,34 @@ class OpenAIProvider(_OpenAICompatChat, LLMProvider):
 
     @property
     def reasoning_source(self) -> str:
-        return self._caps_cache_key
+        return (
+            f"{self._caps_cache_key}::responses"
+            if self._model == "gpt-6-sol"
+            else self._caps_cache_key
+        )
 
     def chat(self, messages: list[dict], tools: list[dict] | None = None,
              temperature: float | None = None, max_tokens: int = 2048,
              json_mode: bool = False) -> LLMResponse:
+        if self._model == "gpt-6-sol":
+            kwargs: dict = {
+                "model": self._model,
+                "input": _responses_input(messages),
+                "max_output_tokens": max_tokens,
+                "store": False,
+                "include": ["reasoning.encrypted_content"],
+            }
+            if tools:
+                kwargs["tools"] = _responses_tools(tools)
+            if temperature is not None:
+                kwargs["temperature"] = temperature
+            if json_mode:
+                kwargs["text"] = {"format": {"type": "json_object"}}
+            resp = self._client.responses.create(**kwargs)
+            result = _responses_result(resp, self._model, self.reasoning_source)
+            if json_mode and result.content:
+                result.content = extract_json(result.content)
+            return result
         resp = self._do_chat(self._client, self._model, messages, tools,
                              temperature, max_tokens, json_mode=json_mode)
         choice = resp.choices[0]
