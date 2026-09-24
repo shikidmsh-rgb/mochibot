@@ -159,8 +159,12 @@ request is not retried automatically.
 
 WeChat image delivery is an independent transport capability. It encrypts and
 uploads bytes before sending the image message through the same reply-context
-and failure boundary as text. An upload is not a delivered message. There is no
-durable image gallery, Main image-generation tool, or autonomous image trigger.
+and failure boundary as text. An upload is not a delivered message. When configured
+and enabled, a routed image-generation skill lets Main generate and send an image
+in an owner-authorized WeChat chat turn. The image is shown to Main in the same
+turn after delivery, but its bytes are never stored in conversation history.
+Other runtime entries and Telegram cannot use this skill. There is no durable
+image gallery or autonomous image trigger.
 
 Provider-returned reasoning is protocol metadata, not conversation content or
 memory evidence. Delivered assistant records and durable delivery outboxes

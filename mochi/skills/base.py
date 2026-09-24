@@ -9,13 +9,18 @@ Every skill directory must have:
   - __init__.py
 """
 
+from __future__ import annotations
+
 import os
 import re
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
+
+if TYPE_CHECKING:
+    from mochi.transport import ImageAttachment
 
 log = logging.getLogger(__name__)
 
@@ -110,6 +115,7 @@ class SkillResult:
     document_snapshot: str | None = None
     after_delivery: Callable[[], None] | None = None
     exposed_memory_ids: list[int] = field(default_factory=list)
+    image: ImageAttachment | None = field(default=None, repr=False)
 
 
 @dataclass

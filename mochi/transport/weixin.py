@@ -352,12 +352,16 @@ class WeixinTransport(Transport):
     async def send_image_checked(
         self, user_id: int, image: ImageAttachment,
         *, can_deliver: Callable[[], bool] | None = None,
+        context_token: str | None = None,
     ) -> None:
         import aiohttp
 
         ensure_delivery_allowed(can_deliver)
         to = self._owner_weixin_id
-        token = self._context_tokens.get(to, "") if to else ""
+        token = (
+            context_token if context_token is not None
+            else self._context_tokens.get(to, "") if to else ""
+        )
         if not to or not self._session or self._session_expired or not token:
             raise DeliveryError(
                 "wechat: session, owner or reply context not ready",
@@ -870,6 +874,13 @@ class WeixinTransport(Transport):
             owner_authorized=from_user == self._owner_weixin_id,
             image=image,
         )
+        if incoming.owner_authorized and context_token:
+            async def send_generated_image(generated: ImageAttachment) -> None:
+                await self.send_image_checked(
+                    user_id, generated, context_token=context_token,
+                )
+
+            incoming.send_image = send_generated_image
 
         # Call chat via callback
         if _on_message_callback:

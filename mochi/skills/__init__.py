@@ -41,6 +41,10 @@ def get_missing_config(skill: Skill) -> list[str]:
     """Return currently missing required config using live DB values."""
     from mochi.db import get_skill_config
 
+    if skill.name == "image_generation":
+        from mochi.image_service import get_image_config
+
+        return [] if get_image_config()["configured"] else ["image model"]
     db_config = get_skill_config(skill.name)
     return [
         key
@@ -631,6 +635,7 @@ def get_capability_context_for_tools(
     *,
     include_requestable_tools: bool = False,
     transport: str = "",
+    excluded_skills: frozenset[str] = frozenset(),
 ) -> str:
     """Collect Main-facing capability context for the given tools.
 
@@ -673,7 +678,7 @@ def get_capability_context_for_tools(
     if include_requestable_tools:
         from mochi.request_tools import build_catalog
 
-        catalog = build_catalog(transport=transport)
+        catalog = build_catalog(transport=transport, excluded_skills=excluded_skills)
         for skill_name, namespace in catalog.eligible.items():
             if skill_name in seen_skills:
                 continue
@@ -793,10 +798,12 @@ def get_skill_info_all() -> list[dict]:
 # Dynamic capability summary (for system prompt)
 # ---------------------------------------------------------------------------
 
-_capability_summary: dict[str, str] = {}
+_capability_summary: dict[tuple[str, frozenset[str]], str] = {}
 
 
-def _build_capability_summary(transport: str = "") -> str:
+def _build_capability_summary(
+    transport: str = "", excluded_skills: frozenset[str] = frozenset(),
+) -> str:
     """Build a Chinese markdown section listing currently available skills.
 
     Filters:
@@ -810,6 +817,8 @@ def _build_capability_summary(transport: str = "") -> str:
     excluded_names: list[str] = []
 
     for s in _skills.values():
+        if s.name in excluded_skills:
+            continue
         if s.name in disabled:
             continue
         if get_missing_config(s):
@@ -831,12 +840,15 @@ def _build_capability_summary(transport: str = "") -> str:
     return "### 你的技能\n" + "\n".join(lines)
 
 
-def get_capability_summary(transport: str = "") -> str:
+def get_capability_summary(
+    transport: str = "", excluded_skills: frozenset[str] = frozenset(),
+) -> str:
     """Return cached capability summary for system prompt injection."""
     global _capability_summary
-    if transport not in _capability_summary:
-        _capability_summary[transport] = _build_capability_summary(transport)
-    return _capability_summary[transport]
+    key = (transport, excluded_skills)
+    if key not in _capability_summary:
+        _capability_summary[key] = _build_capability_summary(transport, excluded_skills)
+    return _capability_summary[key]
 
 
 def refresh_capability_summary() -> None:

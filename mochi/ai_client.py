@@ -48,7 +48,7 @@ from mochi.tool_availability import (
 )
 from mochi.bedtime_tool import ENTER_BEDTIME_DEF, ENTER_BEDTIME_TOOL_NAME
 import mochi.skills as skill_registry
-from mochi.transport import IncomingMessage, ImageAttachment
+from mochi.transport import DeliveryError, IncomingMessage, ImageAttachment
 
 log = logging.getLogger(__name__)
 
@@ -451,7 +451,8 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
                          weekly_context: str = "",
                          policy: ContextPolicy | None = None,
                          habit_progress_context: str = "",
-                         history_timestamps: str = "") -> str:
+                         history_timestamps: str = "",
+                         image_generation_available: bool = False) -> str:
     """Assemble explicit identity, situation, capability, and live-context zones."""
 
     modules = get_system_chat_modules()
@@ -470,11 +471,15 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
     if core_memory:
         stable_identity.append(core_memory)
     if "agent" in modules:
+        image_capability = (
+            "\n\n你有图片生成能力，可随时按需调用。"
+            if image_generation_available else ""
+        )
         stable_identity.append(
             modules["agent"].replace(
                 "{{deployment_environment}}",
                 _deployment_environment(),
-            )
+            ).replace("\n\n{{image_generation_capability}}", image_capability)
         )
     early_runtime_situation = []
     if policy.early_runtime_situation and runtime_entry:
@@ -490,7 +495,13 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
     capability_parts = []
     if not is_weekly:
         from mochi.skills import get_capability_summary
-        cap = get_capability_summary(transport=transport)
+        cap = get_capability_summary(
+            transport=transport,
+            excluded_skills=(
+                frozenset() if image_generation_available
+                else frozenset({"image_generation"})
+            ),
+        )
         if cap:
             capability_parts.append(cap)
 
@@ -790,6 +801,22 @@ async def chat(
     from mochi.turn_tool_policy import build_turn_tool_plan
     skill_mode_off = get_skill_mode() == "off"
     turn_plan = build_turn_tool_plan(transport)
+    from mochi.tool_policy import filter_tools
+    image_generation_available = bool(
+        message is not None
+        and runtime_entry is None
+        and transport == "wechat"
+        and message.owner_authorized
+        and message.send_image is not None
+        and (turn_plan.router_enabled or turn_plan.request_tools_enabled)
+        and filter_tools(skill_registry.get_tools_by_tool_names(
+            ["generate_and_send_image"], transport=transport,
+        ))
+    )
+    excluded_skills = (
+        frozenset() if image_generation_available
+        else frozenset({"image_generation"})
+    )
     escalation_available = (
         is_bedtime
         or is_self_reminder
@@ -863,11 +890,14 @@ async def chat(
 
     elif turn_plan.router_enabled:
         from mochi.tool_router import classify_skills
+        router_catalog = turn_plan.router_descriptions
+        if not image_generation_available:
+            router_catalog.pop("image_generation", None)
         # Launch router (with habits hint) + remaining DB fetches concurrently
         skill_names, core_memory, conversation_context, recalled_memories = await asyncio.gather(
             classify_skills(text, user_id=user_id, habits=habits,
                             transport=transport,
-                            catalog=turn_plan.router_descriptions),
+                            catalog=router_catalog),
             asyncio.to_thread(read_core),
             _safe_conversation_context(),
             _safe_recalled_memories(),
@@ -929,7 +959,7 @@ async def chat(
             tools.append(ENTER_BEDTIME_DEF)
 
     # ── Policy: filter denied tools before LLM sees them ──
-    from mochi.tool_policy import filter_tools, check as policy_check
+    from mochi.tool_policy import check as policy_check
     tools = filter_tools(tools)
     availability = ToolAvailability.from_definitions(
         tools, source="initial",
@@ -941,6 +971,7 @@ async def chat(
         active_tool_names,
         include_requestable_tools=escalation_available,
         transport=transport,
+        excluded_skills=excluded_skills,
     )
     from mochi.skills.habit.handler import HabitSkill
     habit_skill = skill_registry.all_skills().get("habit")
@@ -1007,6 +1038,7 @@ async def chat(
         policy=prompt_policy,
         habit_progress_context=habit_progress_context,
         history_timestamps=_format_history_timestamps(history),
+        image_generation_available=image_generation_available,
     )
 
     # Build messages array
@@ -1029,6 +1061,7 @@ async def chat(
     bedtime_finalization_attempted = False
     history_response: LLMResponse | None = None
     bedtime_skip_requested = False
+    image_pending_review = False
 
     def _log_main_usage(
         response: LLMResponse,
@@ -1195,7 +1228,12 @@ async def chat(
             reply = await _finalize_bedtime()
         return "" if reply == "[SKIP]" else reply
 
-    for round_num in range(max_tool_rounds):
+    for round_num in range(max_tool_rounds + 1):
+        if round_num == max_tool_rounds and not image_pending_review:
+            break
+        reviewing_image = round_num == max_tool_rounds
+        image_pending_review = False
+        generated_images: list[ImageAttachment] = []
         if _free_time_cancelled():
             return _cancelled_result()
         if weekly_session:
@@ -1210,7 +1248,9 @@ async def chat(
                 habit_context_loaded = True
         document_updates: dict[str, str] = {}
         availability = availability.refresh_extensions(transport)
-        round_availability = availability
+        round_availability = (
+            ToolAvailability() if reviewing_image else availability
+        )
         for _attempt in range(2):
             if _free_time_cancelled():
                 return _cancelled_result()
@@ -1359,6 +1399,7 @@ async def chat(
                         arguments,
                         round_availability,
                         transport=transport,
+                        excluded_skills=excluded_skills,
                     )
                 next_availability = next_availability.with_definitions(
                     additions, source=f"request_round_{round_num + 1}",
@@ -1504,6 +1545,37 @@ async def chat(
                             else False
                         ),
                     )
+                if (
+                    tc["name"] == "generate_and_send_image"
+                    and result.success and result.image is not None
+                ):
+                    if image_generation_available and message and message.send_image:
+                        try:
+                            await message.send_image(result.image)
+                        except DeliveryError as exc:
+                            log.warning("Generated image delivery %s: %s", exc.outcome, exc)
+                            result.success = False
+                            result.output = "图片已生成，但发送未确认；未自动重试。"
+                            result.error_code = exc.outcome
+                            result.retryable = False
+                            result.state_change_unknown = exc.outcome == "delivery_unknown"
+                        except Exception:
+                            log.exception("Generated image delivery failed")
+                            result.success = False
+                            result.output = "图片已生成，但发送未确认；未自动重试。"
+                            result.error_code = "delivery_unknown"
+                            result.retryable = False
+                            result.state_change_unknown = True
+                    else:
+                        result.success = False
+                        result.output = "当前无法发送图片；未调用生图服务。"
+                        result.error_code = "image_unavailable"
+                        result.retryable = False
+                    if image_generation_available:
+                        generated_images.append(result.image)
+                    if result.success:
+                        result.output = "图片已发送。"
+                        result.state_changed = True
                 outcome = outcome_for(
                     skill_name, tc["name"], arguments, result,
                 )
@@ -1555,6 +1627,15 @@ async def chat(
                 elif tc["name"] == "read_diary" and not arguments.get("date"):
                     document_updates[diary_source_date] = result.document_snapshot
 
+        for generated_image in generated_images:
+            messages.append({
+                "role": "user",
+                "content": _image_content(
+                    "这是你刚通过工具生成的图片，不是用户发来的新消息。",
+                    generated_image,
+                ),
+            })
+        image_pending_review = bool(generated_images)
         # Only advance snapshots after their results become visible to Main.
         core_expected = document_updates.pop("core", core_expected)
         diary_expected.update(document_updates)

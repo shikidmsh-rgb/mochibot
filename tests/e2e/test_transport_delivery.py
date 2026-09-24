@@ -82,7 +82,7 @@ async def test_wechat_image_send_encrypts_upload_and_requires_receipt(monkeypatc
 
     transport = WeixinTransport()
     transport._owner_weixin_id = "owner"
-    transport._context_tokens["owner"] = "reply-token"
+    transport._context_tokens["owner"] = "newer-token"
     image = ImageAttachment(b"\xff\xd8\xffimage")
     upload_headers = {"x-encrypted-param": "download-reference"}
     active = True
@@ -98,7 +98,9 @@ async def test_wechat_image_send_encrypts_upload_and_requires_receipt(monkeypatc
         {},
     ])
     monkeypatch.setattr(transport, "_api_post", api)
-    await transport.send_image_checked(1, image, can_deliver=lambda: active)
+    await transport.send_image_checked(
+        1, image, can_deliver=lambda: active, context_token="reply-token",
+    )
     authorize, send = api.call_args_list
     assert authorize.args[0] == "ilink/bot/getuploadurl"
     params = authorize.args[1]

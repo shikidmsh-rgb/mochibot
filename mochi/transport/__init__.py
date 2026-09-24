@@ -82,6 +82,9 @@ class IncomingMessage:
     on_interim: Callable[..., Awaitable[None]] | None = field(
         default=None, repr=False,
     )
+    send_image: Callable[[ImageAttachment], Awaitable[None]] | None = field(
+        default=None, repr=False,
+    )
 
 
 class Transport(ABC):

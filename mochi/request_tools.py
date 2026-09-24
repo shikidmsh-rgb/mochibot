@@ -166,7 +166,9 @@ def error_result(code: str, message: str) -> dict:
     }
 
 
-def build_catalog(transport: str = "") -> RequestCatalog:
+def build_catalog(
+    transport: str = "", *, excluded_skills: frozenset[str] = frozenset(),
+) -> RequestCatalog:
     """Build the requestable catalog from the live registry and policy."""
     disabled = skill_registry._get_disabled_skills()
     eligible: dict[str, RequestableNamespace] = {}
@@ -180,6 +182,9 @@ def build_catalog(transport: str = "") -> RequestCatalog:
     load_states = get_adaptive_tool_load_states()
 
     for name, skill in skill_registry.all_skills().items():
+        if name in excluded_skills:
+            unavailable[name] = "not_available_this_turn"
+            continue
         definitions = _normalized_definitions(
             skill_registry.get_effective_tools_for_skill(
                 name, available=False, states=load_states,
@@ -261,6 +266,7 @@ def resolve_request(
     availability: ToolAvailability,
     *,
     transport: str = "",
+    excluded_skills: frozenset[str] = frozenset(),
 ) -> tuple[dict, list[dict]]:
     """Resolve one request_tools call and return its result plus new definitions."""
     validation_error = _validate_arguments(arguments)
@@ -269,7 +275,7 @@ def resolve_request(
 
     args = arguments
     assert isinstance(args, dict)
-    catalog = build_catalog(transport)
+    catalog = build_catalog(transport, excluded_skills=excluded_skills)
     requested = args.get("skills", [])
     query = args.get("query", "").strip()
 
