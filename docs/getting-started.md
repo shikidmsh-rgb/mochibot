@@ -30,6 +30,8 @@ MochiBot 需要 Python 3.11 或更高版本。没装的话去 [python.org/downlo
 MochiBot 本身不包含 AI 模型，需要你提供一个 API key（调用 AI 的"通行证"）。去你选的 AI 平台注册获取即可，比如 OpenAI、DeepSeek、Anthropic 等。
 
 > 这些服务按用量收费，日常使用一个月大概几块到几十块人民币。
+> 使用 GPT-6 Sol 时，MochiBot 会明确指定 `high` 推理强度；相比服务端默认的
+> `medium`，可能增加响应时间和费用。
 
 ### 消息平台（二选一）
 

@@ -78,6 +78,7 @@ def test_gpt6_responses_tool_round_preserves_reasoning_and_function_pairing():
     first = provider.chat(messages, tools=[tool])
     assert calls[0]["store"] is False
     assert calls[0]["include"] == ["reasoning.encrypted_content"]
+    assert calls[0]["reasoning"] == {"effort": "high"}
     assert calls[0]["tools"] == [{
         "type": "function", **tool["function"], "strict": False,
     }]
@@ -98,6 +99,7 @@ def test_gpt6_responses_tool_round_preserves_reasoning_and_function_pairing():
         {"role": "tool", "tool_call_id": "call_1", "content": '{"ok":true}'},
     ]
     second = provider.chat(messages, tools=[tool])
+    assert calls[1]["reasoning"] == {"effort": "high"}
     assert calls[1]["input"][-3:] == [
         reasoning.model_dump(),
         call.model_dump(),
@@ -222,6 +224,8 @@ def test_openai_sdk_serializes_stateless_tool_round_with_reasoning():
 
     assert requests[0]["include"] == ["reasoning.encrypted_content"]
     assert requests[0]["store"] is False
+    assert requests[0]["reasoning"] == {"effort": "high"}
+    assert requests[1]["reasoning"] == {"effort": "high"}
     assert requests[1]["input"][-3:] == [
         first.response_items[0],
         first.response_items[1],

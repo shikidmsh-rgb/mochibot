@@ -536,6 +536,7 @@ class OpenAIProvider(_OpenAICompatChat, LLMProvider):
                 "max_output_tokens": max_tokens,
                 "store": False,
                 "include": ["reasoning.encrypted_content"],
+                "reasoning": {"effort": "high"},
             }
             if tools:
                 kwargs["tools"] = _responses_tools(tools)
