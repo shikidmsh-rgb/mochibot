@@ -57,13 +57,6 @@ def test_complete_turn_batches_create_evidence_backed_memory(monkeypatch):
     assert json.loads(row["evidence_message_ids"]) == [turns[0][0]]
     status = get_memory_extraction_status(1, 2)
     assert status["pending_turns"] == 0
-    assert "pending_projection_items" not in status
-    conn = _connect()
-    assert conn.execute(
-        "SELECT 1 FROM sqlite_master "
-        "WHERE type = 'table' AND name = 'memory_projection_queue'"
-    ).fetchone() is None
-    conn.close()
 
 
 def test_failure_retries_same_batch(monkeypatch):

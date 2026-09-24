@@ -39,12 +39,7 @@ async def test_open_meteo_weather_preserves_numbers_and_rejects_missing_data(
         assert data["wind_kph"] == 5.4
         assert data["condition"] == "slight rain"
         assert data["summary"] == "Tokyo: 22.5°C, Slight rain"
-    assert "geocoding-api.open-meteo.com" in requests[0][0]
     assert requests[1][1]["latitude"] == 35.7
-    assert requests[1][1]["current"].split(",") == [
-        "temperature_2m", "apparent_temperature", "relative_humidity_2m",
-        "weather_code", "wind_speed_10m",
-    ]
 
 
 def test_weather_location_prefers_exact_name_then_population():

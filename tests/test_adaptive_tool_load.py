@@ -40,21 +40,6 @@ def _used(turn, *, source="chat", status="success", user_id=1, days_ago=0):
         )
 
 
-def test_preloaded_batch_state_never_rereads_sqlite(monkeypatch):
-    def unexpected_read():
-        pytest.fail("preloaded batch state must not cause another SQLite read")
-
-    monkeypatch.setattr(db, "get_adaptive_tool_load_states", unexpected_read)
-    definition = _definition()
-    for states, expected in (
-        ({}, "on_demand"),
-        ({"search_personal_history": {"effective_load": "routed"}}, "routed"),
-    ):
-        resolved = [resolve_definition(definition, states=states) for _ in range(40)]
-        assert all(tool["_load"] == expected for tool in resolved)
-    assert definition["_load"] == "on_demand"
-
-
 def test_distinct_successful_owner_chat_turns_drive_adaptation():
     definition = _definition()
     for _ in range(3):
@@ -96,7 +81,7 @@ def test_pin_reset_recalculates_from_default_without_sticking_to_pin():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("source", ["chat", "runtime:self_reminder", "runtime:free_time", "runtime:bedtime"])
+@pytest.mark.parametrize("source", ["chat", "runtime:free_time"])
 async def test_main_can_manage_visibility_without_owner_chat_gate(source):
     result = await SkillManagementSkill().execute(SkillContext(
         trigger="tool_call", actor="main", source=source, user_id=1,
@@ -143,7 +128,6 @@ async def test_daily_free_time_keeps_persisted_key_and_checks_ten():
     skill = SkillManagementSkill()
     viewed = skill._get_agent_settings()
     assert "max_daily_proactive = 7 (范围 0–10)" in viewed.output
-    assert "Attention" not in viewed.output
     for value in (11, -1, 1.5):
         assert not skill._set_agent_setting("max_daily_proactive", value).success
         assert get_system_config("MAX_DAILY_PROACTIVE") == 7

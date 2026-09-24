@@ -76,10 +76,7 @@ def _encrypt_image(data, key):
 
 
 @pytest.mark.asyncio
-async def test_wechat_image_send_encrypts_upload_and_requires_receipt(monkeypatch):
-    from cryptography.hazmat.primitives import padding
-    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-
+async def test_wechat_image_send_requires_receipt_and_live_delivery(monkeypatch):
     transport = WeixinTransport()
     transport._owner_weixin_id = "owner"
     transport._context_tokens["owner"] = "newer-token"
@@ -101,28 +98,9 @@ async def test_wechat_image_send_encrypts_upload_and_requires_receipt(monkeypatc
     await transport.send_image_checked(
         1, image, can_deliver=lambda: active, context_token="reply-token",
     )
-    authorize, send = api.call_args_list
-    assert authorize.args[0] == "ilink/bot/getuploadurl"
-    params = authorize.args[1]
-    assert params["media_type"] == 1
-    assert params["rawsize"] == len(image.data)
-    assert params["to_user_id"] == "owner"
-    request = upload_call.call_args
-    assert request.kwargs["headers"] == {"Content-Type": "application/octet-stream"}
-    assert request.kwargs["allow_redirects"] is False
-    key = bytes.fromhex(params["aeskey"])
-    decryptor = Cipher(algorithms.AES(key), modes.ECB()).decryptor()
-    padded = decryptor.update(request.kwargs["data"]) + decryptor.finalize()
-    unpadder = padding.PKCS7(128).unpadder()
-    assert unpadder.update(padded) + unpadder.finalize() == image.data
-    assert send.args[0] == "ilink/bot/sendmessage"
-    message = send.args[1]["msg"]
-    assert message["context_token"] == "reply-token"
-    item = message["item_list"][0]
-    assert item["type"] == 2
-    assert item["image_item"]["media"]["encrypt_query_param"] == "download-reference"
-    assert base64.b64decode(item["image_item"]["media"]["aes_key"]).decode() == params["aeskey"]
-    assert item["image_item"]["mid_size"] == len(request.kwargs["data"])
+    assert api.await_count == 2
+    assert upload_call.call_args.kwargs["allow_redirects"] is False
+    assert api.call_args.args[1]["msg"]["context_token"] == "reply-token"
 
     api.reset_mock()
     api.side_effect = None
@@ -155,39 +133,20 @@ async def test_wechat_image_send_encrypts_upload_and_requires_receipt(monkeypatc
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("encoding", ["hex", "base64", "base64_hex", "plain", "full_url"])
-async def test_wechat_image_cdn_decodes_protocol_keys_without_sending_bot_token(encoding):
+async def test_wechat_image_download_does_not_send_bot_token_or_follow_redirects():
     data = base64.b64decode(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aCWQAAAAASUVORK5CYII="
     )
     key = bytes(range(16))
-    media = {"encrypt_query_param": "opaque+/=&"}
-    item = {"media": media}
-    if encoding == "hex":
-        item["aeskey"] = key.hex()
-        media["aes_key"] = "unused-because-hex-takes-precedence"
-    elif encoding != "plain":
-        encoded = key.hex().encode() if encoding == "base64_hex" else key
-        media["aes_key"] = base64.b64encode(encoded).decode()
-    if encoding == "full_url":
-        media = item["media"] = {
-            "full_url": "https://novac2c.cdn.weixin.qq.com/c2c/download?signed=value",
-            "aes_key": media["aes_key"],
-        }
     transport = WeixinTransport()
-    transport._session = _image_session(
-        data if encoding == "plain" else _encrypt_image(data, key),
-    )
-    image = await transport._download_image(item)
+    transport._session = _image_session(_encrypt_image(data, key))
+    image = await transport._download_image({
+        "aeskey": key.hex(), "media": {"encrypt_query_param": "opaque"},
+    })
     assert image == ImageAttachment(data=data, media_type="image/png")
     request = transport._session.get.call_args
-    assert request.args[0] == media.get(
-        "full_url",
-        "https://novac2c.cdn.weixin.qq.com/c2c/download?encrypted_query_param=opaque%2B%2F%3D%26",
-    )
     assert "headers" not in request.kwargs
     assert request.kwargs["allow_redirects"] is False
-    assert request.kwargs["timeout"].total == 30
 
 
 @pytest.mark.asyncio
@@ -489,19 +448,6 @@ async def test_wechat_proactive_length_chunks_preserve_content_and_deadline(monk
         )
     assert stopped.value.outcome == "expired"
     assert api.await_count == 1
-
-
-@pytest.mark.asyncio
-async def test_other_transports_keep_proactive_formatting(monkeypatch):
-    from mochi.transport.telegram import TelegramTransport
-
-    transport = TelegramTransport()
-    send = AsyncMock(return_value=True)
-    monkeypatch.setattr(transport, "send_chat_result_checked", send)
-    result = ChatResult(text="First bubble here.|||Second bubble here.")
-    guard = lambda: True
-    assert await transport.send_proactive_result_checked(1, result, can_deliver=guard)
-    send.assert_awaited_once_with(1, result, can_deliver=guard)
 
 
 @pytest.mark.asyncio

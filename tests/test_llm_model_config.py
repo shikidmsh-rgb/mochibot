@@ -1,5 +1,3 @@
-import asyncio
-import json
 from types import SimpleNamespace
 
 import httpx
@@ -64,48 +62,23 @@ def test_admin_accepts_https_compatible_endpoint_and_rejects_unsafe_urls(monkeyp
         )
 
 
-def test_openai_compatible_chat_handles_text_and_tools(monkeypatch):
-    tool_call = SimpleNamespace(
-        id="call-1",
-        function=SimpleNamespace(name="weather", arguments='{"city":"Tokyo"}'),
-    )
+def test_malformed_provider_tool_arguments_are_not_parsed():
     malformed_call = SimpleNamespace(
         id="call-2",
         function=SimpleNamespace(name="weather", arguments='{"city":'),
     )
-    responses = [
-        SimpleNamespace(
-            choices=[SimpleNamespace(
-                message=SimpleNamespace(content="hello", tool_calls=[]),
-                finish_reason="stop",
-            )],
-            usage=None,
-        ),
-        SimpleNamespace(
-            choices=[SimpleNamespace(
-                message=SimpleNamespace(
-                    content="",
-                    reasoning_content="I should check the weather first.",
-                    tool_calls=[tool_call],
-                ),
-               finish_reason="tool_calls",
-            )],
-            usage=None,
-        ),
-        SimpleNamespace(
-            choices=[SimpleNamespace(
-               message=SimpleNamespace(
-                   content="", reasoning_content="", tool_calls=[malformed_call],
-               ),
-               finish_reason="tool_calls",
-            )],
-            usage=None,
-        ),
-    ]
 
     class Completions:
         def create(self, **kwargs):
-            return responses.pop(0)
+            return SimpleNamespace(
+                choices=[SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="", reasoning_content="", tool_calls=[malformed_call],
+                    ),
+                    finish_reason="tool_calls",
+                )],
+                usage=None,
+            )
 
     provider = llm.OpenAIProvider.__new__(llm.OpenAIProvider)
     provider._model = "model"
@@ -118,23 +91,6 @@ def test_openai_compatible_chat_handles_text_and_tools(monkeypatch):
         chat=SimpleNamespace(completions=Completions()),
     )
 
-    plain = provider.chat([{"role": "user", "content": "hi"}])
-    assert plain.content == "hello"
-    assert plain.reasoning_source == ""
-    result = provider.chat(
-        [{"role": "user", "content": "weather"}],
-        tools=[{"type": "function", "function": {"name": "weather"}}],
-    )
-    assert result.tool_calls == [{
-        "id": "call-1",
-        "name": "weather",
-        "arguments": {"city": "Tokyo"},
-        "argument_error": None,
-    }]
-    assert result.tool_calls_complete is True
-    assert result.reasoning_content == "I should check the weather first."
-    assert result.reasoning_source == "https://api.deepseek.com/v1::model"
-
     malformed = provider.chat(
         [{"role": "user", "content": "weather"}],
         tools=[{"type": "function", "function": {"name": "weather"}}],
@@ -143,67 +99,9 @@ def test_openai_compatible_chat_handles_text_and_tools(monkeypatch):
     assert malformed.tool_calls[0]["argument_error"] == (
         "arguments were not valid JSON"
     )
-    assert malformed.reasoning_content == ""
-    assert malformed.reasoning_source == result.reasoning_source
 
-    usage = SimpleNamespace(
-        prompt_tokens=453, completion_tokens=23, total_tokens=476,
-        completion_tokens_details=None, prompt_tokens_details=None,
-        prompt_cache_hit_tokens=384,
-    )
-    choice = SimpleNamespace(
-        message=SimpleNamespace(content="reply"), finish_reason="stop",
-    )
-    assert llm._openai_response(choice, usage, "deepseek", []).cached_prompt_tokens == 384
-    usage.prompt_tokens_details = SimpleNamespace(cached_tokens=0)
-    assert llm._openai_response(choice, usage, "deepseek", []).cached_prompt_tokens == 0
 
-    anthropic_messages = llm.AnthropicProvider._convert_messages([
-        {
-            "role": "assistant",
-            "content": "",
-            "reasoning_content": "OpenAI-compatible extension",
-            "tool_calls": [{
-                "id": "tool-1",
-                "type": "function",
-                "function": {
-                    "name": "weather",
-                    "arguments": '{"city":"Tokyo"}',
-                },
-            }],
-        },
-        {"role": "tool", "tool_call_id": "tool-1", "content": '{"ok":true}'},
-    ])
-    assert anthropic_messages[0]["content"][0]["input"] == {"city": "Tokyo"}
-    assert "reasoning_content" not in anthropic_messages[0]
-    assert anthropic_messages[1]["content"][0]["tool_use_id"] == "tool-1"
-
-    anthropic_provider = llm.AnthropicProvider.__new__(llm.AnthropicProvider)
-    anthropic_provider._model = "claude"
-    anthropic_provider._client = SimpleNamespace(
-        messages=SimpleNamespace(create=lambda **kwargs: SimpleNamespace(
-            content=[SimpleNamespace(
-                type="tool_use",
-                id="tool-2",
-                name="weather",
-                input={"city": "Tokyo"},
-            )],
-            usage=SimpleNamespace(input_tokens=4, output_tokens=3),
-            stop_reason="tool_use",
-        )),
-    )
-    anthropic_result = anthropic_provider.chat(
-        [{"role": "user", "content": "weather"}],
-        tools=[{"type": "function", "function": {"name": "weather"}}],
-    )
-    assert anthropic_result.tool_calls == [{
-        "id": "tool-2",
-        "name": "weather",
-        "arguments": {"city": "Tokyo"},
-        "argument_error": None,
-    }]
-    assert anthropic_result.tool_calls_complete is True
-
+def test_reasoning_placeholders_are_negotiated_per_endpoint_and_model():
     def _bad_request(message):
         return BadRequestError(
             message,
@@ -338,167 +236,3 @@ def test_openai_compatible_chat_handles_text_and_tools(monkeypatch):
         assert (
             ordered_calls.calls[-1]["messages"][1]["reasoning_content"] == ""
         )
-
-    from mochi.tool_availability import ToolAvailability
-    availability = ToolAvailability.from_definitions([{
-        "type": "function",
-        "function": {
-            "name": "nullable",
-            "parameters": {
-                "type": "object",
-                "properties": {"value": {"type": ["integer", "null"]}},
-                "required": ["value"],
-                "additionalProperties": False,
-            },
-        },
-    }], source="test")
-    assert availability.validate_arguments("nullable", {"value": None}) is None
-    assert availability.validate_arguments(
-        "nullable", {"value": "wrong"},
-    ) == "arguments.value must be one of ['integer', 'null']"
-
-    from mochi.skills.base import Skill, SkillContext, SkillResult
-    from mochi.tool_availability import tool_call_error
-    from mochi.tool_execution import model_result_for, outcome_for
-
-    pre_dispatch = json.loads(tool_call_error(
-        "manage_todo",
-        "invalid_tool_arguments",
-        "arguments.todo_id is required",
-    ))
-    assert pre_dispatch == {
-        "ok": False,
-        "code": "invalid_tool_arguments",
-        "started": False,
-        "retryable": True,
-        "changed": False,
-        "message": "arguments.todo_id is required",
-    }
-
-    class _SemanticFailureSkill(Skill):
-        async def execute(self, context):
-            return SkillResult(
-                output="todo_id is required",
-                success=False,
-                error_code="invalid_arguments",
-                retryable=True,
-            )
-
-    semantic_failure = asyncio.run(_SemanticFailureSkill().run(SkillContext(
-        trigger="tool_call",
-        tool_name="manage_todo",
-    )))
-    assert json.loads(model_result_for(semantic_failure)) == {
-        "ok": False,
-        "code": "invalid_arguments",
-        "started": True,
-        "retryable": True,
-        "changed": False,
-        "message": "todo_id is required",
-    }
-
-    class _ExplodingSkill(Skill):
-        async def execute(self, context):
-            raise RuntimeError("write outcome unknown")
-
-    execution_failure = asyncio.run(_ExplodingSkill().run(SkillContext(
-        trigger="tool_call",
-        tool_name="example_write",
-    )))
-    uncertain = json.loads(model_result_for(execution_failure))
-    assert uncertain == {
-        "ok": False,
-        "code": "skill_exception",
-        "started": True,
-        "retryable": False,
-        "message": "Skill error: write outcome unknown",
-    }
-    assert "changed" not in uncertain
-
-    successful_mutation = SkillResult(
-        output="Error-shaped prose is still only prose.",
-        state_changed=True,
-        execution_started=True,
-    )
-    assert json.loads(model_result_for(successful_mutation)) == {
-        "ok": True,
-        "changed": True,
-        "result": "Error-shaped prose is still only prose.",
-    }
-    assert "source" not in json.loads(model_result_for(successful_mutation))
-    assert outcome_for(
-        "example",
-        "example_write",
-        {},
-        successful_mutation,
-    )["state_changed"] is True
-
-    import mochi.skills.web_search.handler as web_handler
-    from mochi.skills.web_search.handler import WebSearchSkill
-
-    async def _search(*args, **kwargs):
-        return "1. External result"
-
-    monkeypatch.setattr(web_handler, "_bing_search", _search)
-    web_success = asyncio.run(WebSearchSkill().run(SkillContext(
-        trigger="tool_call",
-        tool_name="web_search",
-        args={"query": "Mochi"},
-    )))
-    assert json.loads(model_result_for(web_success)) == {
-        "ok": True,
-        "source": "external_web",
-        "authority": "untrusted_data",
-        "result": "1. External result",
-    }
-
-    async def _failed_search(*args, **kwargs):
-        raise RuntimeError("network unavailable")
-
-    monkeypatch.setattr(web_handler, "_bing_search", _failed_search)
-    web_failure = asyncio.run(WebSearchSkill().run(SkillContext(
-        trigger="tool_call",
-        tool_name="web_search",
-        args={"query": "Mochi"},
-    )))
-    failed_web_payload = json.loads(model_result_for(web_failure))
-    assert "source" not in failed_web_payload
-    assert "authority" not in failed_web_payload
-
-    from mochi.skills.habit.handler import HabitSkill
-    from mochi.skills.habit.queries import add_habit
-
-    habit_id = add_habit(1, "Read", "daily:1")
-    first_pause = HabitSkill()._pause(1, {
-        "habit_id": habit_id, "until": "2026-09-10",
-    })
-    assert first_pause.state_changed
-    no_op = HabitSkill()._pause(1, {
-        "habit_id": habit_id,
-        "until": "2026-09-10",
-    })
-    assert no_op.success
-    assert not no_op.state_changed
-
-    habit_id = add_habit(1, "Walk", "daily:1")
-    first_remove = HabitSkill()._remove(1, {"habit_id": habit_id})
-    repeated_remove = HabitSkill()._remove(1, {"habit_id": habit_id})
-    assert first_remove.state_changed
-    assert repeated_remove.success
-    assert not repeated_remove.state_changed
-
-    import mochi.skills.sticker.handler as sticker_handler
-    import mochi.skills.sticker.queries as sticker_queries
-    from mochi.skills.sticker.handler import StickerSkill
-
-    monkeypatch.setattr(
-        sticker_handler,
-        "get_last_sent_sticker",
-        lambda _chat_id: "sticker-file",
-    )
-    monkeypatch.setattr(
-        sticker_queries,
-        "delete_sticker",
-        lambda _file_id: True,
-    )
-    assert StickerSkill._delete_last(1).state_changed

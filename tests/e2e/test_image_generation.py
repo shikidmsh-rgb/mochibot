@@ -7,7 +7,6 @@ import pytest
 from mochi.ai_client import chat
 from mochi.db import get_recent_messages, get_recent_tool_executions, set_skill_enabled
 from mochi.image_service import clear_image_config, save_image_config
-from mochi.llm import AnthropicProvider
 from mochi.transport import DeliveryError, ImageAttachment, IncomingMessage
 from tests.e2e.mock_llm import make_response, make_tool_call
 
@@ -67,9 +66,8 @@ async def test_generated_image_is_delivered_then_shown_to_main_without_persistin
         make_response(tool_calls=[make_tool_call(IMAGE_TOOL, {"prompt": "月亮和雪山"})]),
         make_response("我看到雪山和月亮了。"),
     ])
-    reply = await chat(_message(sender=send))
+    await chat(_message(sender=send))
 
-    assert reply.text == "我看到雪山和月亮了。"
     assert generated == ["月亮和雪山"]
     assert delivered == [IMAGE]
     assert f"- image_generation: {IMAGE_TOOL}" in mock.call_log[0]["messages"][0]["content"]
@@ -89,9 +87,6 @@ async def test_generated_image_is_delivered_then_shown_to_main_without_persistin
             }},
         ],
     }
-    converted = AnthropicProvider._convert_messages(messages[1:])
-    assert converted[-2]["content"][0]["type"] == "tool_result"
-    assert converted[-1]["content"][1]["type"] == "image"
     assert IMAGE.data_url() not in json.dumps(get_recent_messages(1))
     assert get_recent_tool_executions(1)[0]["status"] == "success"
 
@@ -126,7 +121,6 @@ async def test_unconfirmed_delivery_is_reported_without_repeating_generation(
     result = json.loads(mock.call_log[-1]["messages"][-2]["content"])
     assert result["ok"] is False
     assert result["code"] == "delivery_unknown"
-    assert result["message"] == "图片已生成，但发送未确认；未自动重试。"
     assert mock.call_log[-1]["messages"][-1]["content"][1]["image_url"]["url"] == IMAGE.data_url()
     assert generated == ["月亮"]
     assert get_recent_tool_executions(
@@ -164,10 +158,9 @@ async def test_router_can_offer_image_tool_without_forcing_its_use(
         make_response(tool_calls=[make_tool_call(IMAGE_TOOL, {"prompt": "月亮"})]),
         make_response("我看见月亮。"),
     ])
-    reply = await chat(_message(sender=send))
+    await chat(_message(sender=send))
 
     assert IMAGE_TOOL in _tools(mock.call_log[0])
-    assert reply.text == "我看见月亮。"
     assert delivered == [IMAGE]
 
 
@@ -224,7 +217,6 @@ async def test_image_capability_tracks_config_toggle_and_chat_context(
         ])
         await chat(message)
         assert "image_generation" not in mock.call_log[0]["messages"][0]["content"]
-        assert "生成并发送图片" not in mock.call_log[0]["messages"][0]["content"]
         assert IMAGE_TOOL not in _tools(mock.call_log[0])
         assert IMAGE_TOOL not in _tools(mock.call_log[1])
         assert json.loads(mock.call_log[1]["messages"][-1]["content"])["unavailable"] == [

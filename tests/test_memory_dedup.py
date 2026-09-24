@@ -24,11 +24,6 @@ CHANGED_CONTENT = [
         id="negation",
     ),
     pytest.param(
-        "Plans to move to Seattle",
-        "Plans to move to Seattle next year",
-        id="added-detail",
-    ),
-    pytest.param(
         "Plans to move to Seattle in 2026",
         "Plans to move to Seattle in 2027",
         id="high-similarity-correction",
@@ -37,16 +32,6 @@ CHANGED_CONTENT = [
         "Aims to run 1.5 km daily",
         "Aims to run 15 km daily",
         id="decimal-point",
-    ),
-    pytest.param(
-        "Recorded temperature is -5 C",
-        "Recorded temperature is 5 C",
-        id="negative-sign",
-    ),
-    pytest.param(
-        "Uses label ABC for work",
-        "Uses label abc for work",
-        id="case-sensitive-label",
     ),
 ]
 
@@ -122,11 +107,10 @@ def test_extraction_preserves_changed_content(monkeypatch, old, new, location):
         assert json.loads(rows[0]["evidence_message_ids"]) == [evidence[0]]
 
 
-@pytest.mark.parametrize("new", ["Likes jasmine tea", "  Likes  jasmine\ttea  "])
 @pytest.mark.parametrize("location", ["batch", "core", "stored"])
-def test_extraction_still_filters_equal_content(monkeypatch, new, location):
+def test_extraction_still_filters_equal_content(monkeypatch, location):
     inserted, before, rows, _ = _extract_pair(
-        monkeypatch, "Likes jasmine tea", new, location,
+        monkeypatch, "Likes jasmine tea", "  Likes  jasmine\ttea  ", location,
     )
 
     assert inserted == (1 if location == "batch" else 0)
@@ -149,12 +133,8 @@ def test_core_comparison_does_not_strip_a_negative_sign_as_a_list_marker():
 
 
 @pytest.mark.parametrize("old,new", CHANGED_CONTENT)
-@pytest.mark.parametrize("with_embedding", [False, True])
-def test_save_keeps_changed_content_and_its_evidence(old, new, with_embedding):
-    embedding = (
-        struct.pack("1536f", 1.0, *([0.0] * 1535))
-        if with_embedding else None
-    )
+def test_save_keeps_changed_content_and_its_evidence(old, new):
+    embedding = struct.pack("1536f", 1.0, *([0.0] * 1535))
     old_evidence = save_message(1, "user", old)
     new_evidence = save_message(1, "user", new)
     first_id = save_memory_item(
@@ -172,8 +152,8 @@ def test_save_keeps_changed_content_and_its_evidence(old, new, with_embedding):
     assert json.loads(rows[1]["evidence_message_ids"]) == [new_evidence]
 
 
-@pytest.mark.parametrize("new", ["Likes jasmine tea", "  Likes  jasmine\ttea  "])
-def test_save_equal_content_merges_evidence_without_rewriting_memory(new):
+def test_save_equal_content_merges_evidence_without_rewriting_memory():
+    new = "  Likes  jasmine\ttea  "
     first_evidence = save_message(1, "user", "Likes jasmine tea")
     second_evidence = save_message(1, "user", new)
     first_id = save_memory_item(

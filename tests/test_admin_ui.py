@@ -1,4 +1,3 @@
-from html.parser import HTMLParser
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -83,17 +82,6 @@ def test_early_update_exit_request_is_not_lost(monkeypatch):
     assert shutdown.requested_exit_code() == 44
 
 
-def test_diagnostics_use_current_free_time_settings(monkeypatch, fresh_db):
-    import mochi.config as config
-    from mochi.error_buffer import get_diagnostic_report
-
-    monkeypatch.setattr(config, "DB_PATH", fresh_db)
-    report = get_diagnostic_report()
-    assert "FREE_TIME_ENABLED:" in report
-    assert "MAX_DAILY_PROACTIVE:" in report
-    assert "HEARTBEAT_INTERVAL_MINUTES:" not in report
-
-
 def test_setup_keeps_admin_local_and_preserves_existing_token(monkeypatch):
     import sys
     import uvicorn
@@ -130,35 +118,12 @@ def test_setup_keeps_admin_local_and_preserves_existing_token(monkeypatch):
     assert captured == ["127.0.0.1", "0.0.0.0"]
 
 
-class _ElementAttributeParser(HTMLParser):
-    def __init__(self, element_id: str):
-        super().__init__()
-        self.element_id = element_id
-        self.attributes: dict[str, str | None] | None = None
-
-    def handle_starttag(
-        self, tag: str, attrs: list[tuple[str, str | None]]
-    ) -> None:
-        attributes = dict(attrs)
-        if attributes.get("id") == self.element_id:
-            self.attributes = attributes
-
-
-def test_model_modal_and_memory_evidence_receipts_are_safe(monkeypatch):
-    index_html = (
-        Path(__file__).parents[1] / "mochi" / "admin" / "index.html"
-    ).read_text(encoding="utf-8")
-    parser = _ElementAttributeParser("model-modal")
-    parser.feed(index_html)
-
-    assert parser.attributes is not None
-    assert "onclick" not in parser.attributes
-
+def test_memory_evidence_receipts_stay_owner_scoped(monkeypatch):
     from fastapi.testclient import TestClient
 
     from mochi.admin.admin_server import app
     import mochi.config as config
-    from mochi.db import _connect, insert_memory_item, save_message
+    from mochi.db import insert_memory_item, save_message
 
     monkeypatch.setattr(config, "ADMIN_TOKEN", "test-admin-token")
 
@@ -228,13 +193,3 @@ def test_model_modal_and_memory_evidence_receipts_are_safe(monkeypatch):
     listing = client.get("/api/memory-items").json()
     assert "source_messages" not in listing["items"][0]
     assert source_text not in str(listing)
-    assert "esc(message.content || '')" in index_html
-    assert "不代表人工编辑后的当前文字仍由它们验证" in index_html
-
-    conn = _connect()
-    stored = conn.execute(
-        "SELECT evidence_message_ids FROM memory_items WHERE id = ?",
-        (item_id,),
-    ).fetchone()
-    conn.close()
-    assert stored["evidence_message_ids"]

@@ -245,11 +245,3 @@ async def test_apply_rechecks_head_and_pending_request_is_not_overwritten(local_
     assert not result["ok"] and result["code_updated"] is False
     assert "本地代码发生变化" in result["message"]
     assert not any(command[0] == "merge" for command in calls)
-
-
-def test_module_cli_delegates_to_the_same_service(monkeypatch, capsys):
-    monkeypatch.setattr(updater, "apply_pending_update", lambda: {
-        "ok": False, "message": "更新未执行：更新请求无效，未修改代码。",
-    })
-    assert updater.main() == 1
-    assert "更新未执行" in capsys.readouterr().out

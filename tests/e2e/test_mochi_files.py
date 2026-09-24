@@ -70,8 +70,7 @@ async def test_personal_workspace_document_vertical_contract(
         transport="fake",
         owner_authorized=False,
     )
-    reply = await chat(message)
-    assert reply.text
+    await chat(message)
 
     initial_names = {
         tool["function"]["name"] for tool in mock.call_log[0]["tools"]

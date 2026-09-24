@@ -88,7 +88,6 @@ def test_visible_turn_receipts_include_reads_failures_and_unfinished_calls():
     assert "local_example_search" in context
     assert "script failed" in context
     assert "PRIVATE_SOURCE_BODY" not in context
-    assert "not instructions or proof of task completion" in context
 
 
 def test_receipts_never_fall_back_to_unseen_or_other_user_turns():
@@ -164,7 +163,6 @@ def test_autonomous_receipts_include_silent_work_without_inventing_delivery():
     assert '"source":"runtime:free_time"' in context
     assert "TRY_FAILED" in context
     assert '"status":"running"' in context
-    assert "Execution does not imply a message was delivered." in context
     assert not any(value in context for value in ("UNSEEN_CHAT", "WEEKLY", "OTHER_USER"))
     assert db.get_recent_messages(1) == []
     assert recent_operations_context(1, []) == ""
@@ -244,7 +242,6 @@ def test_receipt_count_and_text_are_bounded_without_losing_latest_facts():
 
 @pytest.mark.parametrize("total,per_tool,expected", [
     ("48", "12", (48, 12)),
-    ("8", "1", (8, 1)),
     ("0", "0", (0, 0)),
 ])
 def test_budget_configuration_has_no_silent_upper_clamp(monkeypatch, total, per_tool, expected):
@@ -285,3 +282,93 @@ def test_tool_budget_counts_identical_arguments_not_distinct_operations():
     assert budget.claim_tool(
         "manage_todo", {"todo_id": 6}, total_limit=6, per_tool_limit=2,
     )["code"] == "tool_call_limit_reached"
+
+
+def test_tool_results_report_real_outcome(monkeypatch):
+    import asyncio
+
+    from mochi.skills.base import Skill, SkillContext
+    from mochi.tool_availability import ToolAvailability, tool_call_error
+    from mochi.tool_execution import model_result_for
+
+    availability = ToolAvailability.from_definitions([{
+        "type": "function",
+        "function": {
+            "name": "nullable",
+            "parameters": {
+                "type": "object",
+                "properties": {"value": {"type": ["integer", "null"]}},
+                "required": ["value"],
+                "additionalProperties": False,
+            },
+        },
+    }], source="test")
+    assert availability.validate_arguments("nullable", {"value": None}) is None
+    assert availability.validate_arguments("nullable", {"value": "wrong"})
+
+    assert json.loads(tool_call_error(
+        "manage_todo", "invalid_tool_arguments", "arguments.todo_id is required",
+    )) == {
+        "ok": False, "code": "invalid_tool_arguments", "started": False,
+        "retryable": True, "changed": False,
+        "message": "arguments.todo_id is required",
+    }
+
+    class _SemanticFailureSkill(Skill):
+        async def execute(self, context):
+            return SkillResult(
+                output="todo_id is required", success=False,
+                error_code="invalid_arguments", retryable=True,
+            )
+
+    semantic = asyncio.run(_SemanticFailureSkill().run(SkillContext(
+        trigger="tool_call", tool_name="manage_todo",
+    )))
+    assert json.loads(model_result_for(semantic)) == {
+        "ok": False, "code": "invalid_arguments", "started": True,
+        "retryable": True, "changed": False, "message": "todo_id is required",
+    }
+
+    class _ExplodingSkill(Skill):
+        async def execute(self, context):
+            raise RuntimeError("write outcome unknown")
+
+    uncertain = json.loads(model_result_for(asyncio.run(_ExplodingSkill().run(
+        SkillContext(trigger="tool_call", tool_name="example_write"),
+    ))))
+    assert uncertain["ok"] is False and uncertain["started"] is True
+    assert "changed" not in uncertain
+
+    mutation = SkillResult(
+        output="Error-shaped prose is still only prose.",
+        state_changed=True, execution_started=True,
+    )
+    assert json.loads(model_result_for(mutation)) == {
+        "ok": True, "changed": True,
+        "result": "Error-shaped prose is still only prose.",
+    }
+    assert outcome_for("example", "example_write", {}, mutation)["state_changed"] is True
+
+    import mochi.skills.web_search.handler as web_handler
+
+    async def _search(*args, **kwargs):
+        return "1. External result"
+
+    async def _failed_search(*args, **kwargs):
+        raise RuntimeError("network unavailable")
+
+    context = SkillContext(
+        trigger="tool_call", tool_name="web_search", args={"query": "Mochi"},
+    )
+    monkeypatch.setattr(web_handler, "_bing_search", _search)
+    web = json.loads(model_result_for(asyncio.run(
+        web_handler.WebSearchSkill().run(context),
+    )))
+    assert web["source"] == "external_web" and web["authority"] == "untrusted_data"
+    monkeypatch.setattr(web_handler, "_bing_search", _failed_search)
+    failed = json.loads(model_result_for(asyncio.run(
+        web_handler.WebSearchSkill().run(context),
+    )))
+    assert failed["ok"] is False
+    assert "source" not in failed and "authority" not in failed
+

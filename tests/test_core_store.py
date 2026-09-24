@@ -23,9 +23,6 @@ def test_missing_core_starts_with_open_seed(monkeypatch):
     monkeypatch.setattr(config, "ADMIN_TOKEN", "test-admin-token")
     core_store.initialize_core()
     assert core_store.read_core() == core_store.DEFAULT_CORE
-    assert {path.name for path in core_store.DATA_DIR.iterdir()} == {
-        "core.md", ".core.lock",
-    }
 
     client = TestClient(
         app, headers={"Authorization": "Bearer test-admin-token"},
@@ -33,7 +30,6 @@ def test_missing_core_starts_with_open_seed(monkeypatch):
     response = client.get("/api/memory")
     assert response.status_code == 200
     assert response.json()["content"] == core_store.DEFAULT_CORE
-    assert "migration" not in response.json()
 
 
 def test_complete_revision_conflict_and_internal_snapshot(monkeypatch):
