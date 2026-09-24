@@ -68,6 +68,10 @@ def _admin_port_available(host: str, port: int) -> bool:
     family = socket.AF_INET6 if ":" in host else socket.AF_INET
     sock = socket.socket(family, socket.SOCK_STREAM)
     try:
+        if os.name != "nt":
+            # Match the Admin server so TIME_WAIT connections from the previous
+            # process are not mistaken for a running instance after restart.
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind((host, port))
         return True
     except OSError:
