@@ -1469,7 +1469,7 @@ async function loadSettings() {
     if (hasTransport) {
       html += transportStatus;
     } else {
-      html += `<p style="font-size:12px;color:var(--text-soft);margin-bottom:10px">选择一个聊天入口。推荐 Telegram，支持图片和表情包。</p>
+      html += `<p style="font-size:12px;color:var(--text-soft);margin-bottom:10px">Telegram 和微信均支持文字和图片，看图需要 Main 模型支持；Telegram 还支持表情包。</p>
         <div class="tp-cfg-btns">
           <button class="tp-cfg-btn${_openTransportCfg==='telegram'?' active':''}" id="tp-btn-telegram" onclick="showTransportConfig('telegram')">Telegram</button>
           <button class="tp-cfg-btn${_openTransportCfg==='weixin'?' active':''}" id="tp-btn-weixin" onclick="showTransportConfig('weixin')">微信</button>

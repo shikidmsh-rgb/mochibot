@@ -13,9 +13,14 @@ import os
 import struct
 from collections.abc import Callable
 from typing import Any
+from urllib.parse import urlencode, urlsplit
+
+from cryptography.hazmat.primitives import padding
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from mochi.transport import (
-    DeliveryError, Transport, IncomingMessage, ensure_delivery_allowed,
+    DeliveryError, Transport, IncomingMessage, ImageAttachment, MAX_IMAGE_BYTES,
+    ensure_delivery_allowed,
 )
 from mochi.transport.utils import clean_reply_markers, split_bubbles, split_text
 from mochi.config import (
@@ -37,6 +42,7 @@ log = logging.getLogger(__name__)
 # ── Constants ────────────────────────────────────────────────────────────────
 
 SESSION_EXPIRED_ERRCODE = -14
+_CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c"
 
 # WeChat item types (from item_list[].type)
 _ITEM_TEXT = 1
@@ -46,6 +52,23 @@ _ITEM_VOICE = 3
 # WeChat message_type field
 _MSG_TYPE_USER = 1
 _MSG_TYPE_BOT = 2
+
+
+class _ImageTooLargeError(ValueError):
+    pass
+
+
+def _image_media_type(data: bytes) -> str:
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        return "image/webp"
+    raise ValueError("Unsupported image format")
+
 
 # ── Module-level callback (same pattern as telegram.py) ──────────────────────
 
@@ -477,6 +500,63 @@ class WeixinTransport(Transport):
 
     # ── Message handling ─────────────────────────────────────────────────
 
+    async def _download_image(self, image_item: dict) -> ImageAttachment:
+        import aiohttp
+
+        media = image_item.get("media") or {}
+        query = media.get("encrypt_query_param")
+        url = media.get("full_url")
+        if not url:
+            if not query:
+                raise ValueError("Image has no CDN reference")
+            url = f"{_CDN_BASE_URL}/download?{urlencode({'encrypted_query_param': query})}"
+        parsed = urlsplit(url)
+        if (
+            parsed.scheme != "https"
+            or not (parsed.hostname or "").endswith(".weixin.qq.com")
+            or parsed.port not in (None, 443)
+            or parsed.username is not None
+            or parsed.password is not None
+        ):
+            raise ValueError("Image URL is not a WeChat HTTPS CDN URL")
+
+        key = None
+        if image_item.get("aeskey"):
+            key = bytes.fromhex(image_item["aeskey"])
+        elif media.get("aes_key"):
+            key = base64.b64decode(media["aes_key"], validate=True)
+            if len(key) == 32:
+                key = bytes.fromhex(key.decode("ascii"))
+        if key is not None and len(key) != 16:
+            raise ValueError("Invalid image AES-128 key")
+
+        if self._session is None:
+            raise ValueError("WeChat session is not ready")
+        # PKCS7 adds up to one AES block to the plaintext size.
+        limit = MAX_IMAGE_BYTES + (16 if key is not None else 0)
+        async with self._session.get(
+            url, timeout=aiohttp.ClientTimeout(total=30), allow_redirects=False,
+        ) as response:
+            if response.status != 200:
+                raise ValueError(f"Image CDN returned HTTP {response.status}")
+            if response.content_length is not None and response.content_length > limit:
+                raise _ImageTooLargeError()
+            data = bytearray()
+            async for chunk in response.content.iter_chunked(64 * 1024):
+                data.extend(chunk)
+                if len(data) > limit:
+                    raise _ImageTooLargeError()
+
+        plaintext = bytes(data)
+        if key is not None:
+            decryptor = Cipher(algorithms.AES(key), modes.ECB()).decryptor()
+            padded = decryptor.update(plaintext) + decryptor.finalize()
+            unpadder = padding.PKCS7(128).unpadder()
+            plaintext = unpadder.update(padded) + unpadder.finalize()
+        if len(plaintext) > MAX_IMAGE_BYTES:
+            raise _ImageTooLargeError()
+        return ImageAttachment(data=plaintext, media_type=_image_media_type(plaintext))
+
     async def _handle_message(self, msg: dict) -> None:
         """Process one inbound WeChat message."""
         from_user = msg.get("from_user_id", "")
@@ -493,9 +573,13 @@ class WeixinTransport(Transport):
             await self._handle_allowed_message(msg, from_user)
 
     async def _handle_allowed_message(self, msg: dict, from_user: str) -> None:
-        text = _extract_text(msg.get("item_list", []))
+        import aiohttp
+
+        items = msg.get("item_list", [])
+        text = _extract_text(items)
+        images = [item for item in items if item.get("type") == _ITEM_IMAGE]
         # Learn the owner's WeChat ID from the first allowed message
-        if self._owner_weixin_id is None and text:
+        if self._owner_weixin_id is None and (text or images):
             self._owner_weixin_id = from_user
             log.info("WeChat: owner ID learned: %s", from_user)
             from mochi.db import set_skill_config
@@ -507,12 +591,32 @@ class WeixinTransport(Transport):
             and isinstance(context_token, str) and context_token
         ):
             self._remember_context_token(from_user, context_token)
-        if not text:
+        if not text and not images:
             log.info("WeChat: non-text message from %s, skipping", from_user)
             return
 
+        image = None
+        if images:
+            error_text = ""
+            if len(images) > 1:
+                error_text = "目前一次只能查看一张图片，请分开发送。"
+            else:
+                try:
+                    image = await self._download_image(images[0].get("image_item") or {})
+                except _ImageTooLargeError:
+                    log.warning("WeChat: image exceeds size limit")
+                    error_text = "图片太大了，请发送 5 MB 以内的图片。"
+                except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
+                    log.warning("WeChat: image download/decode failed (%s)", type(exc).__name__)
+                    error_text = "图片下载或解析失败了，请重新发送 JPG、PNG、GIF 或 WebP 图片。"
+            if error_text:
+                await self._send_text(from_user, error_text, context_token)
+                return
+            text = text or "用户发来一张图片。"
+
+        command = text.strip() if image is None else ""
         # System command: /restart (owner only)
-        if text.strip() == "/restart":
+        if command == "/restart":
             if from_user != self._owner_weixin_id:
                 return
             try:
@@ -525,7 +629,7 @@ class WeixinTransport(Transport):
             return
 
         # System command: /reset (owner only) — clear conversation context
-        if text.strip() == "/reset":
+        if command == "/reset":
             if from_user != self._owner_weixin_id:
                 return
             from mochi.db import set_context_reset
@@ -539,7 +643,7 @@ class WeixinTransport(Transport):
             return
 
         # System command: /help
-        if text.strip() == "/help":
+        if command == "/help":
             help_text = (
                 "我是你的 AI 伙伴，会记住我们的对话，在需要时提醒你。\n\n"
                 "直接跟我聊天就行，不用特殊格式。\n\n"
@@ -562,7 +666,7 @@ class WeixinTransport(Transport):
             return
 
         # System command: /skilloff (owner only)
-        if text.strip() == "/skilloff":
+        if command == "/skilloff":
             if from_user != self._owner_weixin_id:
                 return
             from mochi.db import get_skill_mode, set_skill_mode
@@ -578,7 +682,7 @@ class WeixinTransport(Transport):
             return
 
         # System command: /skillon (owner only)
-        if text.strip() == "/skillon":
+        if command == "/skillon":
             if from_user != self._owner_weixin_id:
                 return
             from mochi.db import get_skill_mode, set_skill_mode
@@ -594,7 +698,7 @@ class WeixinTransport(Transport):
             return
 
         # System command: /heartbeat (owner only)
-        if text.strip() == "/heartbeat":
+        if command == "/heartbeat":
             if from_user != self._owner_weixin_id:
                 return
             from mochi.heartbeat import get_stats
@@ -628,7 +732,7 @@ class WeixinTransport(Transport):
             return
 
         # System command: /cost (owner only)
-        if text.strip() == "/cost":
+        if command == "/cost":
             if from_user != self._owner_weixin_id:
                 return
             from mochi.db import get_usage_summary
@@ -641,7 +745,7 @@ class WeixinTransport(Transport):
             return
 
         # System command: /core (owner only)
-        if text.strip() == "/core":
+        if command == "/core":
             if from_user != self._owner_weixin_id:
                 return
             from mochi.core_store import read_core
@@ -657,7 +761,7 @@ class WeixinTransport(Transport):
             return
 
         # System command: /diary (owner only)
-        if text.strip() == "/diary":
+        if command == "/diary":
             if from_user != self._owner_weixin_id:
                 return
             from mochi.diary import diary
@@ -697,6 +801,7 @@ class WeixinTransport(Transport):
             transport="wechat",
             raw={"weixin_user_id": from_user},
             owner_authorized=from_user == self._owner_weixin_id,
+            image=image,
         )
 
         # Call chat via callback

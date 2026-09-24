@@ -72,7 +72,7 @@ Free Time 每天随机安排，不是必须发满的消息配额；正在聊天�
 
 **Main** 是和你聊天的 Mochi，负责性格、判断和回复；**Lite** 在后台做分类、摘要和记忆整理。未分配 Lite 时不会偷偷让 Main 代替分类。
 
-还可配置 HTTPS OpenAI-compatible API 根地址；第三方的工具、图片和参数支持以其实际实现为准。Telegram 支持单张图片，取决于 Main 模型能力；微信目前只处理文字消息。
+还可配置 HTTPS OpenAI-compatible API 根地址；第三方的工具、图片和参数支持以其实际实现为准。Telegram 和微信均支持接收单张、5 MB 以内的图片，取决于 Main 模型的看图能力；微信支持 JPG、PNG、GIF、WebP。图片交给当前 Main 直接理解，不另设识图模型；原图仅用于当轮对话，不保存到聊天历史。
 
 语义向量记忆是可选功能；不配置时仍可全文召回。Embedding 支持 OpenAI、阿里云百炼和 Azure AI Foundry 的 OpenAI-compatible 接口。
 

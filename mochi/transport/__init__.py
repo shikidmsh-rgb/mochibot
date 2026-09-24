@@ -15,6 +15,9 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+# Anthropic's per-image limit is the tightest of the supported providers.
+MAX_IMAGE_BYTES = 5 * 1024 * 1024
+
 
 class DeliveryError(RuntimeError):
     """A safe diagnostic with an explicit transport delivery outcome."""

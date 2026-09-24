@@ -74,6 +74,33 @@ def test_current_image_preserves_history_time_indices():
     }
 
 
+@pytest.mark.asyncio
+async def test_image_goes_to_main_but_not_persistent_history(mock_llm_factory):
+    from mochi.db import get_recent_messages
+    from mochi.transport import ImageAttachment
+
+    mock = mock_llm_factory([make_response("I see it.")])
+    message = IncomingMessage(
+        user_id=1, channel_id=1, transport="wechat", owner_authorized=True,
+        text="用户发来一张图片。",
+        image=ImageAttachment(data=b"\x89PNG\r\n\x1a\n", media_type="image/png"),
+    )
+    reply = await chat(message)
+    assert reply.text == "I see it."
+    assert mock.requested_tiers == ["main"]
+    assert mock.call_log[0]["messages"][-1]["content"] == [
+        {"type": "text", "text": message.text},
+        {
+            "type": "image_url",
+            "image_url": {"url": message.image.data_url(), "detail": "auto"},
+        },
+    ]
+    stored = get_recent_messages(1)
+    assert stored[-1]["content"] == "[图片] 用户发来一张图片。"
+    assert not stored[-1].get("image_data")
+    assert message.image.data_url() not in json.dumps(stored)
+
+
 class TestSimpleReply:
     """LLM returns a plain text reply — no tool calls."""
 

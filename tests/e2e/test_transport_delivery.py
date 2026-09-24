@@ -1,14 +1,16 @@
 """Reply-context recovery, truthful failures, and per-chunk delivery validity."""
 
+import base64
 import json
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from mochi.ai_client import ChatResult
 from mochi.db import get_skill_config
-from mochi.transport import DeliveryError
+from mochi.transport import DeliveryError, ImageAttachment, MAX_IMAGE_BYTES
 from mochi.transport.weixin import WeixinTransport
 
 
@@ -26,7 +28,7 @@ async def test_reply_context_survives_restart_and_is_scoped(monkeypatch):
     await first._handle_message({
         "from_user_id": "owner",
         "context_token": "test-reply-token",
-        "item_list": [{"type": 2}],
+        "item_list": [{"type": 3}],
     })
     stored = get_skill_config("_transport:wechat")["reply_context"]
     assert "test-reply-token" not in stored
@@ -46,6 +48,196 @@ async def test_reply_context_survives_restart_and_is_scoped(monkeypatch):
     other_bot = WeixinTransport()
     other_bot.restore_owner_id("owner")
     assert other_bot._context_tokens == {}
+
+
+def _image_session(data, *, status=200, content_length=None):
+    async def chunks(_size):
+        for start in range(0, len(data), 64 * 1024):
+            yield data[start:start + 64 * 1024]
+
+    @asynccontextmanager
+    async def response(*args, **kwargs):
+        yield SimpleNamespace(
+            status=status, content_length=content_length,
+            content=SimpleNamespace(iter_chunked=chunks),
+        )
+
+    return SimpleNamespace(get=MagicMock(side_effect=response))
+
+
+def _encrypt_image(data, key):
+    from cryptography.hazmat.primitives import padding
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    padder = padding.PKCS7(128).padder()
+    padded = padder.update(data) + padder.finalize()
+    encryptor = Cipher(algorithms.AES(key), modes.ECB()).encryptor()
+    return encryptor.update(padded) + encryptor.finalize()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("encoding", ["hex", "base64", "base64_hex", "plain", "full_url"])
+async def test_wechat_image_cdn_decodes_protocol_keys_without_sending_bot_token(encoding):
+    data = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aCWQAAAAASUVORK5CYII="
+    )
+    key = bytes(range(16))
+    media = {"encrypt_query_param": "opaque+/=&"}
+    item = {"media": media}
+    if encoding == "hex":
+        item["aeskey"] = key.hex()
+        media["aes_key"] = "unused-because-hex-takes-precedence"
+    elif encoding != "plain":
+        encoded = key.hex().encode() if encoding == "base64_hex" else key
+        media["aes_key"] = base64.b64encode(encoded).decode()
+    if encoding == "full_url":
+        media = item["media"] = {
+            "full_url": "https://novac2c.cdn.weixin.qq.com/c2c/download?signed=value",
+            "aes_key": media["aes_key"],
+        }
+    transport = WeixinTransport()
+    transport._session = _image_session(
+        data if encoding == "plain" else _encrypt_image(data, key),
+    )
+    image = await transport._download_image(item)
+    assert image == ImageAttachment(data=data, media_type="image/png")
+    request = transport._session.get.call_args
+    assert request.args[0] == media.get(
+        "full_url",
+        "https://novac2c.cdn.weixin.qq.com/c2c/download?encrypted_query_param=opaque%2B%2F%3D%26",
+    )
+    assert "headers" not in request.kwargs
+    assert request.kwargs["allow_redirects"] is False
+    assert request.kwargs["timeout"].total == 30
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("encrypted", [False, True])
+@pytest.mark.parametrize("extra", [0, 1])
+async def test_wechat_image_size_limit_includes_stream_and_decrypted_bytes(encrypted, extra):
+    from mochi.transport.weixin import _ImageTooLargeError
+
+    data = b"\xff\xd8\xff" + b"x" * (MAX_IMAGE_BYTES - 3 + extra)
+    item = {"media": {"encrypt_query_param": "opaque"}}
+    if encrypted:
+        key = bytes(range(16))
+        item["aeskey"] = key.hex()
+        payload = _encrypt_image(data, key)
+    else:
+        payload = data
+    transport = WeixinTransport()
+    transport._session = _image_session(payload)
+    if extra:
+        with pytest.raises(_ImageTooLargeError):
+            await transport._download_image(item)
+    else:
+        image = await transport._download_image(item)
+        assert image.data == data
+        assert image.media_type == "image/jpeg"
+
+
+@pytest.mark.asyncio
+async def test_wechat_image_rejects_failed_download_bad_key_and_unsafe_url():
+    transport = WeixinTransport()
+    transport._session = _image_session(b"", status=403)
+    item = {"media": {"encrypt_query_param": "private-query"}}
+    with pytest.raises(ValueError, match="HTTP 403"):
+        await transport._download_image(item)
+
+    transport._session.get.reset_mock()
+    with pytest.raises(ValueError, match="AES-128"):
+        await transport._download_image({**item, "aeskey": "00"})
+    with pytest.raises(ValueError, match="HTTPS CDN"):
+        await transport._download_image({
+            "media": {"full_url": "https://127.0.0.1/private"},
+        })
+    transport._session.get.assert_not_called()
+
+    transport._session = _image_session(b"not an image")
+    with pytest.raises(ValueError, match="Unsupported image"):
+        await transport._download_image(item)
+    with pytest.raises(ValueError):
+        await transport._download_image({**item, "aeskey": bytes(range(16)).hex()})
+
+
+@pytest.fixture
+def wechat_image_transport(monkeypatch):
+    import mochi.admin.admin_crypto as crypto
+    import mochi.transport.weixin as weixin
+
+    monkeypatch.setenv("ADMIN_TOKEN", "test-admin-key")
+    monkeypatch.setattr(crypto, "_fernet_instance", None)
+    monkeypatch.setattr(weixin, "WEIXIN_ALLOWED_USERS", ["owner"])
+    transport = WeixinTransport()
+    monkeypatch.setattr(transport, "_get_typing_ticket", AsyncMock(return_value=None))
+    monkeypatch.setattr(transport, "_send_text", AsyncMock(return_value=True))
+    monkeypatch.setattr(
+        transport, "_download_image",
+        AsyncMock(return_value=ImageAttachment(b"\xff\xd8\xff")),
+    )
+    monkeypatch.setattr(weixin, "_on_message_callback", AsyncMock(return_value=None))
+    return transport
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("caption", ["", "What is this?", "/restart"])
+async def test_wechat_image_reaches_main_and_can_bind_owner(wechat_image_transport, caption):
+    import mochi.transport.weixin as weixin
+    import mochi.heartbeat as heartbeat
+
+    transport = wechat_image_transport
+    image_item = {"media": {"encrypt_query_param": "private-query"}}
+    items = [{"type": 2, "image_item": image_item}]
+    if caption:
+        items.append({"type": 1, "text_item": {"text": caption}})
+    await transport._handle_message({
+        "from_user_id": "owner", "context_token": "test-token", "item_list": items,
+    })
+    transport._download_image.assert_awaited_once_with(image_item)
+    weixin._on_message_callback.assert_awaited_once()
+    incoming = weixin._on_message_callback.call_args.args[0]
+    assert incoming.image == ImageAttachment(b"\xff\xd8\xff")
+    assert incoming.text == (caption or "用户发来一张图片。")
+    assert incoming.transport == "wechat"
+    assert incoming.owner_authorized
+    assert transport._owner_weixin_id == "owner"
+    assert transport._context_tokens["owner"] == "test-token"
+    assert not heartbeat._active_chat_tokens
+    transport._send_text.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_wechat_image_failure_is_reported_without_text_only_main_call(
+    wechat_image_transport, caplog,
+):
+    import mochi.transport.weixin as weixin
+
+    transport = wechat_image_transport
+    message = {
+        "from_user_id": "owner", "context_token": "test-token",
+        "item_list": [
+            {"type": 2, "image_item": {}},
+            {"type": 1, "text_item": {"text": "What is this?"}},
+        ],
+    }
+    for failure, expected in [
+        (TimeoutError("private-cdn-url"), "图片下载或解析失败"),
+        (weixin._ImageTooLargeError(), "5 MB"),
+    ]:
+        transport._download_image.side_effect = failure
+        await transport._handle_message(message)
+        assert expected in transport._send_text.call_args.args[1]
+    assert "private-cdn-url" not in caplog.text
+    weixin._on_message_callback.assert_not_called()
+
+    transport._download_image.reset_mock()
+    await transport._handle_message({**message, "from_user_id": "stranger"})
+    transport._download_image.assert_not_called()
+    message["item_list"].append({"type": 2, "image_item": {}})
+    await transport._handle_message(message)
+    transport._download_image.assert_not_called()
+    assert "分开发送" in transport._send_text.call_args.args[1]
+    weixin._on_message_callback.assert_not_called()
 
 
 @pytest.mark.asyncio

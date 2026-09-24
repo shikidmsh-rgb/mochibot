@@ -16,6 +16,7 @@ from telegram.ext import (
 
 from mochi.transport import (
     DeliveryError, Transport, IncomingMessage, ImageAttachment, ensure_delivery_allowed,
+    MAX_IMAGE_BYTES,
 )
 from mochi.transport.utils import split_bubbles as _split_bubbles_util
 from mochi.config import (
@@ -27,10 +28,6 @@ from mochi.config import (
 )
 
 log = logging.getLogger(__name__)
-
-# Anthropic's per-image limit is the tightest of the supported providers.
-_MAX_IMAGE_BYTES = 5 * 1024 * 1024
-
 
 # ── Tool Status UX ───────────────────────────────────────────
 
@@ -393,7 +390,7 @@ class TelegramTransport(Transport):
         text = update.message.text or update.message.caption or "请看看这张图片。"
         if update.message.photo:
             photo = update.message.photo[-1]  # Telegram orders photos by size
-            if photo.file_size and photo.file_size > _MAX_IMAGE_BYTES:
+            if photo.file_size and photo.file_size > MAX_IMAGE_BYTES:
                 await update.message.reply_text("图片太大了，请发送 5 MB 以内的图片。")
                 return
             try:
@@ -403,7 +400,7 @@ class TelegramTransport(Transport):
                 log.warning("Failed to download Telegram image: %s", e)
                 await update.message.reply_text("图片下载失败了，请重新发送一次。")
                 return
-            if len(data) > _MAX_IMAGE_BYTES:
+            if len(data) > MAX_IMAGE_BYTES:
                 await update.message.reply_text("图片太大了，请发送 5 MB 以内的图片。")
                 return
             image = ImageAttachment(data=data, media_type="image/jpeg")
