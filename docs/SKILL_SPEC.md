@@ -127,7 +127,7 @@ Nightly 统计最近 30 天不同普通聊天轮次的成功调用，达到 3 �
 
 ### Capability Context 区段
 
-`## Capability Context` 是唯一会随当前工具注入 Main 的正文区段。它描述能力适用的事实、确定性效果和真实硬边界，让 Main 自己判断是否以及如何行动。`Usage Rules`、`Behavior Rules` 等命令式区段不会进入 Main：
+`## Capability Context` 是唯一会随当前工具注入 Main 的正文区段。它描述能力适用的事实、确定性效果和真实硬边界，让 Main 自己判断是否以及如何行动。尚未加载的按需技能在 system prompt 中只列名称和工具名，其 Capability Context 随 `request_tools` 的加载结果返回。只写 Main 做判断需要的事实；工具回执已会报告的执行细节和 schema 里已有的参数说明不必重复。`Usage Rules`、`Behavior Rules` 等命令式区段不会进入 Main：
 
 ```markdown
 ## Capability Context

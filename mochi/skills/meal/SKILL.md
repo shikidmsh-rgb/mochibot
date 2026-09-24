@@ -39,6 +39,6 @@ Tool-only mode: `log_meal` (record meals with nutrition estimation) + `query_mea
 
 ## Capability Context
 
-- `log_meal` 写入逐项营养估算，总量由代码累加；这些数字是估算，不是实测值。
+- `log_meal` 的营养数字是估算，不是实测值。
 - 早餐、午餐、晚餐按日期和餐次更新该餐记录；零食记录可有多条。更正同一天的同一正餐可重新 log_meal；要移除一条记录可使用 delete_meal。
-- `delete_meal` 是扩展能力，仅删除当前用户指定 ID 的一条饮食记录，不按日期或餐型批量删除。
+- `delete_meal` 仅删除当前用户指定 ID 的一条饮食记录，不按日期或餐型批量删除。

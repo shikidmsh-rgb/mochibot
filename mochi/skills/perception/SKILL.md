@@ -18,5 +18,4 @@ triggers: [tool_call]
 ## Capability Context
 
 - `look_around` 只读取 Observer 已有缓存的安全投影，不是摄像头、截图、GPS 或实时设备查看，也不会触发采集。
-- 返回值会标明来源、缓存时间、是否过期和不可用原因；读取不会改变 Attention 的 unresolved 状态。
 - 它只提供结构化事实，不会自动写入 Core、Memory Items、Diary、Todo 或 Reminder。

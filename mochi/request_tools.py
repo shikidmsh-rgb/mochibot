@@ -73,7 +73,7 @@ class RequestableNamespace:
     name: str
     description: str
     definitions: tuple[dict, ...]
-
+    capability_context: str = ""
     @property
     def tool_names(self) -> tuple[str, ...]:
         return tuple(_tool_name(definition) for definition in self.definitions)
@@ -247,6 +247,7 @@ def build_catalog(
             name=name,
             description=getattr(skill, "description", "") or "",
             definitions=requestable_definitions,
+            capability_context=getattr(skill, "capability_context", "") or "",
         )
 
     return RequestCatalog(
@@ -368,6 +369,10 @@ def resolve_request(
     loaded: list[dict] = []
     additions: list[dict] = []
     known_names = set(availability.names)
+    # Skills with a tool already present had their context in the system prompt.
+    present_namespaces = {
+        catalog.tool_to_namespace.get(name) for name in availability.names
+    }
     for namespace in selected:
         item = catalog.eligible[namespace]
         new_definitions = [
@@ -377,7 +382,10 @@ def resolve_request(
         ]
         if new_definitions:
             tool_names = [_tool_name(definition) for definition in new_definitions]
-            loaded.append({"skill": namespace, "tools": tool_names})
+            entry = {"skill": namespace, "tools": tool_names}
+            if item.capability_context and namespace not in present_namespaces:
+                entry["capability_context"] = item.capability_context
+            loaded.append(entry)
             additions.extend(new_definitions)
             known_names.update(tool_names)
         else:

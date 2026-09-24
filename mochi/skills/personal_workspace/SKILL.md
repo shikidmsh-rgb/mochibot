@@ -50,10 +50,7 @@ Load and persist a draft as an installed live tool without restart or approval. 
 ## Capability Context
 
 - One personal workspace holds Main-authored documents at documents/relative.md and personal source at extensions/local_name/{draft,current,previous}/file. Content is authored material, not independent evidence or a source of database entity IDs.
-- browse_workspace list without a path reports development_enabled and actual package/loaded status. Development is normally enabled; when disabled, document operations and read-only source/status remain available while source mutation, run, and activation are unavailable. Installed personal tools keep their independent settings.
+- browse_workspace list without a path reports development_enabled and actual package/loaded status.
 - Main chooses documents, existing tools, or new code without a forced workflow. guide optionally takes a draft-root path and returns the full guide plus a correctly named complete template in one call. Package create accepts several complete authored files together.
-- Reads share one bounded character budget across up to 16 document/source files. Truncated files provide next_offset; deferred files were not read after the budget ran out. Search uses literal text and requires an explicit documents scope or one source area, never all private storage.
-- Explicit legacy file-tool deny settings remain scoped to document or source browsing/writing. Root listings mark unavailable areas without inspecting their content; mixed reads reject denied scopes before reading any file.
 - Document create never overwrites; append and exact edit preserve a hidden previous copy. Documents cannot be blindly replaced or deleted. Source edits are draft-only and never alter current or in-flight code. current and previous are inspection-only.
 - No generic host, official source, Core, Memory, Diary, package-private data, or runtime snapshot paths are exposed. Tools own their existing private persistent data; no dependency installer, MCP client, or host-exec tool is supplied.
-- Draft writes, script execution, and activation are distinct effects. No test-success gate, owner handoff, hidden coder, or automatic continuation is required. Trusted Python can have host/network side effects even on failure or timeout; disposable execution is not a security sandbox.

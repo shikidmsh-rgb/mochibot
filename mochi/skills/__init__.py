@@ -639,18 +639,15 @@ def get_capability_context_for_tools(
 ) -> str:
     """Collect Main-facing capability context for the given tools.
 
-    For each skill represented in ``tool_names``, also lists any on-demand
-    tools belonging to that skill that are NOT currently loaded — so the LLM
-    knows what's reachable via ``request_tools``.
-
-    Returns facts, deterministic effects, and hard boundaries from each
-    represented skill. Legacy directive sections are never included.
+    Returns facts, deterministic effects, and hard boundaries from each skill
+    represented in ``tool_names``. With ``include_requestable_tools``, every
+    requestable tool that is not loaded is listed by skill name only; its
+    capability context is returned by request_tools when it is loaded.
+    Legacy directive sections are never included.
     """
     seen_skills: set[str] = set()
     context_parts: list[str] = []
     tool_set = set(tool_names)
-    from mochi.db import get_adaptive_tool_load_states
-    load_states = get_adaptive_tool_load_states()
 
     for tn in tool_names:
         sn = _tool_map.get(tn)
@@ -658,37 +655,21 @@ def get_capability_context_for_tools(
             continue
         seen_skills.add(sn)
         skill = _skills.get(sn)
-        if not skill or not skill.capability_context:
-            continue
-        block = f"### {skill.name}\n{skill.capability_context}"
-
-        on_demand_not_loaded = sorted(
-            tool["function"]["name"]
-            for tool in get_effective_tools_for_skill(sn, states=load_states)
-            if tool.get("_load") == "on_demand"
-            and tool["function"]["name"] not in tool_set
-        )
-        if include_requestable_tools and on_demand_not_loaded:
-            block += (
-                f"\n(可通过 request_tools 加载的按需工具: "
-                f"{', '.join(on_demand_not_loaded)})"
-            )
-        context_parts.append(block)
+        if skill and skill.capability_context:
+            context_parts.append(f"### {skill.name}\n{skill.capability_context}")
 
     if include_requestable_tools:
         from mochi.request_tools import build_catalog
 
         catalog = build_catalog(transport=transport, excluded_skills=excluded_skills)
+        requestable_lines = []
         for skill_name, namespace in catalog.eligible.items():
-            if skill_name in seen_skills:
-                continue
-            skill = _skills.get(skill_name)
-            if not skill or not skill.capability_context:
-                continue
-            seen_skills.add(skill_name)
+            unloaded = [name for name in namespace.tool_names if name not in tool_set]
+            if unloaded:
+                requestable_lines.append(f"- {skill_name}: {', '.join(unloaded)}")
+        if requestable_lines:
             context_parts.append(
-                f"### {skill.name}\n{skill.capability_context}\n"
-                f"(可通过 request_tools 加载: {', '.join(namespace.tool_names)})"
+                "### 可通过 request_tools 加载\n" + "\n".join(requestable_lines)
             )
 
     return "\n\n".join(context_parts) if context_parts else ""

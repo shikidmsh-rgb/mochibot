@@ -195,7 +195,9 @@ the turn directly; the Lite pre-router sees only routed skills; and
 `request_tools` may add enabled, configured, transport-compatible routed or
 on-demand tools for a later provider round, including newly activated personal
 resident tools that were absent at turn startup. It never authorizes another call in
-the same provider response and never mutates the global registry. `locked`
+the same provider response and never mutates the global registry. The system
+prompt lists unloaded requestable skills by name only; a skill's capability
+context arrives with the `request_tools` result that loads it. `locked`
 controls only whether the owner may disable a skill. Concrete deny rules, rate
 limits, state-change facts, recoverability, and receipts remain execution
 contracts rather than an abstract risk taxonomy.
