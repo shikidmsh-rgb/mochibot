@@ -536,8 +536,10 @@ class OpenAIProvider(_OpenAICompatChat, LLMProvider):
                 "max_output_tokens": max_tokens,
                 "store": False,
                 "include": ["reasoning.encrypted_content"],
-                "reasoning": {"effort": "high"},
             }
+            from mochi import config
+            if config.REASONING_EFFORT:
+                kwargs["reasoning"] = {"effort": config.REASONING_EFFORT}
             if tools:
                 kwargs["tools"] = _responses_tools(tools)
             if temperature is not None:

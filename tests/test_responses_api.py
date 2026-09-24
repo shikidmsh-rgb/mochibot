@@ -49,7 +49,9 @@ def _provider(responses):
     return provider, calls
 
 
-def test_gpt6_responses_tool_round_preserves_reasoning_and_function_pairing():
+def test_gpt6_responses_tool_round_preserves_reasoning_and_function_pairing(monkeypatch):
+    from mochi import config
+    monkeypatch.setattr(config, "REASONING_EFFORT", "high")
     reasoning = _item(
         "reasoning", id="rs_1", summary=[], encrypted_content="opaque",
     )
@@ -175,7 +177,9 @@ def test_other_models_keep_chat_completions():
     assert provider.chat([{"role": "user", "content": "Hi"}]).content == "Hello"
 
 
-def test_openai_sdk_serializes_stateless_tool_round_with_reasoning():
+def test_openai_sdk_serializes_stateless_tool_round_with_reasoning(monkeypatch):
+    from mochi import config
+    monkeypatch.setattr(config, "REASONING_EFFORT", "")
     requests = []
 
     def handle(request):
@@ -224,8 +228,8 @@ def test_openai_sdk_serializes_stateless_tool_round_with_reasoning():
 
     assert requests[0]["include"] == ["reasoning.encrypted_content"]
     assert requests[0]["store"] is False
-    assert requests[0]["reasoning"] == {"effort": "high"}
-    assert requests[1]["reasoning"] == {"effort": "high"}
+    assert "reasoning" not in requests[0]
+    assert "reasoning" not in requests[1]
     assert requests[1]["input"][-3:] == [
         first.response_items[0],
         first.response_items[1],
