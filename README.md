@@ -76,10 +76,10 @@ Free Time 每天随机安排，不是必须发满的消息配额；正在聊天�
 
 语义向量记忆是可选功能；不配置时仍可全文召回。Embedding 支持 OpenAI、阿里云百炼和 Azure AI Foundry 的 OpenAI-compatible 接口。
 
-后台「高级 → 图片生成」可独立配置生图模型，不改变 Main / Lite。支持 OpenAI Images
+后台「模型 → 图片生成」可独立配置生图模型，不改变 Main / Lite。支持 OpenAI Images
 及 Gemini 原生 `generateContent`：官方地址自动匹配，中转或自建地址手动选择接口类型，
 同协议换模型无需改代码。后台仅管理配置，不生成、上传或发送图片。
-底层生图和微信发图能力相互独立，尚未接入 Main 的 Skill / Tool，不会自动运行。
+配置完整并启用图片生成 Skill 后，Mochi 可在微信聊天中按需生成和发送图片；Telegram 和主动消息暂不支持。
 
 ## 主要能力
 
