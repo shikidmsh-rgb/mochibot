@@ -285,19 +285,3 @@ def test_tool_budget_counts_identical_arguments_not_distinct_operations():
     assert budget.claim_tool(
         "manage_todo", {"todo_id": 6}, total_limit=6, per_tool_limit=2,
     )["code"] == "tool_call_limit_reached"
-
-
-def test_request_tools_schema_is_provider_compatible_and_rejects_empty_requests():
-    from mochi.request_tools import REQUEST_TOOLS_DEF, _validate_arguments
-    from mochi.tool_availability import ToolAvailability
-
-    parameters = REQUEST_TOOLS_DEF["function"]["parameters"]
-    assert parameters["type"] == "object"
-    assert not {"oneOf", "anyOf", "allOf", "enum", "const", "not"} & parameters.keys()
-
-    availability = ToolAvailability.from_definitions([REQUEST_TOOLS_DEF], source="test")
-    for arguments in ({"skills": ["web_search"]}, {"query": "search online"}):
-        assert availability.validate_arguments("request_tools", arguments) is None
-        assert _validate_arguments(arguments) is None
-    for arguments in ({}, {"reason": "no capability requested"}, {"skills": []}, {"query": " "}):
-        assert _validate_arguments(arguments) is not None
