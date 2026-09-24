@@ -62,7 +62,6 @@ REQUEST_TOOLS_DEF = {
                     "description": "Brief reason the capability is needed.",
                 },
             },
-            "anyOf": [{"required": ["skills"]}, {"required": ["query"]}],
             "additionalProperties": False,
         },
     },
