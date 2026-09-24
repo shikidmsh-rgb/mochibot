@@ -58,16 +58,16 @@ class _ImageTooLargeError(ValueError):
     pass
 
 
-def _image_media_type(data: bytes) -> str:
-    if data.startswith(b"\xff\xd8\xff"):
-        return "image/jpeg"
-    if data.startswith(b"\x89PNG\r\n\x1a\n"):
-        return "image/png"
-    if data.startswith((b"GIF87a", b"GIF89a")):
-        return "image/gif"
-    if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
-        return "image/webp"
-    raise ValueError("Unsupported image format")
+def _validate_cdn_url(url: str) -> None:
+    parsed = urlsplit(url)
+    if (
+        parsed.scheme != "https"
+        or not (parsed.hostname or "").endswith(".weixin.qq.com")
+        or parsed.port not in (None, 443)
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        raise ValueError("Image URL is not a WeChat HTTPS CDN URL")
 
 
 # ── Module-level callback (same pattern as telegram.py) ──────────────────────
@@ -349,6 +349,77 @@ class WeixinTransport(Transport):
             user_id, result, can_deliver=can_deliver, single_message=True,
         )
 
+    async def send_image_checked(
+        self, user_id: int, image: ImageAttachment,
+        *, can_deliver: Callable[[], bool] | None = None,
+    ) -> None:
+        import aiohttp
+
+        ensure_delivery_allowed(can_deliver)
+        to = self._owner_weixin_id
+        token = self._context_tokens.get(to, "") if to else ""
+        if not to or not self._session or self._session_expired or not token:
+            raise DeliveryError(
+                "wechat: session, owner or reply context not ready",
+                outcome="delivery_unavailable",
+            )
+        ImageAttachment.from_bytes(image.data)
+        key = os.urandom(16)
+        filekey = os.urandom(16).hex()
+        padder = padding.PKCS7(128).padder()
+        padded = padder.update(image.data) + padder.finalize()
+        encryptor = Cipher(algorithms.AES(key), modes.ECB()).encryptor()
+        ciphertext = encryptor.update(padded) + encryptor.finalize()
+        try:
+            response = await self._api_post("ilink/bot/getuploadurl", {
+                "filekey": filekey, "media_type": 1, "to_user_id": to,
+                "rawsize": len(image.data),
+                "rawfilemd5": hashlib.md5(image.data).hexdigest(),
+                "filesize": len(ciphertext), "no_need_thumb": True,
+                "aeskey": key.hex(), "base_info": {"channel_version": "1.0.0"},
+            })
+            if not isinstance(response, dict):
+                raise ValueError("Invalid image upload authorization")
+            if response.get("ret", 0) != 0 or response.get("errcode", 0) != 0:
+                raise ValueError("Image upload authorization rejected")
+            url = response.get("upload_full_url")
+            if not url:
+                param = response.get("upload_param")
+                if not param:
+                    raise ValueError("Image upload reference missing")
+                query = urlencode({"encrypted_query_param": param, "filekey": filekey})
+                url = f"{_CDN_BASE_URL}/upload?{query}"
+            _validate_cdn_url(url)
+            ensure_delivery_allowed(can_deliver)
+            async with self._session.post(
+                url, data=ciphertext, headers={"Content-Type": "application/octet-stream"},
+                timeout=aiohttp.ClientTimeout(total=60), allow_redirects=False,
+            ) as uploaded:
+                if uploaded.status != 200:
+                    raise ValueError(f"Image upload HTTP {uploaded.status}")
+                download_param = uploaded.headers.get("x-encrypted-param")
+                if not download_param:
+                    raise ValueError("Image upload receipt missing")
+        except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
+            # Uploading bytes alone never delivers a chat message.
+            log.warning("WeChat: image upload failed (%s)", type(exc).__name__)
+            raise DeliveryError(
+                "wechat: image upload failed; no image message sent",
+                outcome="delivery_unavailable",
+            ) from exc
+        ensure_delivery_allowed(can_deliver)
+        await self._weixin_send_item(to, {
+            "type": _ITEM_IMAGE,
+            "image_item": {
+                "media": {
+                    "encrypt_query_param": download_param,
+                    "aes_key": base64.b64encode(key.hex().encode("ascii")).decode("ascii"),
+                    "encrypt_type": 1,
+                },
+                "mid_size": len(ciphertext),
+            },
+        }, token)
+
     # ── HTTP API layer ───────────────────────────────────────────────────
 
     async def _api_post(
@@ -394,6 +465,12 @@ class WeixinTransport(Transport):
 
     async def _weixin_send_message(self, to: str, text: str,
                                    context_token: str) -> dict:
+        return await self._weixin_send_item(
+            to, {"type": _ITEM_TEXT, "text_item": {"text": text}}, context_token,
+        )
+
+    async def _weixin_send_item(self, to: str, item: dict,
+                                context_token: str) -> dict:
         import aiohttp
 
         if not self._session or self._session_expired or not context_token:
@@ -412,9 +489,7 @@ class WeixinTransport(Transport):
                 "message_type": _MSG_TYPE_BOT,
                 "message_state": 2,  # FINISH
                 "context_token": context_token,
-                "item_list": [
-                    {"type": _ITEM_TEXT, "text_item": {"text": text}},
-                ],
+                "item_list": [item],
             },
             "base_info": {"channel_version": "1.0.0"},
         }
@@ -510,15 +585,7 @@ class WeixinTransport(Transport):
             if not query:
                 raise ValueError("Image has no CDN reference")
             url = f"{_CDN_BASE_URL}/download?{urlencode({'encrypted_query_param': query})}"
-        parsed = urlsplit(url)
-        if (
-            parsed.scheme != "https"
-            or not (parsed.hostname or "").endswith(".weixin.qq.com")
-            or parsed.port not in (None, 443)
-            or parsed.username is not None
-            or parsed.password is not None
-        ):
-            raise ValueError("Image URL is not a WeChat HTTPS CDN URL")
+        _validate_cdn_url(url)
 
         key = None
         if image_item.get("aeskey"):
@@ -555,7 +622,7 @@ class WeixinTransport(Transport):
             plaintext = unpadder.update(padded) + unpadder.finalize()
         if len(plaintext) > MAX_IMAGE_BYTES:
             raise _ImageTooLargeError()
-        return ImageAttachment(data=plaintext, media_type=_image_media_type(plaintext))
+        return ImageAttachment.from_bytes(plaintext)
 
     async def _handle_message(self, msg: dict) -> None:
         """Process one inbound WeChat message."""

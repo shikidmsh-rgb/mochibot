@@ -1839,14 +1839,17 @@ let _modelTargetTier = null;
 let _modelCredentialSources = [];
 let _lastAutoBaseUrl = '';  // tracks auto-filled base_url to detect manual edits
 let _lastAutoModel = '';
+let _imagePreviewBlob = null;
+let _imagePreviewURL = '';
 
 async function loadAdvanced() {
   const el = document.getElementById('advanced-content');
   try {
-    const [models, tiers, embCfg] = await Promise.all([
+    const [models, tiers, embCfg, imageCfg] = await Promise.all([
       api('GET','/models'),
       api('GET','/tiers'),
       api('GET','/embedding/config'),
+      api('GET','/images/config'),
     ]);
     let html = '<p style="font-size:13px;color:var(--text-soft);margin-bottom:16px">管理模型服务、自定义接口与语义检索。正常使用通常无需调整这里。</p>';
 
@@ -1885,6 +1888,40 @@ async function loadAdvanced() {
       html += '</table>';
     }
     html += `<div style="margin-top:12px"><button class="btn btn-primary" onclick="openModelModal()">+ 添加模型</button></div></div>`;
+
+    html += `<div class="card"><div class="card-title">图片生成 · 可选</div>
+      <p style="font-size:12px;color:var(--text-soft);margin-bottom:12px">独立于 Main / Lite。只在手动试生成时调用，不会自动生成或发送图片。保存立即生效，不发起模型请求。</p>
+      <div class="form-group"><label class="form-label">接口类型</label>
+        <select class="form-input" id="img-protocol">
+          <option value="auto" ${imageCfg.protocol==='auto'?'selected':''}>自动识别（官方地址）</option>
+          <option value="openai" ${imageCfg.protocol==='openai'?'selected':''}>OpenAI Images / 兼容接口</option>
+          <option value="gemini" ${imageCfg.protocol==='gemini'?'selected':''}>Gemini 原生 generateContent</option>
+        </select></div>
+      <div class="form-group"><label class="form-label">Base URL</label>
+        <input class="form-input" id="img-baseurl" value="${esc(imageCfg.base_url)}" placeholder="留空使用 OpenAI；Gemini 原生为 https://generativelanguage.googleapis.com/v1beta">
+        <div style="font-size:11px;color:var(--text-soft);margin-top:4px">填写 API 根地址。官方 OpenAI、Gemini 和 Azure OpenAI v1 地址自动匹配；中转或自建地址请手选接口类型。不会通过试生成猜协议。</div></div>
+      <div class="form-group"><label class="form-label">模型名</label>
+        <input class="form-input" id="img-model" value="${esc(imageCfg.model)}" placeholder="填写服务商提供的生图模型名，不限制型号"></div>
+      <div class="form-group"><label class="form-label">API Key</label>
+        <input class="form-input" id="img-apikey" type="password" autocomplete="new-password" data-key-set="${imageCfg.api_key_set?'true':'false'}" placeholder="${imageCfg.api_key_set?'已设置，留空不修改':'填写图片生成 API Key'}"></div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-primary" onclick="saveImageConfig(this)">保存图片配置</button>
+        <button class="btn btn-ghost" onclick="clearImageConfig()">清除图片配置</button>
+      </div>
+      <div id="img-config-status" style="font-size:12px;color:var(--text-soft);margin-top:8px">${imageCfg.configured?'已配置 · '+esc(imageCfg.resolved_protocol):'未配置'}</div>
+      <hr style="border:0;border-top:1px solid var(--border);margin:18px 0">
+      <div class="form-group"><label class="form-label">试生成描述</label>
+        <textarea class="form-input" id="img-prompt" rows="3" placeholder="描述你希望生成的图片；只发送这段文字，不带 Mochi 的对话或记忆"></textarea></div>
+      <button class="btn btn-ghost" onclick="generateImagePreview(this)">使用已保存配置试生成一张（可能收费）</button>
+      <p style="font-size:12px;color:var(--text-soft);margin-top:12px">也可选择已有图片测试微信发送，不调用生图模型。支持单张 JPG / PNG / GIF / WebP，最大 5 MB。</p>
+      <input class="form-input" id="img-file" type="file" accept="image/jpeg,image/png,image/gif,image/webp" onchange="previewImageFile(this)">
+      <div id="img-preview-wrap" style="display:none;margin-top:12px">
+        <img id="img-preview" alt="待发送图片预览" style="display:block;max-width:100%;max-height:360px;border-radius:8px;margin-bottom:12px">
+        <button class="btn btn-primary" onclick="sendImagePreview(this)">发送此图到主人微信</button>
+      </div>
+      <div id="img-action-status" role="status" style="font-size:13px;margin-top:8px"></div>
+      <p style="font-size:11px;color:var(--text-soft);margin-top:8px">预览仅保留在当前页面，未建立图库；后台试图不注入 Main 的聊天历史。生成成功不代表已发送。</p>
+    </div>`;
 
     // Embedding Config
     const embBadge = embCfg.disabled
@@ -1948,9 +1985,83 @@ async function loadAdvanced() {
     html += '</div>'; // end emb-form
     html += '</div>'; // end card
 
+    if (_imagePreviewURL) URL.revokeObjectURL(_imagePreviewURL);
+    _imagePreviewURL = '';
+    _imagePreviewBlob = null;
     el.innerHTML = html;
     updateEmbeddingFields();
   } catch(e) { el.innerHTML = `<div class="card" style="color:var(--danger)">❌ ${esc(e.message)}</div>`; }
+}
+
+async function saveImageConfig(btn) {
+  btn.disabled = true;
+  try {
+    const key = document.getElementById('img-apikey');
+    const result = await api('PUT', '/images/config', {
+      protocol: document.getElementById('img-protocol').value,
+      base_url: document.getElementById('img-baseurl').value.trim(),
+      model: document.getElementById('img-model').value.trim(),
+      api_key: key.value || (key.dataset.keySet === 'true' ? '__KEEP__' : ''),
+    });
+    key.value = '';
+    key.dataset.keySet = 'true';
+    key.placeholder = '已设置，留空不修改';
+    document.getElementById('img-config-status').textContent = '已保存 · ' + result.resolved_protocol + '（未调用模型）';
+  } catch (e) { showToast('保存失败：' + e.message); }
+  finally { btn.disabled = false; }
+}
+
+async function clearImageConfig() {
+  if (!confirm('清除图片模型配置？不会修改 Main、Lite 或 Embedding。')) return;
+  try { await api('DELETE', '/images/config'); await loadAdvanced(); }
+  catch (e) { showToast('清除失败：' + e.message); }
+}
+
+function setImagePreview(blob) {
+  if (_imagePreviewURL) URL.revokeObjectURL(_imagePreviewURL);
+  _imagePreviewBlob = blob;
+  _imagePreviewURL = URL.createObjectURL(blob);
+  document.getElementById('img-preview').src = _imagePreviewURL;
+  document.getElementById('img-preview-wrap').style.display = 'block';
+}
+
+function previewImageFile(input) {
+  const file = input.files[0];
+  if (!file) return;
+  if (file.size > 5 * 1024 * 1024) { showToast('图片不能超过 5 MB。'); input.value = ''; return; }
+  setImagePreview(file);
+  document.getElementById('img-action-status').textContent = '已选择本地图片，尚未发送。';
+}
+
+async function generateImagePreview(btn) {
+  const prompt = document.getElementById('img-prompt').value;
+  if (!prompt.trim()) { showToast('请填写试生成描述。'); return; }
+  btn.disabled = true;
+  const status = document.getElementById('img-action-status');
+  status.textContent = '正在生成，可能需要几分钟；请勿重复提交。';
+  try {
+    const result = await api('POST', '/images/generate', {prompt});
+    const image = await fetch(result.image);
+    setImagePreview(await image.blob());
+    status.textContent = `已生成（${(result.latency_ms/1000).toFixed(1)} 秒），尚未发送。`;
+  } catch (e) { status.textContent = '生成失败：' + e.message; }
+  finally { btn.disabled = false; }
+}
+
+async function sendImagePreview(btn) {
+  if (!_imagePreviewBlob) return;
+  btn.disabled = true;
+  const status = document.getElementById('img-action-status');
+  status.textContent = '正在上传并发送图片…';
+  try {
+    const headers = {'Content-Type': _imagePreviewBlob.type || 'application/octet-stream'};
+    if (authToken) headers['Authorization'] = 'Bearer ' + authToken;
+    const response = await fetch('/api/images/send', {method:'POST', headers, body:_imagePreviewBlob});
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.detail || result.error || '发送失败');
+    status.textContent = '微信接口已接受图片，请在微信中确认收到。';
+  } catch (e) { status.textContent = '发送未完成：' + e.message; }
+  finally { btn.disabled = false; }
 }
 
 document.getElementById('advanced-content').addEventListener('click', event => {

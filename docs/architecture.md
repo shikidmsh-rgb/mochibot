@@ -148,6 +148,21 @@ images, JSON mode, or model parameters beyond what that endpoint implements.
 Embedding is optional and off by default. OpenAI, Alibaba Cloud Bailian, and
 Azure AI Foundry embedding use the same OpenAI-compatible embedding adapter.
 
+Optional image generation is a separate framework capability, not a third
+conversational role. `image_service` stores one encrypted configuration, resolves
+the image API from known official endpoints or an explicit protocol choice, and
+returns in-memory images. OpenAI Images and Gemini native `generateContent`
+adapters receive only the explicitly supplied description. Configuration changes
+never probe models or trigger generation; a generation request is not retried
+automatically. Main/Lite assignments, conversation context, and memory are not
+used by Admin's manual image generation and sending controls.
+
+The active WeChat transport provides image delivery to this service. It encrypts
+and uploads bytes before sending the image message through the same reply-context
+and failure boundary as text. An upload is not a delivered message. Generated or
+selected previews have no durable gallery, and Admin tests do not enter Main's
+history. No Main image-generation tool or autonomous trigger is registered yet.
+
 Provider-returned reasoning is protocol metadata, not conversation content or
 memory evidence. Delivered assistant records and durable delivery outboxes
 preserve it separately from visible text. Main replays it only for the same

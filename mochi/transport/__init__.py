@@ -41,9 +41,25 @@ def ensure_delivery_allowed(can_deliver: Callable[[], bool] | None) -> None:
 
 @dataclass(frozen=True)
 class ImageAttachment:
-    """An in-memory image attached to the current incoming message."""
+    """An in-memory image for model input or transport delivery."""
     data: bytes = field(repr=False)
     media_type: str = "image/jpeg"
+
+    @classmethod
+    def from_bytes(cls, data: bytes) -> "ImageAttachment":
+        if len(data) > MAX_IMAGE_BYTES:
+            raise ValueError("图片不能超过 5 MB。")
+        if data.startswith(b"\xff\xd8\xff"):
+            media_type = "image/jpeg"
+        elif data.startswith(b"\x89PNG\r\n\x1a\n"):
+            media_type = "image/png"
+        elif data.startswith((b"GIF87a", b"GIF89a")):
+            media_type = "image/gif"
+        elif data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+            media_type = "image/webp"
+        else:
+            raise ValueError("Unsupported image format; use JPG, PNG, GIF or WebP.")
+        return cls(data=data, media_type=media_type)
 
     def data_url(self) -> str:
         encoded = base64.b64encode(self.data).decode("ascii")
@@ -89,6 +105,15 @@ class Transport(ABC):
     async def send_message(self, user_id: int, text: str) -> bool:
         """Send a text message and report whether it was delivered."""
         ...
+
+    async def send_image_checked(
+        self, user_id: int, image: ImageAttachment,
+        *, can_deliver: Callable[[], bool] | None = None,
+    ) -> None:
+        raise DeliveryError(
+            f"{self.name}: image sending is not available",
+            outcome="delivery_unavailable",
+        )
 
     async def send_chat_result(self, user_id: int, result) -> bool:
         """Deliver a ChatResult through this transport."""

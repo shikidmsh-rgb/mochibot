@@ -76,6 +76,83 @@ def _encrypt_image(data, key):
 
 
 @pytest.mark.asyncio
+async def test_wechat_image_send_encrypts_upload_and_requires_receipt(monkeypatch):
+    from cryptography.hazmat.primitives import padding
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    transport = WeixinTransport()
+    transport._owner_weixin_id = "owner"
+    transport._context_tokens["owner"] = "reply-token"
+    image = ImageAttachment(b"\xff\xd8\xffimage")
+    upload_headers = {"x-encrypted-param": "download-reference"}
+    active = True
+
+    @asynccontextmanager
+    async def upload(*args, **kwargs):
+        yield SimpleNamespace(status=200, headers=upload_headers)
+
+    upload_call = MagicMock(side_effect=upload)
+    transport._session = SimpleNamespace(post=upload_call)
+    api = AsyncMock(side_effect=[
+        {"upload_full_url": "https://novac2c.cdn.weixin.qq.com/c2c/upload?signed=ref"},
+        {},
+    ])
+    monkeypatch.setattr(transport, "_api_post", api)
+    await transport.send_image_checked(1, image, can_deliver=lambda: active)
+    authorize, send = api.call_args_list
+    assert authorize.args[0] == "ilink/bot/getuploadurl"
+    params = authorize.args[1]
+    assert params["media_type"] == 1
+    assert params["rawsize"] == len(image.data)
+    assert params["to_user_id"] == "owner"
+    request = upload_call.call_args
+    assert request.kwargs["headers"] == {"Content-Type": "application/octet-stream"}
+    assert request.kwargs["allow_redirects"] is False
+    key = bytes.fromhex(params["aeskey"])
+    decryptor = Cipher(algorithms.AES(key), modes.ECB()).decryptor()
+    padded = decryptor.update(request.kwargs["data"]) + decryptor.finalize()
+    unpadder = padding.PKCS7(128).unpadder()
+    assert unpadder.update(padded) + unpadder.finalize() == image.data
+    assert send.args[0] == "ilink/bot/sendmessage"
+    message = send.args[1]["msg"]
+    assert message["context_token"] == "reply-token"
+    item = message["item_list"][0]
+    assert item["type"] == 2
+    assert item["image_item"]["media"]["encrypt_query_param"] == "download-reference"
+    assert base64.b64decode(item["image_item"]["media"]["aes_key"]).decode() == params["aeskey"]
+    assert item["image_item"]["mid_size"] == len(request.kwargs["data"])
+
+    api.reset_mock()
+    api.side_effect = None
+    api.return_value = {"upload_param": "opaque"}
+    upload_headers.clear()
+    with pytest.raises(DeliveryError) as missing_receipt:
+        await transport.send_image_checked(1, image)
+    assert missing_receipt.value.outcome == "delivery_unavailable"
+    api.assert_awaited_once()
+
+    @asynccontextmanager
+    async def expires_after_upload(*args, **kwargs):
+        nonlocal active
+        yield SimpleNamespace(status=200, headers={"x-encrypted-param": "uploaded"})
+        active = False
+
+    upload_call.side_effect = expires_after_upload
+    api.reset_mock()
+    with pytest.raises(DeliveryError) as expired_after_upload:
+        await transport.send_image_checked(1, image, can_deliver=lambda: active)
+    assert expired_after_upload.value.outcome == "expired"
+    api.assert_awaited_once()
+
+    active = False
+    api.reset_mock()
+    with pytest.raises(DeliveryError) as expired:
+        await transport.send_image_checked(1, image, can_deliver=lambda: active)
+    assert expired.value.outcome == "expired"
+    api.assert_not_called()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("encoding", ["hex", "base64", "base64_hex", "plain", "full_url"])
 async def test_wechat_image_cdn_decodes_protocol_keys_without_sending_bot_token(encoding):
     data = base64.b64decode(
