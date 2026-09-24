@@ -178,7 +178,7 @@ select.form-input { cursor:pointer; }
   <nav class="sidebar-nav" id="sidebar-nav">
     <button class="nav-item active" data-page="settings"><span class="nav-icon">🏠</span> 设置</button>
     <button class="nav-item" data-page="memory"><span class="nav-icon">🧠</span> 记忆</button>
-    <button class="nav-item" data-page="advanced"><span class="nav-icon">🛠️</span> 高级</button>
+    <button class="nav-item" data-page="advanced"><span class="nav-icon">🛠️</span> 模型</button>
     <button class="nav-item" data-page="system"><span class="nav-icon">⚙️</span> 系统</button>
   </nav>
   <div style="padding:8px 12px; border-top:1px solid var(--border);">
@@ -244,7 +244,7 @@ select.form-input { cursor:pointer; }
 
 <!-- ═══════ Advanced ═══════ -->
 <section id="page-advanced" class="page">
-  <h2 class="page-title">高级设置</h2>
+  <h2 class="page-title">模型</h2>
   <div id="advanced-content"><div class="loading"><div class="spinner"></div> 加载中...</div></div>
 </section>
 
@@ -1526,7 +1526,7 @@ async function loadSettings() {
       <div class="config-form-row" style="display:flex;align-items:center;gap:12px;padding:10px 0">
         <label class="toggle"><input id="pref-proactive-enabled" type="checkbox" ${proactiveEnabled?'checked':''} onchange="toggleProactivePreference()"><span class="slider"></span></label>
         <div style="min-width:220px;flex:1">
-          <div style="font-size:14px">白天agent自由活动次数上限</div>
+          <div style="font-size:14px">每日自由活动机会</div>
         </div>
         <input class="form-input" id="pref-proactive-limit" type="number" min="1" max="10" style="width:80px" value="${esc(proactiveLimit)}" ${proactiveEnabled?'':'disabled'}>
         <span style="font-size:12px;color:var(--text-soft)">次</span>
@@ -1647,7 +1647,7 @@ async function savePreferences() {
     return showToast('时区必须在 UTC-12 到 UTC+14 之间');
   }
   if (enabled && (!Number.isInteger(limit) || limit < 1 || limit > 10)) {
-    return showToast('白天agent自由活动次数上限必须是 1 到 10 的整数');
+    return showToast('每日自由活动机会必须是 1 到 10 的整数');
   }
   try {
     await api('PUT', '/preferences', {
