@@ -93,6 +93,54 @@ async def test_free_time_keeps_only_immediate_conversation_context(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("carrier", ["chat", "free_time"])
+async def test_day_start_look_rides_only_the_first_owner_turn(
+    mock_llm_factory, monkeypatch, carrier,
+):
+    from datetime import date
+
+    import mochi.heartbeat as heartbeat
+    from mochi.config import logical_today
+    from mochi.diary import diary
+
+    monkeypatch.setattr(heartbeat, "_is_awake_hour", lambda hour: True)
+    yesterday = date.fromisoformat(logical_today()) - timedelta(days=1)
+    archive = diary.path.parent / "diary_archive"
+    archive.mkdir(parents=True, exist_ok=True)
+    (archive / f"{yesterday:%Y-%m}.md").write_text(
+        f"# Diary {yesterday}\n\n## 今日日記\nYESTERDAY_MARKER\n",
+        encoding="utf-8",
+    )
+    mock = mock_llm_factory([make_response(text) for text in (
+        "stranger", "first", "second",
+    )])
+
+    def owner(text, *, owner_authorized=True):
+        return IncomingMessage(
+            user_id=1, channel_id=100, text=text, transport="fake",
+            owner_authorized=owner_authorized,
+        )
+
+    (await chat(owner("hi", owner_authorized=False))).confirm_delivered(final=True)
+    if carrier == "chat":
+        (await chat(owner("morning"))).confirm_delivered(final=True)
+    else:
+        await chat(runtime_entry=MainRuntimeEntry.free_time(
+            run_key="free_time:day-start", wake_reason="periodic", user_id=1,
+            channel_id=100, transport="fake", claim_token="claim",
+            lease_until="2099-01-01T00:00:00+00:00",
+        ))
+    await chat(owner("again"))
+
+    stranger, first, second = (
+        main_context(call["messages"]) for call in mock.call_log
+    )
+    assert "YESTERDAY_MARKER" not in stranger
+    assert "<recent_diary>" in first and "YESTERDAY_MARKER" in first
+    assert "YESTERDAY_MARKER" not in second
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("kind", ["chat", "free_time", "self_reminder", "bedtime"])
 async def test_main_sees_delivered_autonomous_history_only(
     mock_llm_factory, kind,

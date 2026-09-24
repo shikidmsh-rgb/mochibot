@@ -485,7 +485,8 @@ def _build_prompt_zones(user_id: int, capability_context: str = "",
                         weekly_context: str = "",
                         policy: ContextPolicy | None = None,
                         habit_progress_context: str = "",
-                        history_timestamps: str = "") -> tuple[str, str]:
+                        history_timestamps: str = "",
+                        day_start_context: str = "") -> tuple[str, str]:
     """Return the cross-turn stable prompt and this turn's live context."""
 
     modules = get_system_chat_modules()
@@ -560,6 +561,9 @@ def _build_prompt_zones(user_id: int, capability_context: str = "",
         )
         if rendered_rc:
             dynamic_live_context.append(rendered_rc)
+
+    if day_start_context:
+        dynamic_live_context.append(day_start_context)
 
     if conv_summary:
         dynamic_live_context.append(f"## 本次对话早期内容（摘要）\n{conv_summary}")
@@ -636,7 +640,12 @@ def _build_prompt_zones(user_id: int, capability_context: str = "",
             pass
 
     stable = stable_identity + early_runtime_situation + capability_parts
-    turn_context = dynamic_live_context + [f"当前时间：{now_str}"]
+    from mochi.day_start import calendar_horizon
+    time_line = f"当前时间：{now_str}"
+    horizon = calendar_horizon(now)
+    if horizon:
+        time_line += f"\n近期日历：{horizon}"
+    turn_context = dynamic_live_context + [time_line]
     return "\n\n".join(stable), "\n\n".join(turn_context)
 
 
@@ -1055,6 +1064,28 @@ async def chat(
     if weekly_session:
         weekly_session.expected_core = core_memory
 
+    day_start_day: str | None = None
+    day_start_context = ""
+    if is_autonomous or (
+        message is not None and runtime_entry is None and message.owner_authorized
+    ):
+        from mochi import day_start
+        from mochi.config import TZ as _TZ
+
+        day_start_day = await asyncio.to_thread(
+            day_start.pending_day, datetime.now(_TZ),
+        )
+        if day_start_day:
+            day_start_context = await asyncio.to_thread(
+                day_start.context, day_start_day,
+            )
+        if not day_start_context:
+            day_start_day = None
+        elif not is_autonomous:
+            after_delivery.append(
+                lambda: day_start.mark_done(day_start_day)
+            )
+
     system_prompt, turn_context = _build_prompt_zones(
         user_id, capability_context=capability_context,
         requestable_tools=requestable_tools, tool_names=active_tool_names,
@@ -1070,6 +1101,7 @@ async def chat(
         policy=prompt_policy,
         habit_progress_context=habit_progress_context,
         history_timestamps=_format_history_timestamps(history),
+        day_start_context=day_start_context,
     )
     # User turns keep the system prompt stable so providers can reuse the
     # system + history prefix; runtime entries keep everything in system.
@@ -1193,6 +1225,12 @@ async def chat(
             skipped = reply == "[SKIP]"
             if skipped:
                 reply = ""
+            if day_start_day and (
+                skipped or reply or pending_stickers or successful_effects
+            ):
+                from mochi import day_start
+
+                day_start.mark_done(day_start_day)
             if skipped and not successful_effects and not pending_stickers:
                 return ChatResult(
                     tool_audit=tool_audit,

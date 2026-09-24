@@ -112,6 +112,14 @@ current time — travel as one read-only `turn_context` message just before the
 current input and are never persisted, so providers can reuse the system +
 history prefix across turns. Runtime entries keep that context in system.
 
+Once per logical day, during awake hours, the first owner chat turn or Free
+Time run — whichever comes first — also carries a "new day" look at the last
+seven archived diaries (newest days kept within budget). It is marked done in
+`scheduled_runs` only after that Main turn completes, so a restart does not
+repeat it and a failed turn retries. When the configured offset is UTC+8, the
+current time line also lists mainland holidays and make-up workdays in the next
+two weeks.
+
 Automatic recall searches the current sentence and a bounded recent completed
 conversation independently, prioritizing the current topic and deduplicating
 Memory Items. Embedding cache misses share one batch request; there is no extra
@@ -405,7 +413,8 @@ standalone deliveries, and bounded execution receipts for continuity. Standalone
 history starts with the selected conversation window, or uses the latest five
 deliveries since reset when there are no complete turns; midnight does not clear
 it. Free Time deliberately excludes Agenda, Diary, summaries, auto-recall, and semantic routing,
-so recent conversation remains background rather than an assigned topic.
+so recent conversation remains background rather than an assigned topic; the
+one exception is the daily day-start diary look when Free Time comes first.
 It starts with resident tools and may request other tools; it does not inherit
 a sticky routed skill.
 

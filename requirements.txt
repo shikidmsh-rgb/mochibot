@@ -21,5 +21,8 @@ sqlite-vec>=0.1.6
 # Reading PDF files the owner sends
 pypdf>=5.0
 
+# Mainland holidays and make-up workdays for the near calendar
+chinesecalendar>=1.11
+
 # WeChat transport (iLink API) — required by current bootstrap even if Telegram-only
 aiohttp>=3.9

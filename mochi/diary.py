@@ -655,8 +655,13 @@ def read_diary_archive_window(
     end: date,
     *,
     max_chars: int = 12_000,
+    keep_newest: bool = False,
 ) -> DiaryArchiveWindow:
-    """Read archived Diary blocks in [start, end) without causing rollover."""
+    """Read archived Diary blocks in [start, end) without causing rollover.
+
+    Over budget, the default keeps the oldest text; ``keep_newest`` instead
+    drops whole oldest days first.
+    """
     if not isinstance(start, date) or not isinstance(end, date) or start >= end:
         raise ValueError("Diary archive window must be an increasing date range")
     if max_chars < 100:
@@ -691,11 +696,23 @@ def read_diary_archive_window(
     total_chars = len(raw_content)
     truncated = total_chars > max_chars
     marker = "\n\n[Diary archive truncated by system budget]"
-    content = (
-        raw_content[:max_chars - len(marker)].rstrip() + marker
-        if truncated
-        else raw_content
-    )
+    if truncated and keep_newest:
+        budget = max_chars - len(marker)
+        kept: list[str] = []
+        kept_dates: list[str] = []
+        for date_str, block in zip(reversed(dates), reversed(selected)):
+            if len("\n\n".join([block, *kept])) > budget:
+                break
+            kept.insert(0, block)
+            kept_dates.insert(0, date_str)
+        if not kept:
+            kept, kept_dates = [selected[-1][:budget].rstrip()], [dates[-1]]
+        content = marker.strip() + "\n\n" + "\n\n".join(kept)
+        dates = kept_dates
+    elif truncated:
+        content = raw_content[:max_chars - len(marker)].rstrip() + marker
+    else:
+        content = raw_content
     return DiaryArchiveWindow(
         content=content,
         dates=tuple(dates),
