@@ -47,4 +47,8 @@ instructions: |
 
   Validate changed behavior with existing targeted tests and affected
   boundaries. Keep runtime data and real model calls out of ordinary checks.
+  Every assertion must be able to fail on a real bug in our own logic. Do not
+  assert static prompt prose, mock replies echoed back, removed features being
+  absent, or mirrored external provider request/response shapes; verify
+  external protocols through real use on MochiBot Test instead.
   Do not edit personal/global agent configuration for a project-local change.
