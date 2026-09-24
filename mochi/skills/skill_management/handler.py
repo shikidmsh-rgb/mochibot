@@ -36,19 +36,7 @@ class SkillManagementSkill(Skill):
         for definition in definitions:
             function = definition["function"]
             if function["name"] == "manage_tool_load":
-                function["parameters"].update(
-                    additionalProperties=False,
-                    anyOf=[
-                        {"properties": {"action": {"enum": ["pin"]}}, "required": ["load"]},
-                        {
-                            "properties": {
-                                "action": {"enum": ["reset"]},
-                                "tool_name": {"type": "string"},
-                            },
-                            "additionalProperties": False,
-                        },
-                    ],
-                )
+                function["parameters"]["additionalProperties"] = False
         return definitions
 
     async def execute(self, context: SkillContext) -> SkillResult:

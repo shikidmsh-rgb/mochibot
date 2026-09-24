@@ -120,14 +120,16 @@ async def test_scripts_fixed_contracts_and_invalid_shapes_stay_rejected():
         args={"action": "pin", "tool_name": "update_core", "load": "routed"},
     ))
     assert not fixed.success and fixed.error_code == "fixed_tool_load"
+    for args in (
+        {"action": "pin", "tool_name": "search_personal_history"},
+        {"action": "reset", "tool_name": "search_personal_history", "load": "routed"},
+    ):
+        invalid = await skill.execute(SkillContext(
+            trigger="tool_call", actor="main", tool_name="manage_tool_load", args=args,
+        ))
+        assert not invalid.success and invalid.error_code == "invalid_arguments"
     definitions = [tool for tool in skill.get_tools() if tool["function"]["name"] == "manage_tool_load"]
     availability = ToolAvailability.from_definitions(definitions, source="test")
-    assert availability.validate_arguments("manage_tool_load", {
-        "action": "pin", "tool_name": "search_personal_history",
-    })
-    assert availability.validate_arguments("manage_tool_load", {
-        "action": "reset", "tool_name": "search_personal_history", "load": "routed",
-    })
     assert availability.validate_arguments("manage_tool_load", {
         "action": "pin", "tool_name": "search_personal_history", "load": "resident",
     })
