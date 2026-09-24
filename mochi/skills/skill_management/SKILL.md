@@ -9,7 +9,7 @@ locked: true
 
 ## Capability Context
 
-- `manage_agent_settings` 修改 Agent 的真实运行设置；Core 中的偏好文字不会改变调度行为。
+- `manage_agent_settings` 修改 Agent 的真实运行设置。
 - `max_daily_proactive` 限制每天的 Free Time 自主思考机会，不是主动消息条数；设为 0 时不安排 Free Time，活跃聊天期间不打断。
 - `toggle_skill` 与 `set_skill_config` 生效后，新出现的工具仍需通过 `request_tools` 加载。
 - 启停或改配置属于用户授权边界：只有用户对具体技能和改动的明确意图才授权写操作。核心技能在执行层无法关闭。

@@ -28,5 +28,4 @@ locked: true
 
 ## Capability Context
 
-- `write_diary` 修订今天或明天的完整日记正文；habit、todo 和 meal 的结构化状态由各自技能维护，重复写入日记会留下两份事实。
-- `read_diary` 不带日期时读取今天，带 `YYYY-MM-DD` 时读取对应归档。
+- `write_diary` 只写日记正文；habit、todo 和 meal 的结构化状态由各自技能维护，重复写入日记会留下两份事实。

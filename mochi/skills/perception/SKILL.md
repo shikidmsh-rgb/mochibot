@@ -17,5 +17,5 @@ triggers: [tool_call]
 
 ## Capability Context
 
-- `look_around` 只读取 Observer 已有缓存的安全投影，不是摄像头、截图、GPS 或实时设备查看，也不会触发采集。
+- `look_around` 不是摄像头、截图、GPS 或实时设备查看，也不会触发采集。
 - 它只提供结构化事实，不会自动写入 Core、Memory Items、Diary、Todo 或 Reminder。

@@ -34,7 +34,7 @@ sense:
 
 ## Capability Context
 
-- `create` 持久化一个明确的 ISO 8601 时间，以及 notify 的通知内容或 self 的私有意图。schedule_self_reminder 直接创建 self，不需要先加载 manage_reminder。
+- schedule_self_reminder 直接创建 self，不需要先加载 manage_reminder。
 - `notify` 到点直接发送已存 message，不会再调用模型改写。
 - 每次触发只在预定时间后的 5 分钟内有效，过期作废、不补发；已过期的时间不会创建或更新成功。
 - remind_at 是首次触发时间，之后按 recurrence 周期继续，错过的次数不连续补发。
