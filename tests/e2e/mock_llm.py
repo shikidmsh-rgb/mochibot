@@ -40,6 +40,15 @@ class MockLLMProvider(LLMProvider):
         return "mock"
 
 
+def main_context(messages: list[dict]) -> str:
+    """System prompt plus this turn's read-only context, as Main sees them."""
+    return "\n\n".join(
+        m["content"] for m in messages
+        if m["role"] == "system"
+        or (isinstance(m.get("content"), str) and m["content"].startswith("<turn_context"))
+    )
+
+
 def make_tool_call(name: str, arguments: dict, call_id: str | None = None) -> ToolCallDict:
     """Create a ToolCallDict for scripting LLM tool-call responses."""
     return {

@@ -9,7 +9,7 @@ from mochi.transport import IncomingMessage
 from mochi.ai_client import chat
 from mochi.db import get_recent_tool_executions, save_message
 from mochi.main_runtime import MainRuntimeEntry
-from tests.e2e.mock_llm import make_response, make_tool_call
+from tests.e2e.mock_llm import main_context, make_response, make_tool_call
 
 
 def _msg(text: str, user_id: int = 1, channel_id: int = 100) -> IncomingMessage:
@@ -134,20 +134,27 @@ class TestSimpleReply:
     async def test_simple_reply(self, mock_llm_factory):
         save_message(1, "user", "Earlier message")
         save_message(1, "assistant", "Earlier reply")
-        mock = mock_llm_factory([make_response("Hello there!")])
+        mock = mock_llm_factory([make_response("Hello there!"), make_response("Again!")])
 
-        await chat(_msg("Hi"))
+        (await chat(_msg("Hi"))).confirm_delivered(final=True)
+        await chat(_msg("Again"))
 
-        assert len(mock.call_log) == 1
-        messages = mock.call_log[0]["messages"]
-        assert messages[1:] == [
+        first, second = (call["messages"] for call in mock.call_log)
+        assert first[1:3] == [
             {"role": "user", "content": "Earlier message"},
             {"role": "assistant", "content": "Earlier reply"},
-            {"role": "user", "content": "Hi"},
         ]
-        system = messages[0]["content"]
-        assert "1. user:" in system and "2. assistant:" in system and "3. user:" in system
-        assert "{{history_timestamps}}" not in system
+        assert first[-1] == {"role": "user", "content": "Hi"}
+        assert second[-1] == {"role": "user", "content": "Again"}
+        # The cacheable prefix (system + earlier history) is identical across turns.
+        assert second[0] == first[0]
+        assert second[1:4] == first[1:3] + [first[-1]]
+        assert [m["role"] for m in second[4:]] == ["assistant", "user", "user"]
+        turn_context = second[-2]["content"]
+        assert turn_context.startswith("<turn_context")
+        assert "4. assistant:" in turn_context and "5. user:" in turn_context
+        assert "{{history_timestamps}}" not in turn_context
+        assert "1. user:" not in first[0]["content"]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("provider_fails", [False, True])
@@ -727,7 +734,7 @@ class TestToolCallReminder:
         await chat(_msg(followup))
 
         followup_messages = mock.call_log[3]["messages"]
-        system_prompt = followup_messages[0]["content"]
+        system_prompt = main_context(followup_messages)
         assert "Reminder #" in system_prompt
         assert "Submit report" in system_prompt
         assert all(message["role"] != "tool" for message in followup_messages)

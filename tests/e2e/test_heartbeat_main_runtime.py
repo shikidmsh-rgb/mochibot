@@ -11,7 +11,7 @@ from mochi.db import _connect, get_recent_messages, save_message
 from mochi.heartbeat_runtime import ensure_daily_free_time_plan
 from mochi.main_runtime import DurableChatResult, MainRuntimeEntry
 from mochi.transport import DeliveryError, IncomingMessage
-from tests.e2e.mock_llm import make_response, make_tool_call
+from tests.e2e.mock_llm import main_context, make_response, make_tool_call
 
 
 def _schedule_due(now):
@@ -129,7 +129,7 @@ async def test_main_sees_delivered_autonomous_history_only(
     assert delivered_messages[0]["role"] == "assistant"
     assert delivered_messages[0]["content"] == "ALREADY_SAID_GOODNIGHT"
     history_index = messages.index(delivered_messages[0])
-    assert f"{history_index}. assistant: " in messages[0]["content"]
+    assert f"{history_index}. assistant: " in main_context(messages)
     assert not any(
         value in message.get("content", "")
         for message in messages for value in ("UNSENT_DRAFT", "OTHER_USER")
@@ -174,7 +174,7 @@ async def test_silent_reminder_creation_is_visible_in_the_next_main_entry(
             run_key=f"{next_kind}:second", wake_reason="periodic",
         ))
 
-    prompt = mock.call_log[3]["messages"][0]["content"]
+    prompt = main_context(mock.call_log[3]["messages"])
     assert '"tool":"manage_reminder"' in prompt
     assert '"source":"runtime:free_time"' in prompt
     assert "BEDTIME_ALREADY_SCHEDULED" in prompt

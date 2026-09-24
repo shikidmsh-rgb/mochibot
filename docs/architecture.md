@@ -101,9 +101,16 @@ Main's recent conversation includes bounded, timestamped standalone assistant
 messages only after confirmed delivery, alongside complete ordinary turns.
 These messages do not become user turns or enter Lite summary/extraction batches.
 User isolation and conversation resets apply to both kinds of history.
-Absolute message times are supplied as a separate, ordered system-context table.
+Absolute message times are supplied as a separate, ordered context table.
 User and assistant message bodies remain unchanged; framework metadata is never
 prepended to speech, where it could become a self-reinforcing reply pattern.
+
+For owner message turns, the system prompt holds only cross-turn stable content
+(Core, Agent contract, capability guides). Per-turn facts — the history time
+table, today, summary, recent operations, recalled memory, habit snapshot and
+current time — travel as one read-only `turn_context` message just before the
+current input and are never persisted, so providers can reuse the system +
+history prefix across turns. Runtime entries keep that context in system.
 
 Automatic recall searches the current sentence and a bounded recent completed
 conversation independently, prioritizing the current topic and deduplicating

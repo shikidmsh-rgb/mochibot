@@ -463,24 +463,30 @@ def _fill_agent_section(agent: str, name: str, value: str) -> str:
     )
 
 
-def _build_system_prompt(user_id: int, capability_context: str = "",
-                         requestable_tools: str = "",
-                         tool_names: list[str] | None = None,
-                         core_memory: str = "",
-                         habits: list[dict] | None = None,
-                         transport: str = "",
-                         recalled_memories: list[dict] | None = None,
-                         diary_status: str = "",
-                         diary_journal: str = "",
-                         diary_tomorrow: str = "",
-                         conv_summary: str = "",
-                         recent_operations: str = "",
-                         runtime_entry: MainRuntimeEntry | None = None,
-                         weekly_context: str = "",
-                         policy: ContextPolicy | None = None,
-                         habit_progress_context: str = "",
-                         history_timestamps: str = "") -> str:
-    """Assemble explicit identity, situation, capability, and live-context zones."""
+def _build_system_prompt(user_id: int, **kwargs) -> str:
+    """Single system prompt for entries that keep per-turn context in system."""
+    stable, turn_context = _build_prompt_zones(user_id, **kwargs)
+    return "\n\n".join(part for part in (stable, turn_context) if part)
+
+
+def _build_prompt_zones(user_id: int, capability_context: str = "",
+                        requestable_tools: str = "",
+                        tool_names: list[str] | None = None,
+                        core_memory: str = "",
+                        habits: list[dict] | None = None,
+                        transport: str = "",
+                        recalled_memories: list[dict] | None = None,
+                        diary_status: str = "",
+                        diary_journal: str = "",
+                        diary_tomorrow: str = "",
+                        conv_summary: str = "",
+                        recent_operations: str = "",
+                        runtime_entry: MainRuntimeEntry | None = None,
+                        weekly_context: str = "",
+                        policy: ContextPolicy | None = None,
+                        habit_progress_context: str = "",
+                        history_timestamps: str = "") -> tuple[str, str]:
+    """Return the cross-turn stable prompt and this turn's live context."""
 
     modules = get_system_chat_modules()
     from mochi.config import TZ
@@ -516,8 +522,9 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
         early_runtime_situation.append(protocol)
 
     capability_parts = []
+    dynamic_live_context = []
     if habit_progress_context:
-        capability_parts.append(
+        dynamic_live_context.append(
             f"## 本轮习惯进度快照（只读事实）\n{habit_progress_context}"
         )
     elif tool_names and habits:
@@ -541,7 +548,6 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
         if bubble_inst:
             capability_parts.append(bubble_inst)
 
-    dynamic_live_context = []
     if history_timestamps and not is_weekly and policy.recent_history:
         hist_ts_inst = get_prompt("system_chat/_history_timestamp")
         if hist_ts_inst:
@@ -629,16 +635,9 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
         except (ValueError, TypeError):
             pass
 
-    parts = (
-        stable_identity
-        + early_runtime_situation
-        + capability_parts
-        + dynamic_live_context
-        + [f"当前时间：{now_str}"]
-    )
-    if not parts:
-        raise RuntimeError("System prompt is empty — check prompts/ directory and prompt_loader")
-    return "\n\n".join(parts)
+    stable = stable_identity + early_runtime_situation + capability_parts
+    turn_context = dynamic_live_context + [f"当前时间：{now_str}"]
+    return "\n\n".join(stable), "\n\n".join(turn_context)
 
 
 async def chat(
@@ -1056,7 +1055,7 @@ async def chat(
     if weekly_session:
         weekly_session.expected_core = core_memory
 
-    system_prompt = _build_system_prompt(
+    system_prompt, turn_context = _build_prompt_zones(
         user_id, capability_context=capability_context,
         requestable_tools=requestable_tools, tool_names=active_tool_names,
         core_memory=core_memory, habits=habits, transport=transport,
@@ -1072,6 +1071,11 @@ async def chat(
         habit_progress_context=habit_progress_context,
         history_timestamps=_format_history_timestamps(history),
     )
+    # User turns keep the system prompt stable so providers can reuse the
+    # system + history prefix; runtime entries keep everything in system.
+    split_turn_context = message is not None and runtime_entry is None
+    if not split_turn_context:
+        system_prompt = f"{system_prompt}\n\n{turn_context}"
 
     # Build messages array
     messages = [{"role": "system", "content": system_prompt}]
@@ -1085,6 +1089,19 @@ async def chat(
             messages, stored_text,
             await asyncio.to_thread(_file_content, text, attachment),
         )
+    if split_turn_context:
+        current_index = (
+            len(messages) - 1 if messages[-1].get("role") == "user"
+            else len(messages)
+        )
+        messages.insert(current_index, {
+            "role": "user",
+            "content": (
+                '<turn_context source="runtime" role="read_only_context">\n'
+                f"{turn_context}\n"
+                "</turn_context>"
+            ),
+        })
 
     # ── LLM call with tool loop ──
     max_tool_rounds = TOOL_LOOP_MAX_ROUNDS
