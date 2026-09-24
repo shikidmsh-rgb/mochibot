@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 
 import mochi.skills as skill_registry
@@ -12,6 +13,10 @@ from mochi.tool_policy import filter_tools
 _SKILLOFF_BASE_TOOLS = ("update_core", "manage_agent_settings")
 _SKILLOFF_TELEGRAM_TOOLS = ("send_sticker",)
 MAX_ROUTED_SKILLS = 2
+
+# Owner chat toolbox kept in memory: {user_id: (turn_started, reset_at, names)}.
+# A restart or conversation reset simply starts a new toolbox.
+_session_toolboxes: dict[int, tuple[float, str | None, tuple[str, ...]]] = {}
 
 
 @dataclass(frozen=True)
@@ -119,3 +124,69 @@ def build_router_catalog(transport: str = "") -> dict[str, str]:
         for name, skill in skill_registry.all_skills().items()
         if name in routed_skills
     }
+
+
+def _tool_name(definition: dict) -> str:
+    return definition["function"]["name"]
+
+
+def compose_chat_tools(
+    user_id: int,
+    resident: list[dict] | tuple[dict, ...],
+    routed: list[dict],
+    *,
+    transport: str = "",
+    excluded_skills: frozenset[str] = frozenset(),
+) -> list[dict]:
+    """Order owner-chat tools as resident, carried session tools, then new ones.
+
+    Tools stay in the same order while the conversation continues, and the
+    whole toolbox is revalidated against the live registry every turn.
+    """
+    from mochi.config import TOOL_SESSION_IDLE_MINUTES, TOOL_SESSION_MAX_EXTRA_TOOLS
+    from mochi.db import get_context_reset
+
+    reset_at = get_context_reset(user_id)
+    carried_names: tuple[str, ...] = ()
+    record = _session_toolboxes.get(user_id)
+    if (
+        record is not None
+        and time.monotonic() - record[0] <= TOOL_SESSION_IDLE_MINUTES * 60
+        and record[1] == reset_at
+    ):
+        carried_names = record[2]
+
+    seen = {_tool_name(tool) for tool in resident}
+    carried: list[dict] = []
+    for tool in skill_registry.get_tools_by_tool_names(
+        carried_names, transport=transport,
+    ):
+        name = _tool_name(tool)
+        if name in seen or skill_registry.get_tool_skill(name) in excluded_skills:
+            continue
+        seen.add(name)
+        carried.append(tool)
+    new = [tool for tool in routed if _tool_name(tool) not in seen]
+    if len(carried) + len(new) > TOOL_SESSION_MAX_EXTRA_TOOLS:
+        resident_names = {_tool_name(tool) for tool in resident}
+        carried = []
+        new = [tool for tool in routed if _tool_name(tool) not in resident_names]
+
+    extras = [*carried, *new]
+    _session_toolboxes[user_id] = (
+        time.monotonic(), reset_at, tuple(_tool_name(tool) for tool in extras),
+    )
+    return [*resident, *extras]
+
+
+def extend_session_tools(user_id: int, definitions: list[dict]) -> None:
+    """Keep tools loaded mid-turn available to the rest of the chat session."""
+    record = _session_toolboxes.get(user_id)
+    if record is None or not definitions:
+        return
+    started, reset_at, names = record
+    added = tuple(
+        name for name in (_tool_name(tool) for tool in definitions)
+        if name not in names
+    )
+    _session_toolboxes[user_id] = (started, reset_at, names + added)

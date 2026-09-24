@@ -66,6 +66,13 @@ class ImageAttachment:
         return f"data:{self.media_type};base64,{encoded}"
 
 
+@dataclass(frozen=True)
+class FileAttachment:
+    """An in-memory file the owner sent for the current turn."""
+    name: str
+    data: bytes = field(repr=False)
+
+
 @dataclass
 class IncomingMessage:
     """A message received from any transport."""
@@ -76,6 +83,7 @@ class IncomingMessage:
     raw: dict | None = None  # transport-specific raw data
     owner_authorized: bool = False
     image: ImageAttachment | None = field(default=None, repr=False)
+    file: FileAttachment | None = field(default=None, repr=False)
     runtime_entry: "MainRuntimeEntry | None" = field(default=None, repr=False)
     # Optional callback fired during tool execution (set by transport layer).
     # Signature: async def on_interim(text=None, *, tool_name=None) -> None

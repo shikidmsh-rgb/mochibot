@@ -18,5 +18,8 @@ cryptography>=42.0.0
 # Native vector search (used by memory auto-recall)
 sqlite-vec>=0.1.6
 
+# Reading PDF files the owner sends
+pypdf>=5.0
+
 # WeChat transport (iLink API) — required by current bootstrap even if Telegram-only
 aiohttp>=3.9

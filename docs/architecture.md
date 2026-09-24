@@ -205,6 +205,16 @@ controls only whether the owner may disable a skill. Concrete deny rules, rate
 limits, state-change facts, recoverability, and receipts remain execution
 contracts rather than an abstract risk taxonomy.
 
+The Lite pre-router is a bounded optimization: after a short timeout Main
+answers without routed tools and can still use `request_tools`. Ordinary owner
+chat keeps an in-memory session toolbox: non-resident tools visible in the
+previous turn, including those loaded by `request_tools`, stay loaded while
+messages continue within the idle window. The order is resident, carried, then
+newly routed, so follow-ups keep their tools and the provider schema stays
+stable. Every turn revalidates carried tools against the live registry and
+policy; idle expiry, a conversation reset, restart, or an oversized toolbox
+starts over. Runtime entries never carry chat tools.
+
 After live extension activation, in-flight calls finish on their existing
 immutable code snapshot. Subsequent provider rounds refresh tools already
 authorized for the turn; newly added names still require `request_tools`.

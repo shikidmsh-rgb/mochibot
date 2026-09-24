@@ -176,9 +176,22 @@ async def classify_skills(message: str, user_id: int | None = None,
 
     LLM classification only. Returns empty list for pure-chat messages.
     Resident tools and request_tools escalation are computed by the turn policy.
+    Routing is optional, so a slow Lite call must not hold up Main's reply.
     """
-    skills = await classify_skills_llm(message, user_id=user_id, habits=habits,
-                                       transport=transport, catalog=catalog)
+    from mochi import config
+
+    try:
+        skills = await asyncio.wait_for(
+            classify_skills_llm(message, user_id=user_id, habits=habits,
+                                transport=transport, catalog=catalog),
+            timeout=config.TOOL_ROUTER_TIMEOUT_S,
+        )
+    except TimeoutError:
+        log.warning(
+            "Router timed out after %.1fs; continuing without routed skills",
+            config.TOOL_ROUTER_TIMEOUT_S,
+        )
+        return []
     if skills is not None and len(skills) > 0:
         return skills
     return []

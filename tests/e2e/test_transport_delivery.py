@@ -153,7 +153,7 @@ async def test_wechat_image_download_does_not_send_bot_token_or_follow_redirects
 @pytest.mark.parametrize("encrypted", [False, True])
 @pytest.mark.parametrize("extra", [0, 1])
 async def test_wechat_image_size_limit_includes_stream_and_decrypted_bytes(encrypted, extra):
-    from mochi.transport.weixin import _ImageTooLargeError
+    from mochi.transport.weixin import _MediaTooLargeError
 
     data = b"\xff\xd8\xff" + b"x" * (MAX_IMAGE_BYTES - 3 + extra)
     item = {"media": {"encrypt_query_param": "opaque"}}
@@ -166,7 +166,7 @@ async def test_wechat_image_size_limit_includes_stream_and_decrypted_bytes(encry
     transport = WeixinTransport()
     transport._session = _image_session(payload)
     if extra:
-        with pytest.raises(_ImageTooLargeError):
+        with pytest.raises(_MediaTooLargeError):
             await transport._download_image(item)
     else:
         image = await transport._download_image(item)
@@ -260,7 +260,7 @@ async def test_wechat_image_failure_is_reported_without_text_only_main_call(
     }
     for failure, expected in [
         (TimeoutError("private-cdn-url"), "图片下载或解析失败"),
-        (weixin._ImageTooLargeError(), "5 MB"),
+        (weixin._MediaTooLargeError(), "5 MB"),
     ]:
         transport._download_image.side_effect = failure
         await transport._handle_message(message)
@@ -555,3 +555,55 @@ async def test_update_result_acknowledges_only_confirmed_delivery(monkeypatch, d
         ).fetchone()[0]
         conn.close()
         assert processed == 1
+
+
+@pytest.mark.asyncio
+async def test_wechat_file_reaches_main_or_reports_download_failure(wechat_image_transport):
+    import mochi.transport.weixin as weixin
+    from mochi.transport import FileAttachment
+
+    transport = wechat_image_transport
+    attachment = FileAttachment(name="plan.pdf", data=b"%PDF-")
+    transport._download_file = AsyncMock(return_value=attachment)
+    file_item = {"file_name": "plan.pdf", "media": {"encrypt_query_param": "q"}}
+    message = {
+        "from_user_id": "owner", "context_token": "test-token",
+        "item_list": [{"type": 4, "file_item": file_item}],
+    }
+    await transport._handle_message(message)
+    transport._download_file.assert_awaited_once_with(file_item)
+    incoming = weixin._on_message_callback.call_args.args[0]
+    assert incoming.file == attachment
+    assert incoming.text == "用户发来文件「plan.pdf」。"
+    assert transport._owner_weixin_id == "owner"
+    transport._send_text.assert_not_called()
+
+    weixin._on_message_callback.reset_mock()
+    for failure, expected in [
+        (TimeoutError(), "文件下载失败"),
+        (weixin._MediaTooLargeError(), "20 MB"),
+    ]:
+        transport._download_file.side_effect = failure
+        await transport._handle_message(message)
+        assert expected in transport._send_text.call_args.args[1]
+    weixin._on_message_callback.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_wechat_file_download_keeps_name_single_line_and_enforces_limit(monkeypatch):
+    import mochi.transport.weixin as weixin
+
+    key = bytes(range(16))
+    transport = WeixinTransport()
+    transport._session = _image_session(_encrypt_image(b"hello", key))
+    attachment = await transport._download_file({
+        "file_name": "a\nb.txt",
+        "media": {"encrypt_query_param": "q", "aes_key": base64.b64encode(key.hex().encode()).decode()},
+    })
+    assert attachment.name == "a b.txt"
+    assert attachment.data == b"hello"
+
+    monkeypatch.setattr(weixin, "_MAX_FILE_BYTES", 4)
+    transport._session = _image_session(b"hello")
+    with pytest.raises(weixin._MediaTooLargeError):
+        await transport._download_file({"media": {"encrypt_query_param": "q"}})

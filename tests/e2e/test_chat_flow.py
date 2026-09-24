@@ -52,7 +52,7 @@ def test_history_dates_both_speakers_without_changing_stored_content(monkeypatch
 
 
 def test_current_image_preserves_history_time_indices():
-    from mochi.ai_client import _expand_history, _replace_current_user_with_image
+    from mochi.ai_client import _expand_history, _image_content, _replace_current_user_content
     from mochi.transport import ImageAttachment
 
     history = [
@@ -61,7 +61,7 @@ def test_current_image_preserves_history_time_indices():
     ]
     messages = [{"role": "system", "content": "Context"}, *_expand_history(history)]
     image = ImageAttachment(data=b"image")
-    _replace_current_user_with_image(messages, "[图片] Hello", "Hello", image)
+    _replace_current_user_content(messages, "[图片] Hello", _image_content("Hello", image))
     assert len(messages) == 3
     assert messages[1] == history[0]
     assert messages[2] == {
@@ -97,6 +97,34 @@ async def test_image_goes_to_main_but_not_persistent_history(mock_llm_factory):
     assert stored[-1]["content"] == "[图片] 用户发来一张图片。"
     assert not stored[-1].get("image_data")
     assert message.image.data_url() not in json.dumps(stored)
+
+
+@pytest.mark.asyncio
+async def test_file_text_goes_to_main_but_not_persistent_history(mock_llm_factory):
+    from mochi.db import get_recent_messages
+    from mochi.transport import FileAttachment
+
+    mock = mock_llm_factory([make_response("Read it."), make_response("Hmm.")])
+    message = IncomingMessage(
+        user_id=1, channel_id=1, transport="wechat", owner_authorized=True,
+        text="用户发来文件「plan.txt」。",
+        file=FileAttachment(name="plan.txt", data="周末去爬山".encode()),
+    )
+    await chat(message)
+    assert mock.call_log[0]["messages"][-1]["content"] == (
+        "用户发来文件「plan.txt」。\n\n以下是文件「plan.txt」中的文字：\n周末去爬山"
+    )
+    stored = get_recent_messages(1)
+    assert stored[-1]["content"] == "[文件] 用户发来文件「plan.txt」。"
+    assert "周末去爬山" not in json.dumps(stored)
+
+    await chat(IncomingMessage(
+        user_id=1, channel_id=1, transport="wechat", owner_authorized=True,
+        text="用户发来文件「a.zip」。", file=FileAttachment(name="a.zip", data=b"PK\x00\x00"),
+    ))
+    assert mock.call_log[1]["messages"][-1]["content"].endswith(
+        "（这个文件的格式暂时读不了，只知道文件名。）"
+    )
 
 
 class TestSimpleReply:
@@ -187,6 +215,61 @@ class TestSimpleReply:
         assert [text.count(marker) for text in contexts] == [0, 1, 1]
         assert "0/3" in contexts[1]
         assert "daily:3" not in contexts[1]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("expiry", [None, "idle", "reset"])
+    async def test_chat_session_carries_loaded_tools_in_stable_order(
+        self, mock_llm_factory, monkeypatch, expiry,
+    ):
+        import mochi.config as config
+        import mochi.heartbeat as heartbeat
+        import mochi.turn_tool_policy as turn_tool_policy
+        from mochi.db import set_context_reset
+
+        monkeypatch.setattr(config, "TOOL_ESCALATION_ENABLED", True)
+        monkeypatch.setattr(heartbeat, "bedtime_tool_available", lambda: False)
+        mock = mock_llm_factory([
+            make_response(tool_calls=[
+                make_tool_call("request_tools", {"skills": ["habit"]}),
+            ]),
+            make_response("Loaded."),
+            make_response("Follow-up."),
+        ])
+        await chat(_msg("Check my habits."))
+        if expiry == "idle":
+            started, reset_at, names = turn_tool_policy._session_toolboxes[1]
+            turn_tool_policy._session_toolboxes[1] = (
+                started - config.TOOL_SESSION_IDLE_MINUTES * 60 - 1,
+                reset_at, names,
+            )
+        elif expiry == "reset":
+            set_context_reset(1)
+        await chat(_msg("And the second one?"))
+
+        def tool_names(call):
+            return [tool["function"]["name"] for tool in call["tools"]]
+
+        if expiry is None:
+            assert tool_names(mock.call_log[2]) == tool_names(mock.call_log[1])
+            assert "habit_progress" in tool_names(mock.call_log[2])
+        else:
+            assert "habit_progress" not in tool_names(mock.call_log[2])
+
+    @pytest.mark.asyncio
+    async def test_slow_router_does_not_hold_main(self, monkeypatch):
+        import asyncio
+        import mochi.config as config
+        import mochi.tool_router as tool_router
+
+        async def slow_router(*_args, **_kwargs):
+            await asyncio.sleep(1)
+            return ["weather"]
+
+        monkeypatch.setattr(tool_router, "classify_skills_llm", slow_router)
+        monkeypatch.setattr(config, "TOOL_ROUTER_TIMEOUT_S", 0.01)
+        assert await tool_router.classify_skills(
+            "weather?", catalog={"weather": "Weather"},
+        ) == []
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("provider_fails", [False, True])

@@ -48,7 +48,8 @@ from mochi.tool_availability import (
 )
 from mochi.bedtime_tool import ENTER_BEDTIME_DEF, ENTER_BEDTIME_TOOL_NAME
 import mochi.skills as skill_registry
-from mochi.transport import DeliveryError, IncomingMessage, ImageAttachment
+from mochi.file_text import MAX_FILE_TEXT_CHARS, extract_file_text
+from mochi.transport import DeliveryError, FileAttachment, IncomingMessage, ImageAttachment
 
 log = logging.getLogger(__name__)
 
@@ -82,11 +83,10 @@ def _image_content(text: str, image: ImageAttachment) -> list[dict]:
     ]
 
 
-def _replace_current_user_with_image(
-    messages: list[dict], stored_text: str, text: str, image: ImageAttachment,
+def _replace_current_user_content(
+    messages: list[dict], stored_text: str, content: str | list[dict],
 ) -> None:
-    """Attach an image to the just-saved user turn without persisting bytes."""
-    content = _image_content(text, image)
+    """Attach ephemeral input to the just-saved user turn without persisting it."""
     if messages:
         message = messages[-1]
         existing = message.get("content")
@@ -97,6 +97,23 @@ def _replace_current_user_with_image(
             return
     # Defensive fallback for tests or custom DB adapters that omit the new row.
     messages.append({"role": "user", "content": content})
+
+
+_FILE_TEXT_NOTES = {
+    "unsupported": "（这个文件的格式暂时读不了，只知道文件名。）",
+    "no_text": "（没有从文件中读到文字，可能是扫描件或图片。）",
+    "unreadable": "（文件损坏或已加密，读不了里面的内容。）",
+}
+
+
+def _file_content(text: str, attachment: FileAttachment) -> str:
+    extracted = extract_file_text(attachment.name, attachment.data)
+    if extracted.status != "ok":
+        return f"{text}\n\n{_FILE_TEXT_NOTES[extracted.status]}"
+    content = f"{text}\n\n以下是文件「{attachment.name}」中的文字：\n{extracted.text}"
+    if extracted.truncated:
+        content += f"\n\n（文件较长，以上只包含前 {MAX_FILE_TEXT_CHARS} 字。）"
+    return content
 
 # ── Auto-recall state (per-user cooldown) ──
 _user_last_recall: dict[int, tuple[float, str]] = {}
@@ -674,6 +691,7 @@ async def chat(
         else runtime_entry.intent or ""
     )
     image = message.image if message is not None else None
+    attachment = message.file if message is not None else None
     is_bedtime = bool(runtime_entry and runtime_entry.kind == "bedtime")
     is_self_reminder = bool(
         runtime_entry and runtime_entry.kind == "self_reminder"
@@ -727,8 +745,10 @@ async def chat(
             emoji = sticker_data.get("emoji", "")
             text = f"[用户发了一个贴纸 {emoji}]" + (f" {text}" if text else "")
 
-    # Keep image bytes ephemeral. History only records a readable placeholder.
-    stored_text = f"[图片] {text}" if image else text
+    # Keep attachment bytes ephemeral. History only records a readable placeholder.
+    stored_text = (
+        f"[图片] {text}" if image else f"[文件] {text}" if attachment else text
+    )
     if message is not None:
         save_message(user_id, "user", stored_text, turn_id=turn_id)
 
@@ -788,9 +808,14 @@ async def chat(
 
     # ── Skill mode: /skilloff skips router + non-core tools ──
     from mochi.db import get_skill_mode
-    from mochi.turn_tool_policy import build_turn_tool_plan
+    from mochi.turn_tool_policy import (
+        build_turn_tool_plan, compose_chat_tools, extend_session_tools,
+    )
     skill_mode_off = get_skill_mode() == "off"
     turn_plan = build_turn_tool_plan(transport)
+    tracks_tool_session = (
+        message is not None and runtime_entry is None and not skill_mode_off
+    )
     from mochi.tool_policy import filter_tools
     image_generation_available = bool(
         message is not None
@@ -899,14 +924,26 @@ async def chat(
         if should_warn_user("lite"):
             _health_warning = get_warning_message("lite")
 
-        tools = list(turn_plan.resident_definitions)
-        tools = skill_registry.get_tools_by_names(
-            skill_names, transport=transport, loads={"routed"},
-        ) + tools
+        tools = compose_chat_tools(
+            user_id,
+            turn_plan.resident_definitions,
+            skill_registry.get_tools_by_names(
+                skill_names, transport=transport, loads={"routed"},
+            ),
+            transport=transport,
+            excluded_skills=excluded_skills,
+        )
     else:
         # No explicit Lite assignment means no semantic pre-router. Main still
         # receives resident tools and request_tools when enabled.
-        tools = list(turn_plan.resident_definitions)
+        tools = (
+            compose_chat_tools(
+                user_id, turn_plan.resident_definitions, [],
+                transport=transport, excluded_skills=excluded_skills,
+            )
+            if tracks_tool_session
+            else list(turn_plan.resident_definitions)
+        )
         core_memory, conversation_context, recalled_memories = await asyncio.gather(
             asyncio.to_thread(read_core),
             _safe_conversation_context(),
@@ -1040,9 +1077,14 @@ async def chat(
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(_expand_history(history))
     if image:
-        _replace_current_user_with_image(messages, stored_text, text, image)
+        _replace_current_user_content(messages, stored_text, _image_content(text, image))
         # Image understanding belongs to the configured Main model.
         tier = "main"
+    elif attachment:
+        _replace_current_user_content(
+            messages, stored_text,
+            await asyncio.to_thread(_file_content, text, attachment),
+        )
 
     # ── LLM call with tool loop ──
     max_tool_rounds = TOOL_LOOP_MAX_ROUNDS
@@ -1401,6 +1443,8 @@ async def chat(
                 next_availability = next_availability.with_definitions(
                     additions, source=f"request_round_{round_num + 1}",
                 )
+                if tracks_tool_session:
+                    extend_session_tools(user_id, additions)
                 result_text = json.dumps(request_result, ensure_ascii=False)
                 messages.append({
                     "role": "tool",

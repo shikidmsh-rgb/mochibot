@@ -24,6 +24,12 @@ def isolated_diary(tmp_path, monkeypatch):
     monkeypatch.setattr(diary, "path", tmp_path / "diary.md")
 
 
+@pytest.fixture(autouse=True)
+def isolated_tool_sessions(monkeypatch):
+    import mochi.turn_tool_policy as turn_tool_policy
+    monkeypatch.setattr(turn_tool_policy, "_session_toolboxes", {})
+
+
 @pytest.fixture
 def extension_state(tmp_path, monkeypatch):
     from mochi.extensions import store

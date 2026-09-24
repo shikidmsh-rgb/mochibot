@@ -19,8 +19,8 @@ from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from mochi.transport import (
-    DeliveryError, Transport, IncomingMessage, ImageAttachment, MAX_IMAGE_BYTES,
-    ensure_delivery_allowed,
+    DeliveryError, Transport, IncomingMessage, FileAttachment, ImageAttachment,
+    MAX_IMAGE_BYTES, ensure_delivery_allowed,
 )
 from mochi.transport.utils import clean_reply_markers, split_bubbles, split_text
 from mochi.config import (
@@ -48,13 +48,16 @@ _CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c"
 _ITEM_TEXT = 1
 _ITEM_IMAGE = 2
 _ITEM_VOICE = 3
+_ITEM_FILE = 4
+
+_MAX_FILE_BYTES = 20 * 1024 * 1024
 
 # WeChat message_type field
 _MSG_TYPE_USER = 1
 _MSG_TYPE_BOT = 2
 
 
-class _ImageTooLargeError(ValueError):
+class _MediaTooLargeError(ValueError):
     pass
 
 
@@ -67,7 +70,7 @@ def _validate_cdn_url(url: str) -> None:
         or parsed.username is not None
         or parsed.password is not None
     ):
-        raise ValueError("Image URL is not a WeChat HTTPS CDN URL")
+        raise ValueError("Media URL is not a WeChat HTTPS CDN URL")
 
 
 # ── Module-level callback (same pattern as telegram.py) ──────────────────────
@@ -579,44 +582,44 @@ class WeixinTransport(Transport):
 
     # ── Message handling ─────────────────────────────────────────────────
 
-    async def _download_image(self, image_item: dict) -> ImageAttachment:
+    async def _download_media(self, item: dict, limit: int) -> bytes:
         import aiohttp
 
-        media = image_item.get("media") or {}
+        media = item.get("media") or {}
         query = media.get("encrypt_query_param")
         url = media.get("full_url")
         if not url:
             if not query:
-                raise ValueError("Image has no CDN reference")
+                raise ValueError("Media has no CDN reference")
             url = f"{_CDN_BASE_URL}/download?{urlencode({'encrypted_query_param': query})}"
         _validate_cdn_url(url)
 
         key = None
-        if image_item.get("aeskey"):
-            key = bytes.fromhex(image_item["aeskey"])
+        if item.get("aeskey"):
+            key = bytes.fromhex(item["aeskey"])
         elif media.get("aes_key"):
             key = base64.b64decode(media["aes_key"], validate=True)
             if len(key) == 32:
                 key = bytes.fromhex(key.decode("ascii"))
         if key is not None and len(key) != 16:
-            raise ValueError("Invalid image AES-128 key")
+            raise ValueError("Invalid media AES-128 key")
 
         if self._session is None:
             raise ValueError("WeChat session is not ready")
         # PKCS7 adds up to one AES block to the plaintext size.
-        limit = MAX_IMAGE_BYTES + (16 if key is not None else 0)
+        stream_limit = limit + (16 if key is not None else 0)
         async with self._session.get(
-            url, timeout=aiohttp.ClientTimeout(total=30), allow_redirects=False,
+            url, timeout=aiohttp.ClientTimeout(total=60), allow_redirects=False,
         ) as response:
             if response.status != 200:
-                raise ValueError(f"Image CDN returned HTTP {response.status}")
-            if response.content_length is not None and response.content_length > limit:
-                raise _ImageTooLargeError()
+                raise ValueError(f"Media CDN returned HTTP {response.status}")
+            if response.content_length is not None and response.content_length > stream_limit:
+                raise _MediaTooLargeError()
             data = bytearray()
             async for chunk in response.content.iter_chunked(64 * 1024):
                 data.extend(chunk)
-                if len(data) > limit:
-                    raise _ImageTooLargeError()
+                if len(data) > stream_limit:
+                    raise _MediaTooLargeError()
 
         plaintext = bytes(data)
         if key is not None:
@@ -624,9 +627,20 @@ class WeixinTransport(Transport):
             padded = decryptor.update(plaintext) + decryptor.finalize()
             unpadder = padding.PKCS7(128).unpadder()
             plaintext = unpadder.update(padded) + unpadder.finalize()
-        if len(plaintext) > MAX_IMAGE_BYTES:
-            raise _ImageTooLargeError()
-        return ImageAttachment.from_bytes(plaintext)
+        if len(plaintext) > limit:
+            raise _MediaTooLargeError()
+        return plaintext
+
+    async def _download_image(self, image_item: dict) -> ImageAttachment:
+        return ImageAttachment.from_bytes(
+            await self._download_media(image_item, MAX_IMAGE_BYTES),
+        )
+
+    async def _download_file(self, file_item: dict) -> FileAttachment:
+        name = " ".join(str(file_item.get("file_name") or "未命名文件").split())[:200]
+        return FileAttachment(
+            name=name, data=await self._download_media(file_item, _MAX_FILE_BYTES),
+        )
 
     async def _handle_message(self, msg: dict) -> None:
         """Process one inbound WeChat message."""
@@ -649,8 +663,9 @@ class WeixinTransport(Transport):
         items = msg.get("item_list", [])
         text = _extract_text(items)
         images = [item for item in items if item.get("type") == _ITEM_IMAGE]
+        files = [item for item in items if item.get("type") == _ITEM_FILE]
         # Learn the owner's WeChat ID from the first allowed message
-        if self._owner_weixin_id is None and (text or images):
+        if self._owner_weixin_id is None and (text or images or files):
             self._owner_weixin_id = from_user
             log.info("WeChat: owner ID learned: %s", from_user)
             from mochi.db import set_skill_config
@@ -662,11 +677,12 @@ class WeixinTransport(Transport):
             and isinstance(context_token, str) and context_token
         ):
             self._remember_context_token(from_user, context_token)
-        if not text and not images:
+        if not text and not images and not files:
             log.info("WeChat: non-text message from %s, skipping", from_user)
             return
 
         image = None
+        attachment = None
         if images:
             error_text = ""
             if len(images) > 1:
@@ -674,7 +690,7 @@ class WeixinTransport(Transport):
             else:
                 try:
                     image = await self._download_image(images[0].get("image_item") or {})
-                except _ImageTooLargeError:
+                except _MediaTooLargeError:
                     log.warning("WeChat: image exceeds size limit")
                     error_text = "图片太大了，请发送 5 MB 以内的图片。"
                 except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
@@ -684,8 +700,22 @@ class WeixinTransport(Transport):
                 await self._send_text(from_user, error_text, context_token)
                 return
             text = text or "用户发来一张图片。"
+        elif files:
+            try:
+                attachment = await self._download_file(files[0].get("file_item") or {})
+            except _MediaTooLargeError:
+                log.warning("WeChat: file exceeds size limit")
+                await self._send_text(
+                    from_user, "文件太大了，请发送 20 MB 以内的文件。", context_token,
+                )
+                return
+            except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
+                log.warning("WeChat: file download failed (%s)", type(exc).__name__)
+                await self._send_text(from_user, "文件下载失败了，请重新发送。", context_token)
+                return
+            text = text or f"用户发来文件「{attachment.name}」。"
 
-        command = text.strip() if image is None else ""
+        command = text.strip() if image is None and attachment is None else ""
         # System command: /restart (owner only)
         if command == "/restart":
             if from_user != self._owner_weixin_id:
@@ -873,6 +903,7 @@ class WeixinTransport(Transport):
             raw={"weixin_user_id": from_user},
             owner_authorized=from_user == self._owner_weixin_id,
             image=image,
+            file=attachment,
         )
         if incoming.owner_authorized and context_token:
             async def send_generated_image(generated: ImageAttachment) -> None:

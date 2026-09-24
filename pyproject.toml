@@ -26,6 +26,7 @@ dependencies = [
     "python-multipart>=0.0.6",
     "cryptography>=42.0.0",
     "sqlite-vec>=0.1.6",
+    "pypdf>=5.0",
     "aiohttp>=3.9",
 ]
 

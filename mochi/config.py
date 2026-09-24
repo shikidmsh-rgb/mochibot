@@ -353,6 +353,13 @@ LIFE_LOG_MONTHLY_AFTER_DAYS = _env_int("LIFE_LOG_MONTHLY_AFTER_DAYS", 30)
 
 TOOL_ROUTER_ENABLED = _env_bool("TOOL_ROUTER_ENABLED", True)
 TOOL_ROUTER_MAX_TOKENS = _env_int("TOOL_ROUTER_MAX_TOKENS", 300)
+# Routing is an optimization; Main answers without it after this wait.
+TOOL_ROUTER_TIMEOUT_S = _env_float("TOOL_ROUTER_TIMEOUT_S", 8.0)
+# Ordinary owner chat keeps non-resident tools loaded while messages continue
+# within this idle gap, so follow-ups keep their tools and a stable schema.
+TOOL_SESSION_IDLE_MINUTES = _env_int("TOOL_SESSION_IDLE_MINUTES", 30)
+# A carried toolbox larger than this restarts from the current turn's tools.
+TOOL_SESSION_MAX_EXTRA_TOOLS = _env_int("TOOL_SESSION_MAX_EXTRA_TOOLS", 24)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Tool Escalation
