@@ -2,13 +2,13 @@ import base64
 import json
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
 from mochi import image_service as images
 from mochi.db import get_skill_config
-from mochi.transport import DeliveryError, ImageAttachment
+from mochi.transport import ImageAttachment
 
 
 PNG = base64.b64decode(
@@ -22,7 +22,6 @@ def image_config(monkeypatch):
 
     monkeypatch.setenv("ADMIN_TOKEN", "test-admin-token")
     monkeypatch.setattr(admin_crypto, "_fernet_instance", None)
-    monkeypatch.setattr(images, "_sender", None)
     images.save_image_config("auto", "", "image-model", "private-image-key")
 
 
@@ -155,35 +154,39 @@ async def test_generation_fails_explicitly_without_retry(image_config, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_admin_image_routes_auth_preview_and_explicit_send(image_config, monkeypatch):
+async def test_admin_only_configures_images_without_execution(image_config, monkeypatch):
     import httpx
     import mochi.config as config
     from mochi.admin import admin_server
 
     monkeypatch.setattr(config, "ADMIN_TOKEN", "test-admin-token")
-    monkeypatch.setattr(admin_server, "_test_timestamps", [])
-    generator = AsyncMock(return_value=ImageAttachment(PNG, "image/png"))
-    sender = AsyncMock()
-    monkeypatch.setattr(images, "generate_image", generator)
-    images.register_image_sender(sender)
+    network = MagicMock()
+    monkeypatch.setattr(images.aiohttp, "ClientSession", network)
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=admin_server.app), base_url="http://test",
+        transport=httpx.ASGITransport(
+            app=admin_server.app, client=("198.51.100.10", 123),
+        ), base_url="http://test",
     ) as client:
-        assert (await client.post("/api/images/send", content=PNG)).status_code == 403
+        assert (await client.get("/api/images/config")).status_code == 401
         client.headers["Authorization"] = "Bearer test-admin-token"
         cfg = (await client.get("/api/images/config")).json()
         assert "api_key" not in cfg
-        response = await client.post("/api/images/generate", json={"prompt": "My exact text"})
+        response = await client.put("/api/images/config", json={
+            "protocol": "auto", "base_url": "", "model": "another-model", "api_key": "__KEEP__",
+        })
         assert response.status_code == 200
-        assert response.json()["image"] == ImageAttachment(PNG, "image/png").data_url()
-        generator.assert_awaited_once_with("My exact text")
-        sender.assert_not_called()
-        assert (await client.post("/api/images/send", content=b"not image")).status_code == 400
-        assert (await client.post("/api/images/send", content=PNG)).json()["status"] == "accepted"
-        sender.assert_awaited_once_with(1, ImageAttachment(PNG, "image/png"))
-        sender.side_effect = DeliveryError("unconfirmed", outcome="delivery_unknown")
-        response = await client.post("/api/images/send", content=PNG)
-        assert response.status_code == 409
-        assert response.json()["outcome"] == "delivery_unknown"
+        assert response.json()["model"] == "another-model"
+        assert "api_key" not in response.json()
+        assert (await client.post("/api/images/generate", json={"prompt": "Draw"})).status_code == 404
+        assert (await client.post("/api/images/send", content=PNG)).status_code == 404
+        assert (await client.delete("/api/images/config")).json()["ok"]
+        assert not (await client.get("/api/images/config")).json()["configured"]
+        page = (await client.get("/")).text
+        assert 'id="img-model"' in page
+        assert 'id="img-preview"' not in page
+        assert 'id="img-file"' not in page
+        assert "generateImagePreview" not in page
+        assert "sendImagePreview" not in page
+    network.assert_not_called()
     from mochi.db import get_recent_messages
     assert get_recent_messages(1) == []

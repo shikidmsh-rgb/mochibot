@@ -1,9 +1,8 @@
-"""Optional image generation and explicit owner delivery, independent of Main/Lite."""
+"""Optional image generation, independent of Main/Lite."""
 
 import base64
 import json
 import logging
-from collections.abc import Awaitable, Callable
 from urllib.parse import quote, urlsplit
 
 import aiohttp
@@ -11,11 +10,10 @@ import aiohttp
 from mochi.admin.admin_crypto import decrypt_api_key, encrypt_api_key, is_encrypted
 from mochi.admin.admin_db import _is_supported_model
 from mochi.db import delete_skill_config, get_skill_config, set_skill_config
-from mochi.transport import DeliveryError, ImageAttachment, MAX_IMAGE_BYTES
+from mochi.transport import ImageAttachment, MAX_IMAGE_BYTES
 
 log = logging.getLogger(__name__)
 _CONFIG_SCOPE = "_image_generation"
-_sender: Callable[[int, ImageAttachment], Awaitable[None]] | None = None
 
 
 def resolve_protocol(protocol: str, base_url: str) -> tuple[str, str]:
@@ -110,7 +108,7 @@ async def _read_bounded(response: aiohttp.ClientResponse, limit: int) -> bytes:
 
 async def generate_image(prompt: str) -> ImageAttachment:
     if not prompt.strip():
-        raise ValueError("请填写试生成的图片描述。")
+        raise ValueError("图片描述不能为空。")
     cfg = get_image_config(include_key=True)
     if not cfg["configured"]:
         raise ValueError("请先配置图片生成模型。")
@@ -180,16 +178,3 @@ async def generate_image(prompt: str) -> ImageAttachment:
         raise ValueError("生图请求连接失败或超时，结果未知；未自动重试，服务商可能已计费。") from exc
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise ValueError("生图服务返回了无法解析的响应。") from exc
-
-
-def register_image_sender(sender: Callable[[int, ImageAttachment], Awaitable[None]] | None) -> None:
-    global _sender
-    _sender = sender
-
-
-async def send_image(image: ImageAttachment) -> None:
-    from mochi.config import OWNER_USER_ID
-
-    if _sender is None:
-        raise DeliveryError("微信图片发送尚未就绪。", outcome="delivery_unavailable")
-    await _sender(OWNER_USER_ID or 0, image)

@@ -605,7 +605,7 @@ if HAS_FASTAPI:
             log.warning("Model test failed for '%s': %s", name, err_str[:300])
             return {"ok": False, "error": err_str[:500]}
 
-    # ── Optional image generation and manual delivery ─────────────────────
+    # ── Optional image model configuration ────────────────────────────────
 
     @app.get("/api/images/config", dependencies=[Depends(_verify_token)])
     async def api_get_image_config():
@@ -630,45 +630,6 @@ if HAS_FASTAPI:
         from mochi.image_service import clear_image_config
         clear_image_config()
         return {"ok": True}
-
-    @app.post("/api/images/generate", dependencies=[Depends(_verify_token)])
-    async def api_generate_image(request: Request):
-        from mochi.image_service import generate_image
-        body = await request.json()
-        if not isinstance(body, dict) or not isinstance(body.get("prompt"), str):
-            raise HTTPException(400, "请填写图片描述。")
-        _check_test_rate()
-        start = time.monotonic()
-        try:
-            image = await generate_image(body["prompt"])
-        except ValueError as exc:
-            log.warning("Admin image generation failed: %s", exc)
-            raise HTTPException(400, str(exc)) from exc
-        return {
-            "image": image.data_url(),
-            "latency_ms": int((time.monotonic() - start) * 1000),
-        }
-
-    @app.post("/api/images/send", dependencies=[Depends(_verify_token)])
-    async def api_send_image(request: Request):
-        from mochi.image_service import send_image
-        from mochi.transport import DeliveryError, ImageAttachment, MAX_IMAGE_BYTES
-        data = bytearray()
-        async for chunk in request.stream():
-            data.extend(chunk)
-            if len(data) > MAX_IMAGE_BYTES:
-                raise HTTPException(413, "图片不能超过 5 MB。")
-        try:
-            image = ImageAttachment.from_bytes(bytes(data))
-            await send_image(image)
-        except ValueError as exc:
-            raise HTTPException(400, str(exc)) from exc
-        except DeliveryError as exc:
-            log.warning("Admin image send: %s: %s", exc.outcome, exc)
-            return JSONResponse(status_code=409, content={
-                "error": str(exc), "outcome": exc.outcome,
-            })
-        return {"ok": True, "status": "accepted"}
 
     # ── Tiers ─────────────────────────────────────────────────────────────
 

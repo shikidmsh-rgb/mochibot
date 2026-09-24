@@ -210,10 +210,6 @@ async def main():
     if transport:
         await transport.start()
         log.info("Transport started: %s", transport.name)
-    from mochi.image_service import register_image_sender
-    register_image_sender(
-        transport.send_image_checked if transport and transport.name == "wechat" else None,
-    )
 
     # 3b. Send restart-complete notification if restarting
     restart_info = consume_restart_flag()
@@ -338,7 +334,6 @@ async def main():
             await asyncio.gather(*runtime_tasks, return_exceptions=True)
         if transport:
             await transport.stop()
-        register_image_sender(None)
         runtime_running = False
         return True
 

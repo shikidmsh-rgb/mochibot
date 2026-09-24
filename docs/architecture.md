@@ -152,16 +152,15 @@ Optional image generation is a separate framework capability, not a third
 conversational role. `image_service` stores one encrypted configuration, resolves
 the image API from known official endpoints or an explicit protocol choice, and
 returns in-memory images. OpenAI Images and Gemini native `generateContent`
-adapters receive only the explicitly supplied description. Configuration changes
-never probe models or trigger generation; a generation request is not retried
-automatically. Main/Lite assignments, conversation context, and memory are not
-used by Admin's manual image generation and sending controls.
+adapters receive only the explicitly supplied description. Admin manages
+configuration only, with no image generation, upload, preview, or send endpoints.
+Configuration changes never probe models or trigger generation; a generation
+request is not retried automatically.
 
-The active WeChat transport provides image delivery to this service. It encrypts
-and uploads bytes before sending the image message through the same reply-context
-and failure boundary as text. An upload is not a delivered message. Generated or
-selected previews have no durable gallery, and Admin tests do not enter Main's
-history. No Main image-generation tool or autonomous trigger is registered yet.
+WeChat image delivery is an independent transport capability. It encrypts and
+uploads bytes before sending the image message through the same reply-context
+and failure boundary as text. An upload is not a delivered message. There is no
+durable image gallery, Main image-generation tool, or autonomous image trigger.
 
 Provider-returned reasoning is protocol metadata, not conversation content or
 memory evidence. Delivered assistant records and durable delivery outboxes
