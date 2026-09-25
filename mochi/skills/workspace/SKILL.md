@@ -28,4 +28,4 @@ locked: true
 
 ## Capability Context
 
-- `write_diary` 只写日记正文；habit、todo 和 meal 的结构化状态由各自技能维护，重复写入日记会留下两份事实。
+- `write_diary` 只写日记正文，不修改 habit、todo、meal 的结构化记录。

@@ -50,7 +50,5 @@ Load and persist a draft as an installed live tool without restart or approval. 
 ## Capability Context
 
 - One personal workspace holds Main-authored documents at documents/relative.md and personal source at extensions/local_name/{draft,current,previous}/file. Content is authored material, not independent evidence or a source of database entity IDs.
-- browse_workspace list without a path reports development_enabled and actual package/loaded status.
-- Main chooses documents, existing tools, or new code without a forced workflow. guide optionally takes a draft-root path and returns the full guide plus a correctly named complete template in one call. Package create accepts several complete authored files together.
 - Document create never overwrites; append and exact edit preserve a hidden previous copy. Documents cannot be blindly replaced or deleted. Source edits are draft-only and never alter current or in-flight code. current and previous are inspection-only.
 - No generic host, official source, Core, Memory, Diary, package-private data, or runtime snapshot paths are exposed. Tools own their existing private persistent data; no dependency installer, MCP client, or host-exec tool is supplied.
