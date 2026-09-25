@@ -101,11 +101,11 @@ async def test_credentials_are_encrypted_and_not_in_receipts_or_arguments(monkey
     monkeypatch.setenv("ADMIN_TOKEN", "settings-test-encryption-root")
     monkeypatch.setattr(admin_crypto, "_fernet_instance", None)
     credential = "settings-test-secret"
-    setting_id = "skills.web_search.config.TAVILY_API_KEY"
+    setting_id = "skills.web_search.config.BAIDU_API_KEY"
     args = {"action": "set", "id": setting_id, "value": credential}
     result = await _call(args)
     assert result.success and result.state_changed
-    stored = db.get_skill_config("web_search")["TAVILY_API_KEY"]
+    stored = db.get_skill_config("web_search")["BAIDU_API_KEY"]
     assert stored != credential and admin_crypto.decrypt_api_key(stored) == credential
     assert json.loads(result.output)["after"]["value"] == {"configured": True}
     assert credential not in result.output
@@ -115,7 +115,7 @@ async def test_credentials_are_encrypted_and_not_in_receipts_or_arguments(monkey
     monkeypatch.setattr(admin_crypto, "encrypt_api_key", lambda value: value)
     rejected = await _call({**args, "value": "different-test-secret"})
     assert not rejected.success and rejected.error_code == "secret_encryption_failed"
-    assert db.get_skill_config("web_search")["TAVILY_API_KEY"] == stored
+    assert db.get_skill_config("web_search")["BAIDU_API_KEY"] == stored
 
 
 @pytest.mark.asyncio
@@ -232,9 +232,9 @@ def test_secret_and_required_are_independent_in_admin_and_share_writes(monkeypat
     response = client.put("/api/skills/weather/config", json={"key": "WEATHER_CITY", "value": "Kyoto"})
     assert response.status_code == 200
     assert settings.get_setting("skills.weather.config.WEATHER_CITY")["value"] == "Kyoto"
-    response = client.put("/api/skills/web_search/config", json={"key": "TAVILY_API_KEY", "value": "admin-test-secret"})
+    response = client.put("/api/skills/web_search/config", json={"key": "BAIDU_API_KEY", "value": "admin-test-secret"})
     assert response.status_code == 200
-    assert admin_crypto.is_encrypted(db.get_skill_config("web_search")["TAVILY_API_KEY"])
+    assert admin_crypto.is_encrypted(db.get_skill_config("web_search")["BAIDU_API_KEY"])
     response = client.put("/api/preferences", json={"MAX_DAILY_PROACTIVE": 11})
     assert response.status_code == 400
     assert admin_db.get_system_config("MAX_DAILY_PROACTIVE") == 5
