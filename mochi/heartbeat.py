@@ -288,8 +288,12 @@ async def run_silent_bedtime(user_id: int, trigger: str) -> bool:
             _runtime_prepare_callback(entry),
             timeout=bedtime_entry_timeout(),
         )
-        if result.disposition == "skip":
-            log_heartbeat(_state, "bedtime_entry", trigger)
+        if result.disposition in {"skip", "handled"}:
+            log_heartbeat(
+                _state,
+                "bedtime_tools_only" if result.successful_effects else "bedtime_entry",
+                trigger,
+            )
             return True
         if not result.text and not result.stickers:
             raise ValueError("Bedtime Main returned no valid outcome")
@@ -641,6 +645,7 @@ async def run_main_runtime_tick(
     expire_abandoned_runs(now=now)
     enabled = bool(_effective("FREE_TIME_ENABLED"))
     created = []
+    awake = _state == AWAKE and not _silent_pause
     if enabled:
         created = ensure_daily_free_time_plan(
             user_id=user_id,
@@ -648,8 +653,10 @@ async def run_main_runtime_tick(
             transport=_runtime_transport,
             now=now,
             max_daily=int(_effective("MAX_DAILY_PROACTIVE")),
+            awake=awake,
+            wake_hour=_wake_earliest_hour(),
+            sleep_hour=_sleep_after_hour(),
         )
-    awake = _state == AWAKE and not _silent_pause
     expire_unusable_free_time_runs(
         now=now, active_chat=has_active_chat(), awake=awake, enabled=enabled,
     )
@@ -704,12 +711,6 @@ async def heartbeat_loop() -> None:
             await _run_weekly_if_due(user_id, now)
             now = datetime.now(TZ)
             enabled = bool(_effective("FREE_TIME_ENABLED"))
-            if enabled:
-                ensure_daily_free_time_plan(
-                    user_id=user_id, channel_id=user_id,
-                    transport=_runtime_transport, now=now,
-                    max_daily=int(_effective("MAX_DAILY_PROACTIVE")),
-                )
             expire_abandoned_runs(now=now)
             expire_unusable_free_time_runs(
                 now=now, active_chat=has_active_chat(),

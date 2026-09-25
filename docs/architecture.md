@@ -278,8 +278,10 @@ through this launcher-only path.
 
 During conversations, Main may call the framework-scoped
 `enter_bedtime` tool when it understands that the user is genuinely ending the
-conversation to sleep. Main leaves a natural farewell in the same tool loop,
-then the transport claims and completes the sleep transition. No keyword or
+conversation to sleep. Its result brings the same day review used by
+heartbeat bedtime into the existing tool loop, without starting another Main
+turn. Main can act and either speak or finish silently, then the transport
+claims and completes the sleep transition. No keyword or
 separate classifier decides what the user meant, and the tool is not restricted
 to scheduled rest hours. Sleep pauses Free Time until an eligible owner message
 or the next fallback wake time after sleep began. The existing persisted state
@@ -292,8 +294,18 @@ completes sleep even when model or delivery work fails. Bedtime uses the shared
 Main preparation and delivery callbacks: its model timeout ends before transport
 delivery begins, leaving delivery its own timeout and confirmation boundary.
 Unconfirmed delivery is recorded without adding a delivered message or retrying.
-When the recent conversation already completed a bedtime farewell, Main may choose `[SKIP]`
-and let the transition finish without sending a duplicate goodbye.
+Both entries review original user and confirmed assistant messages from the
+Diary's logical day, including after-midnight conversation and standalone
+deliveries. The current context-reset boundary still applies. The bounded
+review reports its time range, message counts and truncation explicitly; a
+rolling summary is not presented as the day's original conversation. Heartbeat
+bedtime replaces the ordinary recent-history window with this review rather
+than repeating it. Today's journal and any tomorrow draft accompany the review,
+with an empty journal distinguished from one not loaded for this entry.
+Main chooses what to retain or do; writing a diary is not a completion gate.
+Tool outcomes survive a silent finish, independently of transport delivery.
+`[SKIP]` suppresses speech, not already completed internal work, and does not
+trigger another model call to manufacture a farewell.
 
 ## Nightly and Weekly memory flow
 
@@ -413,7 +425,11 @@ keeps conversational bubbles; other transports retain their existing formatting.
 
 ## Free Time flow
 
-Heartbeat persists a bounded random plan for each local day. The configured
+Heartbeat persists a bounded random plan after waking, within the configured
+awake hours. Opportunities are drawn only from the remaining time up to 21:00
+or the configured rest hour, whichever is earlier. Sleep does not create a
+plan; restarting or waking again does not redraw an existing same-day plan.
+Setting changes continue to share the day's already-consumed budget. The configured
 limit bounds Free Time opportunities, not a quota of messages. Missed,
 sleep-conflicting and active-chat-conflicting opportunities expire rather than
 being queued for later. Sleeping and long-silence pause gates run before

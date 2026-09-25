@@ -937,7 +937,10 @@ class WeixinTransport(Transport):
                 if result:
                     if result.bedtime_requested:
                         bedtime_claimed = claim_sleep_transition("explicit")
-                        if not bedtime_claimed:
+                        if (
+                            not bedtime_claimed
+                            or result.disposition in {"skip", "handled"}
+                        ):
                             return
                     delivered = await self.send_chat_result(
                         user_id,

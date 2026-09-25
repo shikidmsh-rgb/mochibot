@@ -424,7 +424,7 @@ class TestSimpleReply:
         assert reply.disposition == "skip"
         assert len(mock.call_log) == 1
         assert any(
-            message["role"] == "assistant" and "晚安，睡吧。" in message["content"]
+            "晚安，睡吧。" in message["content"]
             for message in mock.call_log[0]["messages"]
         )
 

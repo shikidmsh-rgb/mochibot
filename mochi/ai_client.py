@@ -46,7 +46,9 @@ from mochi.tool_availability import (
     tool_call_error,
     unavailable_tool_error,
 )
-from mochi.bedtime_tool import ENTER_BEDTIME_DEF, ENTER_BEDTIME_TOOL_NAME
+from mochi.bedtime_tool import (
+    EMPTY_DIARY, ENTER_BEDTIME_DEF, ENTER_BEDTIME_TOOL_NAME, bedtime_context,
+)
 import mochi.skills as skill_registry
 from mochi.file_text import MAX_FILE_TEXT_CHARS, extract_file_text
 from mochi.transport import DeliveryError, FileAttachment, IncomingMessage, ImageAttachment
@@ -425,8 +427,8 @@ class ChatResult:
 
 
 def _render_runtime_context(template: str, diary_status: str = "",
-                            diary_journal: str = "") -> str:
-    """Fill runtime_context.md placeholders. Remove sections with no data."""
+                            diary_journal: str | None = "") -> str:
+    """Distinguish an empty journal from one intentionally not supplied."""
     result = template
 
     if diary_status:
@@ -437,8 +439,8 @@ def _render_runtime_context(template: str, diary_status: str = "",
             r"### 状态速览\n\{\{diary_status\}\}\n*", "", result,
         )
 
-    if diary_journal:
-        result = result.replace("{{diary_entry}}", diary_journal)
+    if diary_journal is not None:
+        result = result.replace("{{diary_entry}}", diary_journal or EMPTY_DIARY)
     else:
         # Remove ### 日记 block
         result = re.sub(
@@ -478,7 +480,6 @@ def _build_prompt_zones(user_id: int, capability_context: str = "",
                         recalled_memories: list[dict] | None = None,
                         diary_status: str = "",
                         diary_journal: str = "",
-                        diary_tomorrow: str = "",
                         conv_summary: str = "",
                         recent_operations: str = "",
                         runtime_entry: MainRuntimeEntry | None = None,
@@ -486,7 +487,8 @@ def _build_prompt_zones(user_id: int, capability_context: str = "",
                         policy: ContextPolicy | None = None,
                         habit_progress_context: str = "",
                         history_timestamps: str = "",
-                        day_start_context: str = "") -> tuple[str, str]:
+                        day_start_context: str = "",
+                        bedtime_review: str = "") -> tuple[str, str]:
     """Return the cross-turn stable prompt and this turn's live context."""
 
     modules = get_system_chat_modules()
@@ -557,7 +559,8 @@ def _build_prompt_zones(user_id: int, capability_context: str = "",
             )
     if "runtime_context" in modules:
         rendered_rc = _render_runtime_context(
-            modules["runtime_context"], diary_status, diary_journal,
+            modules["runtime_context"], diary_status,
+            diary_journal if policy.diary_journal and not bedtime_review else None,
         )
         if rendered_rc:
             dynamic_live_context.append(rendered_rc)
@@ -571,29 +574,22 @@ def _build_prompt_zones(user_id: int, capability_context: str = "",
     if recent_operations:
         dynamic_live_context.append(recent_operations)
 
-    if runtime_entry and runtime_entry.kind == "bedtime" and diary_tomorrow:
-        dynamic_live_context.append("## 明日日记草稿\n" + diary_tomorrow)
-
     if recalled_memories:
         dynamic_live_context.append(
             _format_recalled_memories(recalled_memories)
         )
 
     if runtime_entry and runtime_entry.kind == "bedtime":
-        bedtime_context = get_prompt("bedtime_entry")
-        if not bedtime_context:
-            raise RuntimeError("Bedtime entry prompt is missing")
+        if not bedtime_review:
+            raise RuntimeError("Bedtime review is missing")
         trigger_labels = {
             "explicit": "用户刚刚亲自表达了晚安或准备睡觉",
             "silence": "夜间持续安静后，系统判断用户大概已经睡着",
             "resleep": "用户夜里短暂醒来后再次安静下来",
         }
-        dynamic_live_context.append(
-            bedtime_context.replace(
-                "{{trigger}}",
-                trigger_labels[runtime_entry.trigger],
-            )
-        )
+        dynamic_live_context.extend([
+            trigger_labels[runtime_entry.trigger], bedtime_review,
+        ])
     elif runtime_entry and runtime_entry.kind == "self_reminder":
         reminder_context = get_prompt("self_reminder_entry")
         if not reminder_context:
@@ -1024,16 +1020,6 @@ async def chat(
     habit_progress_context = await _habit_progress_context()
     habit_context_loaded = bool(habit_progress_context)
 
-    from mochi.tool_execution import recent_operations_context
-    recent_operations = (
-        ""
-        if not prompt_policy.recent_operations
-        else await asyncio.to_thread(
-            recent_operations_context, user_id, history,
-            include_autonomous=True,
-        )
-    )
-
     # Fetch diary data for Zone C runtime context
     # Only journal (events) — status panel (habits/todos) excluded from chat
     # to avoid LLM parroting progress in every reply. Status is available
@@ -1064,6 +1050,26 @@ async def chat(
     if weekly_session:
         weekly_session.expected_core = core_memory
 
+    from mochi.db import get_day_conversation
+    bedtime_review = ""
+    receipt_history = history
+    if is_bedtime:
+        conversation = await asyncio.to_thread(
+            get_day_conversation, user_id, diary_source_date,
+        )
+        bedtime_review = bedtime_context(conversation, diary_today, diary_tomorrow)
+        receipt_history = conversation["messages"]
+
+    from mochi.tool_execution import recent_operations_context
+    recent_operations = (
+        ""
+        if not prompt_policy.recent_operations
+        else await asyncio.to_thread(
+            recent_operations_context, user_id, receipt_history,
+            include_autonomous=True,
+        )
+    )
+
     day_start_day: str | None = None
     day_start_context = ""
     if is_autonomous or (
@@ -1091,7 +1097,7 @@ async def chat(
         requestable_tools=requestable_tools, tool_names=active_tool_names,
         core_memory=core_memory, habits=habits, transport=transport,
         recalled_memories=recalled_memories,
-        diary_status=_ds, diary_journal=_dj, diary_tomorrow=diary_tomorrow,
+        diary_status=_ds, diary_journal=_dj,
         conv_summary=(conv_summary or "") if prompt_policy.conversation_summary else "",
         recent_operations=recent_operations,
         runtime_entry=runtime_entry,
@@ -1102,6 +1108,7 @@ async def chat(
         habit_progress_context=habit_progress_context,
         history_timestamps=_format_history_timestamps(history),
         day_start_context=day_start_context,
+        bedtime_review=bedtime_review,
     )
     # User turns keep the system prompt stable so providers can reuse the
     # system + history prefix; runtime entries keep everything in system.
@@ -1144,9 +1151,7 @@ async def chat(
     bedtime_requested = False
     tool_budget = ToolLoopBudget()
     on_interim = message.on_interim if message is not None else None
-    bedtime_finalization_attempted = False
     history_response: LLMResponse | None = None
-    bedtime_skip_requested = False
     image_pending_review = False
 
     def _log_main_usage(
@@ -1203,54 +1208,35 @@ async def chat(
             json.dumps([{"name": n} for n in tool_names_used], ensure_ascii=False)
             if tool_names_used else None
         )
-        if is_bedtime:
-            if bedtime_skip_requested:
-                return ChatResult(disposition="skip")
-            if not reply and not pending_stickers:
-                log.warning("Bedtime Main turn returned no disposition")
-                return ChatResult()
-            return ChatResult(
-                text=reply,
-                stickers=pending_stickers,
-                _pending_history={
-                    "user_id": user_id,
-                    "content": reply or "[贴纸]",
-                    "tool_history": tool_history_json,
-                    "turn_id": turn_id,
-                    "processed": message is None,
-                    **reasoning_metadata,
-                },
-            )
-        if is_self_reminder or is_autonomous:
+        if is_bedtime or bedtime_requested or is_self_reminder or is_autonomous:
             skipped = reply == "[SKIP]"
             if skipped:
                 reply = ""
-            if day_start_day and (
+            if day_start_day and not bedtime_requested and (
                 skipped or reply or pending_stickers or successful_effects
             ):
                 from mochi import day_start
 
                 day_start.mark_done(day_start_day)
-            if skipped and not successful_effects and not pending_stickers:
-                return ChatResult(
-                    tool_audit=tool_audit,
-                    disposition="skip",
-                )
-            if not reply and not pending_stickers:
-                return ChatResult(
-                    tool_audit=tool_audit,
-                    successful_effects=successful_effects,
-                    disposition="handled" if successful_effects else "invalid",
+            visible = bool(reply or pending_stickers)
+            disposition = (
+                "deliver" if visible else "handled" if successful_effects
+                else "skip" if skipped else "invalid"
+            )
+            if is_bedtime or bedtime_requested:
+                log.info(
+                    "Bedtime Main result: turn=%s disposition=%s effects=%s tools=%s",
+                    turn_id, disposition, successful_effects, tool_audit,
                 )
             pending_history = (
                 None
-                if is_autonomous and not reply
+                if not visible or (is_autonomous and not reply)
                 else {
                     "user_id": user_id,
                     "content": reply or "[贴纸]",
                     "tool_history": tool_history_json,
                     "turn_id": turn_id,
-                    "processed": True,
+                    "processed": message is None,
                     **reasoning_metadata,
                 }
             )
@@ -1259,7 +1245,9 @@ async def chat(
                 stickers=pending_stickers,
                 tool_audit=tool_audit,
                 successful_effects=successful_effects,
-                disposition="deliver",
+                disposition=disposition,
+                bedtime_requested=bedtime_requested,
+                _after_delivery=list(after_delivery) if final_reply else [],
                 _pending_history=pending_history,
             )
         if is_weekly:
@@ -1282,43 +1270,6 @@ async def chat(
                 **reasoning_metadata,
             },
         )
-
-    async def _finalize_bedtime() -> str:
-        nonlocal bedtime_finalization_attempted, history_response
-        if bedtime_finalization_attempted:
-            return ""
-        bedtime_finalization_attempted = True
-        try:
-            final_response = await asyncio.to_thread(
-                client.chat,
-                messages=messages,
-                tools=None,
-                max_tokens=AI_CHAT_MAX_COMPLETION_TOKENS,
-            )
-        except Exception as exc:
-            log.error("Bedtime finalization failed: %s", exc, exc_info=True)
-            return ""
-        _log_main_usage(
-            final_response,
-            call_type="bedtime_finalization",
-        )
-        history_response = final_response
-        return STICKER_RE.sub("", final_response.content or "").strip()
-
-    async def _ensure_bedtime_farewell(reply: str) -> str:
-        nonlocal bedtime_skip_requested
-        if not (is_bedtime or bedtime_requested):
-            return reply
-        if reply == "[SKIP]" and is_bedtime:
-            bedtime_skip_requested = True
-            return ""
-        if reply == "[SKIP]":
-            reply = ""
-        if pending_stickers:
-            return reply
-        if not reply:
-            reply = await _finalize_bedtime()
-        return "" if reply == "[SKIP]" else reply
 
     for round_num in range(max_tool_rounds + 1):
         if round_num == max_tool_rounds and not image_pending_review:
@@ -1363,8 +1314,11 @@ async def chat(
                     log.warning("LLM call failed (attempt 1), retrying: %s", e)
                     continue
                 log.error("LLM call failed (attempt 2): %s", e, exc_info=True)
-                if is_bedtime:
-                    return ChatResult()
+                if is_bedtime or bedtime_requested:
+                    return ChatResult(
+                        disposition="invalid", bedtime_requested=bedtime_requested,
+                        tool_audit=tool_audit, successful_effects=successful_effects,
+                    )
                 if is_self_reminder or is_autonomous:
                     return ChatResult(disposition="invalid")
                 if is_weekly:
@@ -1400,7 +1354,6 @@ async def chat(
         # No tool calls — we have the final response
         if not response.tool_calls:
             reply = STICKER_RE.sub("", response.content or "").strip()
-            reply = await _ensure_bedtime_farewell(reply)
             return _final_result(reply)
 
         # Add assistant message with tool_calls to context
@@ -1517,11 +1470,29 @@ async def chat(
                         retryable=True,
                     ))
                 else:
+                    conversation = await asyncio.to_thread(
+                        get_day_conversation, user_id, diary_source_date,
+                    )
+                    tomorrow_date = diary_target_dates["tomorrow"]
+                    visible_tomorrow = document_updates.get(
+                        tomorrow_date, diary_expected[tomorrow_date],
+                    )
+                    if visible_tomorrow is None:
+                        visible_tomorrow = diary_tomorrow
+                        document_updates.setdefault(tomorrow_date, visible_tomorrow)
+                    review = bedtime_context(
+                        conversation,
+                        document_updates.get(
+                            diary_source_date, diary_expected[diary_source_date],
+                        ),
+                        visible_tomorrow,
+                    )
                     bedtime_requested = True
                     result_text = json.dumps({
                         "ok": True,
                         "bedtime_requested": True,
-                        "message": "Bedtime will begin after your farewell.",
+                        "message": "Bedtime will begin after this turn.",
+                        "bedtime_context": review,
                     }, ensure_ascii=False)
                 messages.append({
                     "role": "tool",
@@ -1741,9 +1712,8 @@ async def chat(
 
     # If we exhausted tool rounds, return whatever we have
     reply = STICKER_RE.sub("", response.content or "").strip()
-    reply = await _ensure_bedtime_farewell(reply)
     if not reply and not (
-        is_bedtime or is_self_reminder or is_weekly or is_autonomous
+        is_bedtime or bedtime_requested or is_self_reminder or is_weekly or is_autonomous
     ):
         reply = "处理过程出了点问题，你再说一次试试？"
     if _health_warning and reply:

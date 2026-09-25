@@ -836,6 +836,67 @@ def search_conversation_messages(
         conn.close()
 
 
+def get_day_conversation(
+    user_id: int, day: str, *, now: datetime | None = None,
+    max_chars: int = 60_000,
+) -> dict:
+    """Read a logical day's original messages within the current reset epoch."""
+    from mochi.config import _effective_maintenance_hour
+
+    now = now or datetime.now(TZ)
+    start = datetime.fromisoformat(day).replace(
+        hour=_effective_maintenance_hour(), tzinfo=TZ,
+    )
+    day_end = start + timedelta(days=1)
+    end = min(now, day_end)
+    conn = _connect()
+    try:
+        reset_at = _current_context_reset(conn, user_id)
+        if reset_at:
+            reset = datetime.fromisoformat(reset_at)
+            if reset.tzinfo is None:
+                reset = reset.replace(tzinfo=TZ)
+            start = max(start, reset)
+        rows = conn.execute(
+            "SELECT id, role, content, created_at, turn_id FROM messages "
+            "WHERE user_id = ? AND role IN ('user', 'assistant') "
+            "AND julianday(created_at) >= julianday(?) "
+            "AND julianday(created_at) <= julianday(?) "
+            "AND julianday(created_at) < julianday(?) "
+            "AND (? IS NULL OR julianday(created_at) > julianday(?)) "
+            "ORDER BY id DESC",
+            (
+                user_id, start.isoformat(), end.isoformat(),
+                day_end.isoformat(),
+                reset_at, reset_at,
+            ),
+        ).fetchall()
+    finally:
+        conn.close()
+    selected = []
+    used = 0
+    for row in rows:
+        item = dict(row)
+        size = len(json.dumps(
+            {key: item[key] for key in ("id", "role", "created_at", "content")},
+            ensure_ascii=False,
+        )) + 2
+        if used + size > max_chars:
+            break
+        selected.append(item)
+        used += size
+    selected.reverse()
+    return {
+        "date": day,
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "total_messages": len(rows),
+        "shown_messages": len(selected),
+        "truncated": len(selected) < len(rows),
+        "messages": selected,
+    }
+
+
 def get_adaptive_tool_load_states() -> dict[str, dict]:
     conn = _connect()
     try:

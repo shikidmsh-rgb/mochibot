@@ -493,7 +493,10 @@ class TelegramTransport(Transport):
                 if result:
                     if result.bedtime_requested:
                         bedtime_claimed = claim_sleep_transition("explicit")
-                        if not bedtime_claimed:
+                        if (
+                            not bedtime_claimed
+                            or result.disposition in {"skip", "handled"}
+                        ):
                             if TG_STATUS_REACTIONS_ENABLED:
                                 status.reaction_state = ""
                                 await _set_reaction(

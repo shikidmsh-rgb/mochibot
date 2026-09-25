@@ -39,6 +39,12 @@ class ContextPolicy:
 def context_policy(entry: "MainRuntimeEntry | None") -> ContextPolicy:
     if entry is None:
         return ContextPolicy()
+    if entry.kind == "bedtime":
+        return ContextPolicy(
+            conversation_summary=False,
+            recent_history=False,
+            auto_recall=False,
+        )
     if entry.kind == "free_time":
         return ContextPolicy(
             early_runtime_situation=True,

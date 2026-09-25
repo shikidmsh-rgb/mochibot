@@ -10,7 +10,7 @@ import mochi.heartbeat_runtime as runtime
 
 
 UTC = timezone.utc
-DAY = datetime(2026, 9, 23, 5, tzinfo=UTC)
+DAY = datetime(2026, 9, 23, 6, tzinfo=UTC)
 
 
 class Draws:
@@ -21,10 +21,11 @@ class Draws:
         return next(self.values)
 
 
-def plan(*, max_daily, now=DAY, draws):
+def plan(*, max_daily, now=DAY, draws, awake=True, wake_hour=6, sleep_hour=23):
     return runtime.ensure_daily_free_time_plan(
         user_id=1, channel_id=1, transport="fake", now=now,
-        max_daily=max_daily, rng=Draws(draws),
+        max_daily=max_daily, rng=Draws(draws), awake=awake,
+        wake_hour=wake_hour, sleep_hour=sleep_hour,
     )
 
 
@@ -65,7 +66,7 @@ def test_activation_cutoff_and_missed_times_do_not_catch_up():
         max_daily=4, now=DAY.replace(hour=12),
         draws=[0.6, 0.59, 0.1, 0.0, 0.5, 0.0, 0.9],
     )
-    assert len(keys) == 2
+    assert len(keys) == 3
     due = datetime.fromisoformat(rows()[keys[0]]["next_attempt_at"])
     assert runtime.get_schedulable_runs(now=due - timedelta(seconds=1)) == []
     assert runtime.claim_run(keys[0], now=due - timedelta(seconds=1), max_daily=4) is None
@@ -77,8 +78,31 @@ def test_activation_cutoff_and_missed_times_do_not_catch_up():
     assert rows()[keys[1]]["status"] == "pending"
     assert runtime.expire_unusable_free_time_runs(
         now=DAY + timedelta(days=1), active_chat=False, awake=True,
-    ) == 1
+    ) == 2
     assert runtime.get_schedulable_runs(now=DAY + timedelta(days=1)) == []
+
+
+def test_daily_plan_waits_for_waking_and_uses_only_remaining_awake_time():
+    assert plan(max_daily=3, now=DAY.replace(hour=5), draws=[]) == []
+    assert plan(max_daily=3, now=DAY.replace(hour=7), awake=False, draws=[]) == []
+    conn = _connect()
+    assert conn.execute("SELECT COUNT(*) FROM heartbeat_schedules").fetchone()[0] == 0
+    conn.close()
+    wake = DAY.replace(hour=10, minute=27)
+    keys = plan(
+        max_daily=3, now=wake, sleep_hour=20,
+        draws=[0.0, 0.01, 0.0, 0.5, 0.0, 0.99],
+    )
+    assert len(keys) == 3
+    planned = rows()
+    assert all(
+        wake <= datetime.fromisoformat(row["next_attempt_at"]) < DAY.replace(hour=20)
+        for row in planned.values()
+    )
+    assert plan(max_daily=3, now=wake + timedelta(hours=1), awake=False, draws=[]) == []
+    assert plan(max_daily=3, now=wake + timedelta(hours=2), sleep_hour=20, draws=[]) == []
+    assert rows() == planned
+    assert plan(max_daily=3, now=DAY.replace(hour=22), draws=[]) == []
 
 
 def test_setting_changes_and_failed_claims_share_one_daily_budget():

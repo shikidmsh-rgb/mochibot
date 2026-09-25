@@ -46,6 +46,55 @@ def _save_turn(name):
     save_message(1, "assistant", f"assistant-{name}", turn_id=name)
 
 
+def test_day_conversation_respects_logical_day_reset_and_visible_budget():
+    import json
+    from datetime import datetime, timezone
+
+    conn = db._connect()
+    for user, role, text, stamp in (
+        (1, "user", "before-day", "2026-09-24T02:59:59+00:00"),
+        (1, "user", "before-reset", "2026-09-24T08:00:00+00:00"),
+        (1, "user", "at-reset", "2026-09-24T09:00:00+00:00"),
+        (2, "user", "other-user", "2026-09-24T10:00:00+00:00"),
+        (1, "user", "morning", "2026-09-24T18:00:00+08:00"),
+        (1, "assistant", "evening-reply", "2026-09-24T22:00:00+00:00"),
+        (1, "assistant", "after-midnight", "2026-09-25T01:00:00+00:00"),
+        (1, "system", "not-conversation", "2026-09-25T01:30:00+00:00"),
+        (1, "user", "future", "2026-09-25T02:30:00+00:00"),
+        (1, "user", "next-day", "2026-09-25T03:00:00+00:00"),
+    ):
+        conn.execute(
+            "INSERT INTO messages (user_id, role, content, created_at) VALUES (?, ?, ?, ?)",
+            (user, role, text, stamp),
+        )
+    conn.commit()
+    now = datetime(2026, 9, 25, 2, tzinfo=timezone.utc)
+    before_reset = db.get_day_conversation(1, "2026-09-24", now=now)
+    assert before_reset["total_messages"] == 5
+    conn.execute(
+        "INSERT INTO conversation_reset (user_id, reset_at) VALUES (1, ?)",
+        ("2026-09-24T09:00:00+00:00",),
+    )
+    conn.commit()
+    conn.close()
+    review = db.get_day_conversation(1, "2026-09-24", now=now)
+    assert review["total_messages"] == review["shown_messages"] == 3
+    assert not review["truncated"]
+    assert [row["content"] for row in review["messages"]] == [
+        "morning", "evening-reply", "after-midnight",
+    ]
+    last = review["messages"][-1]
+    budget = len(json.dumps(
+        {key: last[key] for key in ("id", "role", "created_at", "content")},
+        ensure_ascii=False,
+    )) + 2
+    limited = db.get_day_conversation(1, "2026-09-24", now=now, max_chars=budget)
+    assert limited["total_messages"] == 3
+    assert limited["shown_messages"] == 1
+    assert limited["messages"] == [last]
+    assert limited["truncated"]
+
+
 def test_context_merges_standalone_deliveries_without_changing_complete_turns():
     _save_turn("old")
     save_message(1, "assistant", "outside-window", processed=True)

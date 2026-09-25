@@ -1,6 +1,7 @@
 """Essential autonomous Main behavior."""
 
 import asyncio
+import json
 from datetime import datetime, timedelta, timezone
 import random
 
@@ -97,8 +98,8 @@ def _schedule_due(now):
     set_system_override("MAX_DAILY_PROACTIVE", "1")
     keys = ensure_daily_free_time_plan(
         user_id=1, channel_id=1, transport="fake",
-        now=now.replace(hour=0, minute=0, second=0, microsecond=0),
-        max_daily=1, rng=random.Random(1),
+        now=now.replace(hour=6, minute=0, second=0, microsecond=0),
+        max_daily=1, awake=True, rng=random.Random(1),
     )
     assert len(keys) == 1
     conn = _connect()
@@ -251,14 +252,108 @@ async def test_main_sees_delivered_autonomous_history_only(
         if "ALREADY_SAID_GOODNIGHT" in message.get("content", "")
     ]
     assert len(delivered_messages) == 1
-    assert delivered_messages[0]["role"] == "assistant"
-    assert delivered_messages[0]["content"] == "ALREADY_SAID_GOODNIGHT"
-    history_index = messages.index(delivered_messages[0])
-    assert f"{history_index}. assistant: " in main_context(messages)
+    if kind == "bedtime":
+        line = next(
+            line for line in delivered_messages[0]["content"].splitlines()
+            if line.startswith('{"date":')
+        )
+        review = json.loads(line)
+        assert review["messages"][0]["role"] == "assistant"
+        assert review["messages"][0]["content"] == "ALREADY_SAID_GOODNIGHT"
+    else:
+        assert delivered_messages[0]["role"] == "assistant"
+        assert delivered_messages[0]["content"] == "ALREADY_SAID_GOODNIGHT"
+        history_index = messages.index(delivered_messages[0])
+        assert f"{history_index}. assistant: " in main_context(messages)
     assert not any(
         value in message.get("content", "")
         for message in messages for value in ("UNSENT_DRAFT", "OTHER_USER")
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("trigger", ["explicit", "silence"])
+async def test_bedtime_reviews_the_day_and_keeps_silent_write_receipts(
+    mock_llm_factory, trigger,
+):
+    import mochi.heartbeat as heartbeat
+    from mochi.diary import diary
+
+    for number in range(12):
+        save_message(1, "user", f"user-{number}", turn_id=f"day-{number}")
+        save_message(1, "assistant", f"reply-{number}", turn_id=f"day-{number}")
+    responses = []
+    if trigger == "explicit":
+        responses.append(make_response(tool_calls=[make_tool_call("enter_bedtime", {})]))
+    responses.extend([
+        make_response(tool_calls=[
+            make_tool_call("write_diary", {"content": "Remembered the day."}),
+        ]),
+        make_response("[SKIP]"),
+    ])
+    mock = mock_llm_factory(responses)
+    prepared = []
+
+    async def prepare(entry):
+        result = await chat(runtime_entry=entry)
+        prepared.append(result)
+        return result
+
+    async def deliver(*args, **kwargs):
+        pytest.fail("silent bedtime must not attempt delivery")
+
+    if trigger == "explicit":
+        result = await chat(IncomingMessage(
+            user_id=1, channel_id=1, transport="fake", text="Good night.",
+        ))
+        assert result.bedtime_requested
+        receipt = next(
+            item for item in mock.call_log[1]["messages"]
+            if item["role"] == "tool"
+        )
+        context = json.loads(receipt["content"])["bedtime_context"]
+    else:
+        heartbeat.set_main_runtime_callbacks(prepare, deliver, "fake")
+        assert await heartbeat.run_silent_bedtime(1, "silence")
+        assert heartbeat._state == heartbeat.SLEEPING
+        result = prepared[0]
+        context = mock.call_log[0]["messages"][0]["content"]
+    review = json.loads(next(
+        line for line in context.splitlines() if line.startswith('{"date":')
+    ))
+    assert review["total_messages"] == review["shown_messages"] == (
+        25 if trigger == "explicit" else 24
+    )
+    assert not review["truncated"]
+    assert review["messages"][0]["content"] == "user-0"
+    assert diary.read(section="今日日記") == "Remembered the day."
+    assert result.disposition == "handled"
+    assert result.successful_effects
+    assert result.tool_audit == [
+        {"name": "write_diary", "status": "success", "state_changed": True},
+    ]
+    assert result.text == ""
+    assert result._pending_history is None
+    assert len(mock.call_log) == len(responses)
+
+
+@pytest.mark.asyncio
+async def test_sleeping_tick_does_not_create_a_free_time_plan(monkeypatch):
+    import mochi.heartbeat as heartbeat
+    import mochi.observers as observers
+
+    async def unexpected():
+        pytest.fail("sleeping tick must not collect or enter Main")
+
+    monkeypatch.setattr(heartbeat, "_state", heartbeat.SLEEPING)
+    monkeypatch.setattr(observers, "collect_all", unexpected)
+    assert await heartbeat.run_main_runtime_tick(
+        1, now=datetime(2026, 9, 25, 8, tzinfo=timezone.utc),
+    ) == []
+    conn = _connect()
+    assert conn.execute("SELECT COUNT(*) FROM heartbeat_schedules").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM heartbeat_runs").fetchone()[0] == 0
+    conn.close()
 
 
 @pytest.mark.asyncio

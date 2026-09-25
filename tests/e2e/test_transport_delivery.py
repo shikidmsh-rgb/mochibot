@@ -15,6 +15,46 @@ from mochi.transport.weixin import WeixinTransport
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("platform", ["wechat", "telegram"])
+@pytest.mark.parametrize("disposition", ["skip", "handled"])
+async def test_explicit_silent_bedtime_sleeps_without_attempting_delivery(
+    monkeypatch, platform, disposition,
+):
+    import mochi.heartbeat as heartbeat
+    import mochi.transport.weixin as weixin
+    import mochi.transport.telegram as telegram
+
+    result = ChatResult(
+        bedtime_requested=True, disposition=disposition,
+        successful_effects=disposition == "handled",
+    )
+    callback = AsyncMock(return_value=result)
+    send = AsyncMock()
+    if platform == "wechat":
+        transport = WeixinTransport()
+        transport._owner_weixin_id = "owner"
+        monkeypatch.setattr(weixin, "_on_message_callback", callback)
+        monkeypatch.setattr(transport, "_get_typing_ticket", AsyncMock(return_value=""))
+        monkeypatch.setattr(transport, "send_chat_result", send)
+        await transport._handle_allowed_message({
+            "item_list": [{"type": 1, "text_item": {"text": "Good night."}}],
+        }, "owner")
+    else:
+        transport = telegram.TelegramTransport()
+        monkeypatch.setattr(telegram, "_on_message_callback", callback)
+        monkeypatch.setattr(transport, "send_chat_result", send)
+        update = SimpleNamespace(
+            message=SimpleNamespace(text="Good night.", photo=[], message_id=1),
+            effective_chat=SimpleNamespace(id=1),
+        )
+        await transport._handle_owner_message(update, SimpleNamespace(), 1)
+    callback.assert_awaited_once()
+    send.assert_not_awaited()
+    assert heartbeat._state == heartbeat.SLEEPING
+    assert not result._delivery_confirmed
+
+
+@pytest.mark.asyncio
 async def test_reply_context_survives_restart_and_is_scoped(monkeypatch):
     import mochi.admin.admin_crypto as crypto
     import mochi.transport.weixin as weixin

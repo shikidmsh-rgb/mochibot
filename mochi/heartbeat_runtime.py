@@ -14,7 +14,6 @@ from mochi.main_runtime import DurableChatResult, MainRuntimeEntry
 
 
 UTC = timezone.utc
-FREE_TIME_AWAKE_START = time(6, 0)
 FREE_TIME_AWAKE_END = time(21, 0)
 FREE_TIME_ACTIVATION_CHANCE = 0.6
 FREE_TIME_MISSED_GRACE = timedelta(seconds=45)
@@ -55,6 +54,9 @@ def ensure_daily_free_time_plan(
     transport: str,
     now: datetime,
     max_daily: int,
+    awake: bool,
+    wake_hour: int = 6,
+    sleep_hour: int = 23,
     rng: random.Random | random.SystemRandom | None = None,
 ) -> list[str]:
     """Persist the day's random opportunities; setting changes share its budget."""
@@ -63,9 +65,17 @@ def ensure_daily_free_time_plan(
     local_date = local_now.date().isoformat()
     now_iso = _iso(now)
     max_daily = max(0, min(10, int(max_daily)))
-    start = datetime.combine(local_now.date(), FREE_TIME_AWAKE_START, tzinfo=TZ)
-    end = datetime.combine(local_now.date(), FREE_TIME_AWAKE_END, tzinfo=TZ)
-    marker = f"{start.isoformat()}:{max_daily}:{user_id}:{channel_id}:{transport}"
+    start = local_now.replace(hour=wake_hour, minute=0, second=0, microsecond=0)
+    end = datetime.combine(
+        local_now.date(), min(FREE_TIME_AWAKE_END, time(sleep_hour)), tzinfo=TZ,
+    )
+    if not awake or not start <= local_now < end:
+        return []
+    marker = (
+        f"{start.isoformat()}:{end.isoformat()}:"
+        f"{max_daily}:{user_id}:{channel_id}:{transport}"
+    )
+    start = local_now
     created: list[str] = []
     conn = _connect()
     try:
@@ -97,8 +107,6 @@ def ensure_daily_free_time_plan(
                 if rng.random() >= FREE_TIME_ACTIVATION_CHANCE:
                     continue
                 due = start + timedelta(seconds=rng.random() * window_seconds)
-                if due <= local_now:
-                    continue
                 due_iso = _iso(due)
                 run_key = f"free_time:{local_date}:{ordinal}:{due_iso}"
                 conn.execute(
