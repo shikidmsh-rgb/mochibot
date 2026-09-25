@@ -765,10 +765,7 @@ if HAS_FASTAPI:
     # User preferences
     # ═══════════════════════════════════════════════════════════════════════
 
-    _PREFERENCE_RANGES = {
-        "TIMEZONE_OFFSET_HOURS": (-12.0, 14.0),
-        "MAX_DAILY_PROACTIVE": (0, 10),
-    }
+    _PREFERENCE_KEYS = ("TIMEZONE_OFFSET_HOURS", "MAX_DAILY_PROACTIVE")
 
     @app.get("/api/preferences", dependencies=[Depends(_verify_token)])
     async def api_get_preferences():
@@ -785,48 +782,36 @@ if HAS_FASTAPI:
                 "default": SYSTEM_DEFAULTS[key][1],
                 "source": "user" if key in overrides else "default",
             }
-            for key in _PREFERENCE_RANGES
+            for key in _PREFERENCE_KEYS
         }
 
     @app.put("/api/preferences", dependencies=[Depends(_verify_token)])
     async def api_set_preferences(request: Request):
         from mochi.admin.admin_db import set_system_override
+        from mochi.settings import SettingsError, normalize_runtime_values
 
         body = await request.json()
         if not isinstance(body, dict) or not body:
             raise HTTPException(400, "preferences must be a non-empty object")
 
-        unknown = sorted(set(body) - set(_PREFERENCE_RANGES))
+        unknown = sorted(set(body) - set(_PREFERENCE_KEYS))
         if unknown:
             raise HTTPException(400, f"Unknown preference: {', '.join(unknown)}")
 
-        normalized: dict[str, int | float] = {}
+        values = {}
         for key, raw_value in body.items():
             if isinstance(raw_value, bool):
                 raise HTTPException(400, f"{key} must be a number")
-            try:
-                if key == "MAX_DAILY_PROACTIVE":
-                    value = int(raw_value)
-                    if isinstance(raw_value, float) and not raw_value.is_integer():
-                        raise ValueError
-                    if isinstance(raw_value, str) and str(value) != raw_value.strip():
-                        raise ValueError
-                else:
-                    value = float(raw_value)
-            except (TypeError, ValueError):
-                raise HTTPException(400, f"{key} must be a number")
-
-            minimum, maximum = _PREFERENCE_RANGES[key]
-            if not minimum <= value <= maximum:
-                raise HTTPException(
-                    400,
-                    f"{key} must be between {minimum:g} and {maximum:g}",
-                )
-            normalized[key] = value
-
+            if isinstance(raw_value, float) and raw_value.is_integer():
+                raw_value = int(raw_value)
+            values[key.lower()] = str(raw_value)
+        try:
+            normalized = normalize_runtime_values(values)
+        except SettingsError as exc:
+            raise HTTPException(400, str(exc)) from exc
         for key, value in normalized.items():
-            set_system_override(key, str(value))
-        return {"ok": True, "updated": list(normalized)}
+            set_system_override(key.upper(), str(value))
+        return {"ok": True, "updated": [key.upper() for key in normalized]}
 
     @app.get("/api/skills", dependencies=[Depends(_verify_token)])
     async def api_get_skills():
@@ -837,7 +822,7 @@ if HAS_FASTAPI:
             info["config_schema"] = [
                 {
                     **field,
-                    "default": "" if field.get("secret") or field["key"] in info["config_required"]
+                    "default": "" if field.get("secret")
                     else field.get("default", ""),
                 }
                 for field in info["config_schema"] if not field.get("internal")
@@ -846,42 +831,37 @@ if HAS_FASTAPI:
 
     @app.put("/api/skills/{name}/enabled", dependencies=[Depends(_verify_token)])
     async def api_set_skill_enabled(name: str, request: Request):
-        from mochi.db import set_skill_enabled
-        from mochi.extensions.store import ExtensionError
-        from mochi.skills import (
-            get_skill, get_skill_for_management, load_installed_extension,
-        )
+        from mochi.settings import SettingsError, change_setting
+        from mochi.skills import get_skill, get_skill_for_management
 
         body = await request.json()
         if not isinstance(body, dict) or type(body.get("enabled")) is not bool:
             raise HTTPException(400, "enabled must be a boolean")
-        if name == "development":
-            from mochi.personal_workspace import set_development_enabled
-
-            set_development_enabled(body["enabled"])
-            loaded = get_skill("personal_workspace") is not None
-            return {
-                "ok": True, "enabled": body["enabled"],
-                "workspace": "personal_workspace", "documents_available": loaded,
-                "loaded": loaded,
-                "activation_required": False,
-            }
-        skill = get_skill_for_management(name)
+        skill = get_skill_for_management("personal_workspace" if name == "development" else name)
         if skill is None:
             raise HTTPException(404, "Unknown skill")
         enabled = body["enabled"]
-        if skill.locked and not enabled:
-            raise HTTPException(400, "This built-in skill cannot be disabled")
-        set_skill_enabled(name, enabled)
-        if enabled and skill.external:
-            try:
-                load_installed_extension(name)
-            except ExtensionError as exc:
+        setting_id = (
+            "skills.personal_workspace.development_enabled"
+            if name == "development" else f"skills.{name}.enabled"
+        )
+        try:
+            change_setting(setting_id, "true" if enabled else "false")
+        except SettingsError as exc:
+            if exc.code == "extension_load_failed":
                 return JSONResponse(status_code=409, content={
                     "ok": False, "enabled": enabled, "loaded": False,
                     "activation_required": True, "load_error": str(exc),
-                    "error": f"启用开关已保存，但工具加载失败：{exc}",
+                    "error": str(exc),
                 })
+            raise HTTPException(400, str(exc)) from exc
+        if name == "development":
+            loaded = get_skill("personal_workspace") is not None
+            return {
+                "ok": True, "enabled": enabled,
+                "workspace": "personal_workspace", "documents_available": loaded,
+                "loaded": loaded, "activation_required": False,
+            }
         loaded = get_skill(name) is not None
         return {
             "ok": True, "enabled": enabled, "loaded": loaded,
@@ -890,9 +870,8 @@ if HAS_FASTAPI:
 
     @app.put("/api/skills/{name}/config", dependencies=[Depends(_verify_token)])
     async def api_set_skill_config(name: str, request: Request):
-        from mochi.db import delete_skill_config, set_skill_config
-        from mochi.skill_config_resolver import _cast
-        from mochi.skills import get_skill_configuration, refresh_skill_configuration
+        from mochi.settings import SettingsError, change_setting
+        from mochi.skills import get_skill_configuration
 
         skill = get_skill_configuration(name)
         if skill is None:
@@ -906,15 +885,10 @@ if HAS_FASTAPI:
         field = next((f for f in skill._config_schema_typed if f.key == key and not f.internal), None)
         if field is None:
             raise HTTPException(400, "Unknown configuration field")
-        if value:
-            try:
-                _cast(value, field.type)
-            except (ValueError, TypeError):
-                raise HTTPException(400, f"Expected configuration type {field.type}")
-            set_skill_config(name, key, value)
-        else:
-            delete_skill_config(name, key)
-        refresh_skill_configuration(name)
+        try:
+            change_setting(f"skills.{name}.config.{key}", value, reset=not value)
+        except SettingsError as exc:
+            raise HTTPException(400, str(exc)) from exc
         return {"ok": True, "key": key}
 
     # ── Generic .env writer ───────────────────────────────────────────────

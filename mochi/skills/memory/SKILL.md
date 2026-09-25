@@ -8,7 +8,7 @@ locked: true
 ## Tools
 
 ### update_core (resident)
-修订每轮都能看到的长期关系认知。Core 是一份简短的自由文本，不是日记；提交整理后的完整文档即可。Core 不能改变作息、时区或主动消息上限；这些运行设置使用 `manage_agent_settings`。
+修订每轮都能看到的长期关系认知。Core 是一份简短的自由文本，不是日记；提交整理后的完整文档即可。Core 不能改变作息、时区或 Free Time 上限；这些运行设置使用 `manage_settings`。
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|

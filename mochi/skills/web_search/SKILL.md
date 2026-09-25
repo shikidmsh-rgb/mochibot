@@ -4,11 +4,13 @@ description: "网络搜索 — 支持 Tavily、百度千帆与 Bing"
 type: tool
 config:
   TAVILY_API_KEY:
+    label: "Tavily API Key"
     type: str
     secret: true
     default: ""
     description: "Optional Tavily Search API key"
   BAIDU_API_KEY:
+    label: "百度搜索 API Key"
     type: str
     secret: true
     default: ""

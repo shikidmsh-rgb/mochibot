@@ -37,10 +37,10 @@ _ERRORS = {
     "invalid_release": ("GitHub 最新 Release 不是有效的正式版本，未准备更新。", False),
     "invalid_local_version": ("本地版本号无效，无法比较官方版本。", False),
     "container_update_unsupported": ("容器安装请由 Docker 更新镜像，Mochi 不会在容器内改写自己。", False),
-    "update_launcher_required": ("当前启动方式不支持自助更新，请由主人通过 scripts/start.py 启动后再试。", False),
+    "update_launcher_required": ("当前启动方式不支持自助更新，请由用户通过 scripts/start.py 启动后再试。", False),
     "not_git_installation": ("当前不是 Git 安装，无法自动更新。", False),
     "git_inspection_failed": ("无法确认当前 Git 工作区状态，未准备更新。", True),
-    "dirty_worktree": ("检测到本地代码改动，未准备更新；请主人先处理这些改动。", False),
+    "dirty_worktree": ("检测到本地代码改动，未准备更新；请用户先处理这些改动。", False),
     "official_fetch_failed": ("获取官方 Release 代码失败，未修改当前代码。", True),
     "release_version_mismatch": ("Release 标签与代码版本不一致，未修改当前代码。", False),
     "non_fast_forward": ("当前代码无法安全快进到该 Release，未覆盖本地历史。", False),
@@ -338,12 +338,12 @@ def _apply_request(request: dict, python_executable: str) -> dict:
         return {
             "ok": False, "code_updated": changed,
             "state_change_unknown": head_status != 0,
-            "message": "更新失败：无法完成官方 Release 的快进安装。请主人检查本地 Git 状态。",
+            "message": "更新失败：无法完成官方 Release 的快进安装。请用户检查本地 Git 状态。",
         }
     if requirements_changed and not _sync_requirements(python_executable):
         return {
             "ok": False, "code_updated": changed, "version": version,
-            "message": f"代码已更新到官方正式版 v{version}，但依赖安装失败；未报告为更新完成。请主人检查运行环境。",
+            "message": f"代码已更新到官方正式版 v{version}，但依赖安装失败；未报告为更新完成。请用户检查运行环境。",
         }
     try:
         for pycache in (PROJECT_ROOT / "mochi").rglob("__pycache__"):
@@ -352,7 +352,7 @@ def _apply_request(request: dict, python_executable: str) -> dict:
         log.exception("Updated code bytecode cleanup failed")
         return {
             "ok": False, "code_updated": changed, "version": version,
-            "message": f"代码已更新到官方正式版 v{version}，但更新收尾失败；未报告为更新完成。请主人检查运行环境。",
+            "message": f"代码已更新到官方正式版 v{version}，但更新收尾失败；未报告为更新完成。请用户检查运行环境。",
         }
     return {
         "ok": True, "code_updated": changed, "version": version,
@@ -378,7 +378,7 @@ def apply_pending_update(python_executable: str = sys.executable) -> dict | None
             log.exception("Official update interrupted")
             result = {
                 "ok": False, "state_change_unknown": True,
-                "message": "更新流程异常中断，安装状态尚未确认；请主人检查运行环境。",
+                "message": "更新流程异常中断，安装状态尚未确认；请用户检查运行环境。",
             }
         payload = {
             key: request.get(key, "")

@@ -67,6 +67,7 @@ requires_config: [MY_API_KEY]     # 必需的环境变量或 DB 配置（简写�
 config:
   MY_API_KEY:
     type: str
+    label: "服务 API Key"          # 可选显示名；省略使用 key
     default: ""
     secret: yes
     description: "API key for external service"
@@ -117,6 +118,12 @@ Nightly 统计最近 30 天不同普通聊天轮次的成功调用，达到 3 �
 提升至少保持 7 天，30 天无成功使用才降回。Main 可主动 pin/reset eligible
 工具的加载层级，但不能借此绕过配置、平台、开发开关或本轮授权。
 注册表区分声明合同、当前资格与有效加载层级；统计和管理不能导入未激活的扩展代码。
+
+Main 统一通过 `manage_settings` 查看和修改配置。技能开关地址为
+`skills.<name>.enabled`，字段地址为 `skills.<name>.config.<key>`；
+`label` 提供显示名，`description` 提供含义。`secret` 决定脱敏和加密，
+`requires_config` 只决定该字段是否必填。空字符串是字段值，`reset` 才清除
+自定义覆盖；Admin 原有“留空保存清除”的界面由适配层转为 reset。
 
 参数表中的真实参数名 `name` 不是表头。对象数组可写作
 `array (items: object {name:string, calories:integer})`；每个对象必须包含声明字段，
@@ -205,7 +212,7 @@ class MySkill(Skill):
 | `tool_name` | str | 被调用的工具名称 |
 | `args` | dict | 传给工具的参数 |
 | `actor` | str | 框架提供的调用身份，如 Main；不是模型自行声明的参数 |
-| `owner_authorized` | bool | Transport 确认消息来自主人，不替代 Main 对请求语义的判断 |
+| `owner_authorized` | bool | Transport 确认消息来自已绑定用户，不替代 Main 对请求语义的判断 |
 | `source` | str | `chat`、`weekly` 或 `runtime:<kind>`；脚本默认空值，不获得普通聊天权限 |
 | `turn_id` | str | 框架生成的本轮标识，供查询排除当前消息、去重和事实统计 |
 | `observation` | dict \| None | 框架显式提供的观察数据；普通 tool 类 skill 不用关心 |

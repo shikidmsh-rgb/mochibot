@@ -238,12 +238,18 @@ turn. Shared call budgets bound resource use without prescribing a workflow;
 explicit configured limits remain effective. Defaults belong in configuration
 and the extension guide rather than this architecture overview.
 
-Explicit owner requests to change sleep/wake hours, timezone, or the daily
-Free Time limit route `manage_agent_settings` into Main's turn.
-Transport-authenticated owner status is carried into tool dispatch before the
-tool writes the existing system-override store. Heartbeat resolves sleep/wake
-values at each decision boundary. Core may remember a preference but is never
-runtime configuration authority.
+The resident `manage_settings` is Main's single configuration surface for
+runtime preferences, skill switches and parameters, personal development,
+adaptive tool loading, and read-only model summaries. The shared settings
+service supplies the live catalog and mutation rules to Main and overlapping
+Admin endpoints; existing stores remain authoritative. Reads do not start model
+clients, contact providers, or execute inactive extensions. Secret fields expose
+only configured state. Model summaries distinguish saved and loaded configuration.
+Transport-authenticated user status authorizes requested changes in chat;
+Main may inspect settings and manage adaptive loading autonomously.
+Heartbeat resolves sleep/wake values at each decision boundary. Message wake
+eligibility and scheduled fallback wake are separate preferences. Core may
+remember a preference but is never runtime configuration authority.
 
 Only explicitly adaptive tools may move between declared `on_demand` and
 effective `routed` loading. Nightly derives that projection from successful,

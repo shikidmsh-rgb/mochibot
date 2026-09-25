@@ -127,6 +127,7 @@ class ConfigField:
     description: str = ""
     internal: bool = False  # hidden from admin UI when True
     secret: bool = False
+    label: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -155,6 +156,7 @@ def _flush_config_entry(
         description=props.get("description", ""),
         internal=props.get("internal", "").lower() in ("true", "yes", "1"),
         secret=props.get("secret", "").lower() in ("true", "yes", "1"),
+        label=props.get("label", ""),
     ))
 
 
@@ -681,7 +683,7 @@ class Skill(ABC):
             self.config_schema = [
                 {"key": f.key, "type": f.type, "secret": f.secret,
                  "default": f.default, "description": f.description,
-                 "internal": f.internal}
+                 "internal": f.internal, "label": f.label}
                 for f in raw_schema
             ]
         else:
@@ -695,6 +697,7 @@ class Skill(ABC):
                     description=d.get("description", ""),
                     internal=bool(d.get("internal", False)),
                     secret=bool(d.get("secret", False)),
+                    label=d.get("label", ""),
                 )
                 for d in raw_schema
                 if d.get("key")

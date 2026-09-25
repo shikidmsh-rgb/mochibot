@@ -429,7 +429,7 @@ class TestSimpleReply:
         )
 
     @pytest.mark.asyncio
-    async def test_explicit_bedtime_setting_is_routed_and_applied(
+    async def test_explicit_bedtime_setting_is_resident_and_applied(
         self, mock_llm_factory, monkeypatch,
     ):
         import mochi.admin.admin_db as admin_db
@@ -444,8 +444,7 @@ class TestSimpleReply:
         )
 
         async def route_settings(*_args, **kwargs):
-            assert "skill_management" in kwargs["catalog"]
-            return ["skill_management"]
+            return []
 
         monkeypatch.setattr(tool_router, "classify_skills", route_settings)
         admin_db.set_system_override("SLEEP_AFTER_HOUR", "21")
@@ -460,10 +459,10 @@ class TestSimpleReply:
 
         mock = mock_llm_factory([
             make_response(tool_calls=[
-                make_tool_call("manage_agent_settings", {
+                make_tool_call("manage_settings", {
                     "action": "set",
-                    "key": "sleep_after_hour",
-                    "value": 23,
+                    "id": "runtime.sleep_after_hour",
+                    "value": "23",
                 }),
             ]),
             make_response("知道了，今晚十一点再休息。"),
@@ -473,30 +472,27 @@ class TestSimpleReply:
 
         setting_tool = next(
             tool for tool in mock.call_log[0]["tools"]
-            if tool["function"]["name"] == "manage_agent_settings"
+            if tool["function"]["name"] == "manage_settings"
         )
-        assert "sleep_after_hour" in (
-            setting_tool["function"]["parameters"]["properties"]["key"]["enum"]
-        )
+        assert setting_tool["function"]["parameters"]["properties"]["value"]["type"] == "string"
         assert admin_db.get_system_config("SLEEP_AFTER_HOUR") == 23
         assert heartbeat._is_rest_hour(22) is False
         receipt = mock.call_log[1]["messages"][-1]
         assert receipt["role"] == "tool"
-        assert "sleep_after_hour: 21 → 23" in receipt["content"]
         assert '"changed":true' in receipt["content"]
         execution = get_recent_tool_executions(1, limit=1)[0]
-        assert execution["tool_name"] == "manage_agent_settings"
+        assert execution["tool_name"] == "manage_settings"
         assert execution["status"] == "success"
         assert execution["state_changed"] == 1
 
         from mochi.skills import dispatch
 
         denied = await dispatch(
-            "manage_agent_settings",
+            "manage_settings",
             {
                 "action": "set",
-                "key": "sleep_after_hour",
-                "value": 22,
+                "id": "runtime.sleep_after_hour",
+                "value": "22",
             },
             user_id=2,
             channel_id=200,
@@ -505,18 +501,19 @@ class TestSimpleReply:
             owner_authorized=False,
         )
         assert denied.success is False
-        assert denied.error_code == "owner_authorization_required"
+        assert denied.error_code == "user_authorization_required"
         assert admin_db.get_system_config("SLEEP_AFTER_HOUR") == 23
 
         locked = await dispatch(
-            "toggle_skill",
-            {"skill_name": "skill_management", "enabled": False},
+            "manage_settings",
+            {"action": "set", "id": "skills.skill_management.enabled", "value": "false"},
             user_id=1,
             actor="main",
             owner_authorized=True,
+            source="chat",
         )
         assert locked.success is False
-        assert "无法关闭" in locked.output
+        assert locked.error_code == "locked_skill"
 
         from mochi.db import set_skill_enabled, set_skill_mode
         from mochi.turn_tool_policy import build_turn_tool_plan
@@ -524,13 +521,13 @@ class TestSimpleReply:
         set_skill_enabled("skill_management", False)
         set_skill_mode("off")
         skilloff_plan = build_turn_tool_plan("fake")
-        assert "manage_agent_settings" in {
+        assert "manage_settings" in {
             tool["function"]["name"]
             for tool in skilloff_plan.resident_definitions
         }
         view_settings = await dispatch(
-            "manage_agent_settings",
-            {"action": "view"},
+            "manage_settings",
+            {"action": "list", "group": "runtime"},
             user_id=1,
             actor="main",
             owner_authorized=True,

@@ -139,6 +139,7 @@ class Observer(ABC):
         self._last_data: dict = {}
         self._consecutive_errors: int = 0
         self._last_error: str | None = None
+        self._configuration_revision = 0
 
     @property
     def meta(self) -> ObserverMeta:
@@ -198,6 +199,14 @@ class Observer(ABC):
         elapsed = (now - self._last_collected_at).total_seconds() / 60
         return elapsed >= self.effective_interval
 
+    def invalidate(self) -> None:
+        """Discard observations whose source configuration has changed."""
+        self._configuration_revision += 1
+        self._last_data = {}
+        self._last_collected_at = None
+        self._consecutive_errors = 0
+        self._last_error = None
+
     async def safe_observe(self) -> dict:
         """Wrapper: checks interval, calls observe(), caches result, handles errors."""
         now = datetime.now(TZ)
@@ -206,13 +215,19 @@ class Observer(ABC):
             return self._last_data  # return cached, not time yet
 
         try:
+            revision = self._configuration_revision
             data = await self.observe()
+            if revision != self._configuration_revision:
+                return data
             self._last_data = data
             self._last_collected_at = now
             self._consecutive_errors = 0
             self._last_error = None
             return data
         except Exception as e:
+            if revision != self._configuration_revision:
+                log.warning("Observer %s discarded a failed collection after configuration changed", self.name)
+                return self._last_data
             self._consecutive_errors += 1
             self._last_error = safe_error_text(e)
             log.warning(

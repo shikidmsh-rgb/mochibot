@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+import json
 
 import pytest
 
@@ -85,52 +86,53 @@ def test_pin_reset_recalculates_from_default_without_sticking_to_pin():
 async def test_main_can_manage_visibility_without_owner_chat_gate(source):
     result = await SkillManagementSkill().execute(SkillContext(
         trigger="tool_call", actor="main", source=source, user_id=1,
-        owner_authorized=False, tool_name="manage_tool_load",
-        args={"action": "pin", "tool_name": "search_personal_history", "load": "routed"},
+        owner_authorized=False, tool_name="manage_settings",
+        args={"action": "set", "id": "tools.search_personal_history.load", "value": "routed"},
     ))
     assert result.success and result.state_changed
-    assert "pinned by Main" in result.output
+    assert json.loads(result.output)["after"]["details"]["pinned"] == "routed"
 
 
 @pytest.mark.asyncio
 async def test_scripts_fixed_contracts_and_invalid_shapes_stay_rejected():
     skill = registry.get_skill("skill_management")
     unavailable = await skill.execute(SkillContext(
-        trigger="script", actor="main", tool_name="manage_tool_load",
-        args={"action": "pin", "tool_name": "search_personal_history", "load": "routed"},
+        trigger="script", actor="main", tool_name="manage_settings",
+        args={"action": "set", "id": "tools.search_personal_history.load", "value": "routed"},
     ))
     assert not unavailable.success and unavailable.error_code == "main_required"
     fixed = await skill.execute(SkillContext(
-        trigger="tool_call", actor="main", tool_name="manage_tool_load",
-        args={"action": "pin", "tool_name": "update_core", "load": "routed"},
+        trigger="tool_call", actor="main", tool_name="manage_settings",
+        args={"action": "set", "id": "tools.update_core.load", "value": "routed"},
     ))
     assert not fixed.success and fixed.error_code == "fixed_tool_load"
     for args in (
-        {"action": "pin", "tool_name": "search_personal_history"},
-        {"action": "reset", "tool_name": "search_personal_history", "load": "routed"},
+        {"action": "set", "id": "tools.search_personal_history.load"},
+        {"action": "reset", "id": "tools.search_personal_history.load", "value": "routed"},
     ):
         invalid = await skill.execute(SkillContext(
-            trigger="tool_call", actor="main", tool_name="manage_tool_load", args=args,
+            trigger="tool_call", actor="main", tool_name="manage_settings", args=args,
         ))
         assert not invalid.success and invalid.error_code == "invalid_arguments"
-    definitions = [tool for tool in skill.get_tools() if tool["function"]["name"] == "manage_tool_load"]
+    definitions = skill.get_tools()
     availability = ToolAvailability.from_definitions(definitions, source="test")
-    assert availability.validate_arguments("manage_tool_load", {
-        "action": "pin", "tool_name": "search_personal_history", "load": "resident",
+    assert availability.validate_arguments("manage_settings", {
+        "action": "set", "id": "tools.search_personal_history.load", "value": 12,
     })
 
 
-@pytest.mark.asyncio
-async def test_daily_free_time_keeps_persisted_key_and_checks_ten():
+def test_daily_free_time_keeps_persisted_key_and_checks_ten():
     from mochi.admin.admin_db import get_system_config, set_system_override
+    from mochi.settings import SettingsError, change_setting, get_setting
 
     set_system_override("MAX_DAILY_PROACTIVE", "7")
-    skill = SkillManagementSkill()
-    viewed = skill._get_agent_settings()
-    assert "max_daily_proactive = 7 (范围 0–10)" in viewed.output
+    viewed = get_setting("runtime.max_daily_proactive")
+    assert viewed["value"] == 7
+    assert viewed["constraints"] == {"minimum": 0, "maximum": 10}
     for value in (11, -1, 1.5):
-        assert not skill._set_agent_setting("max_daily_proactive", value).success
+        with pytest.raises(SettingsError, match="runtime.max_daily_proactive"):
+            change_setting("runtime.max_daily_proactive", str(value))
         assert get_system_config("MAX_DAILY_PROACTIVE") == 7
-    assert skill._set_agent_setting("max_daily_proactive", 0).success
+    assert change_setting("runtime.max_daily_proactive", "0")["changed"]
     assert get_system_config("MAX_DAILY_PROACTIVE") == 0
-    assert skill._set_agent_setting("max_daily_proactive", 10).success
+    assert change_setting("runtime.max_daily_proactive", "10")["changed"]

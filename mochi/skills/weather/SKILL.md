@@ -8,6 +8,7 @@ sense:
   interval: 60
 config:
   WEATHER_CITY:
+    label: "天气城市"
     type: str
     default: ""
     description: "City name (e.g. Tokyo, New York, Shanghai)"

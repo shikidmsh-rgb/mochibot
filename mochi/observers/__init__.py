@@ -43,11 +43,19 @@ def _register_observer(obs: Observer, registered: list[str]) -> None:
     """Validate config and register a single observer instance."""
     # Check both os.environ AND DB skill config (admin portal saves to DB)
     from mochi.db import get_skill_config
+    from mochi.skills import get_skill
+    from mochi.skill_config_resolver import resolve_skill_config
+
+    skill = get_skill(obs.meta.skill_name or obs.name)
     db_config = get_skill_config(obs.meta.skill_name or obs.name)
+    resolved = resolve_skill_config(skill.name, skill._config_schema_typed) if skill else None
     missing = [
         key
         for key in obs.meta.requires_config
-        if not os.getenv(key) and not db_config.get(key)
+        if not (
+            resolved.get(key) if resolved is not None
+            else os.getenv(key) or db_config.get(key)
+        )
     ]
     if missing:
         log.info(

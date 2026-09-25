@@ -24,12 +24,12 @@ class SystemUpdateSkill(Skill):
             )
         if context.actor != "main" or context.trigger != "tool_call" or context.source != "chat":
             return SkillResult(
-                output="系统更新只接受主人当前对话中的明确请求。",
+                output="系统更新只接受用户当前对话中的明确请求。",
                 success=False, error_code="update_requires_owner_chat", retryable=False,
             )
         if not context.owner_authorized:
             return SkillResult(
-                output="只有主人可以更新 MochiBot。",
+                output="只有用户可以更新 MochiBot。",
                 success=False, error_code="owner_authorization_required", retryable=False,
             )
         if context.args:

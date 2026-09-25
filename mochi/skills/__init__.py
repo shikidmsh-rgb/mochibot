@@ -46,13 +46,20 @@ def get_missing_config(skill: Skill) -> list[str]:
         from mochi.image_service import get_image_config
 
         return [] if get_image_config()["configured"] else ["image model"]
-    db_config = get_skill_config(skill.name)
+    required = getattr(skill, "requires_config", [])
+    if not required:
+        return []
+    from mochi.skill_config_resolver import resolve_skill_config
+    fields = [field for field in skill._config_schema_typed if field.key in required]
+    resolved = resolve_skill_config(skill.name, fields) if fields else {}
+    db_config = get_skill_config(skill.name) if set(required) - resolved.keys() else {}
     return [
         key
-        for key in getattr(skill, "requires_config", [])
-        if not os.getenv(key)
-        and not skill.config.get(key)
-        and not db_config.get(key)
+        for key in required
+        if not (
+            resolved.get(key) if key in resolved
+            else os.getenv(key) or skill.config.get(key) or db_config.get(key)
+        )
     ]
 
 
@@ -769,5 +776,3 @@ def get_skill_info_all() -> list[dict]:
             ),
         })
     return result
-
-

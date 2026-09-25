@@ -2,7 +2,7 @@
 
 `personal_workspace` is Main's single entry for persistent documents and personal
 tool source. **Personal extensions** are reusable tools authored independently
-of official source, by Main or the owner. Users can describe what they need
+of official source, by Main or the user. Users can describe what they need
 without choosing a package type or knowing extension terminology.
 The workspace does not replace Diary, Core, or memory. Main chooses what to
 write and whether executable behavior is useful; a document does not need to
@@ -45,7 +45,7 @@ read-only. Package-owned data, runtime copies, credentials, official source and
 the shared database are not generic workspace file paths.
 
 Development is enabled by default, without separate authorization. The existing
-`toggle_skill(skill_name="development", enabled=false)` setting disables draft
+`manage_settings(action="set", id="skills.personal_workspace.development_enabled", value="false")` setting disables draft
 mutation, execution and activation, not document operations, read-only source
 inspection, or already installed personal tools. Admin offers the same optional
 setting; explicit disables persist. `development` and `mochi_files` are no longer
@@ -129,7 +129,7 @@ behavior. Mutable defaults are fresh per instance:
 | `trigger` | Required invocation kind; ordinary live tools receive `"tool_call"`; smoke scripts may use `"script"`. |
 | `user_id`, `channel_id` | `0`; caller identifiers. |
 | `transport`, `actor` | `""`; supplied caller transport and actor. |
-| `owner_authorized` | `False`; supplied owner authorization, not a handler claim. |
+| `owner_authorized` | `False`; supplied user authorization, not a handler claim. |
 | `tool_name` | `""`; tool being called. |
 | `args` | `{}`; invocation arguments. |
 | `observation` | `None`; retained constructor field, not an Observer API for personal extensions. |
@@ -164,8 +164,9 @@ imports are not public personal extension APIs. This boundary is not a Python sa
 third-party imports remain allowed, using installed libraries. There is no
 automatic dependency installer, dependency version solver or per-extension environment.
 
-Configuration uses existing skill metadata; `get_skill_config` and
-`set_skill_config` manage it in conversation, with an optional Admin card:
+Configuration uses existing skill metadata. `manage_settings` lists, reads,
+sets and resets `skills.<skill_name>.config.<key>` in conversation, with an optional
+Admin card. Skill switches use `skills.<skill_name>.enabled`.
 
 ```yaml
 config:
@@ -181,7 +182,7 @@ Declare every required key in `config` so it can be supplied and injected.
 Configuration management includes newly declared draft keys while the installed
 tool keeps its current schemas and availability until activation.
 Never put credentials in source. Missing configuration makes the live tool
-unavailable until the owner supplies it. Smoke scripts use explicit sample
+unavailable until the user supplies it. Smoke scripts use explicit sample
 configuration instead of loading production credentials.
 
 ## Authoring and trying the tool
@@ -261,7 +262,7 @@ Main can repair its draft while the previous live version keeps running.
 
 If extension code prevents startup, stop Mochi and rename its directory to
 start with an underscore, such as `_disabled_local_reading`; startup ignores it.
-While stopped, the owner may restore `previous` and restart. This restores code
+While stopped, the user may restore `previous` and restart. This restores code
 only, not data or external effects, and older code may not understand newer data.
 There is no automatic rollback.
 

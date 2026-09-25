@@ -1579,9 +1579,9 @@ function renderPersonalSkills(skills) {
     if (s.source === 'personal') {
       html += `<div style="font-size:12px;margin-top:6px">工具：${esc(s.tools.join(', ') || '尚未注册')}</div>`;
       for (const field of s.config_schema) {
-        const secret = field.secret || (s.config_required || s.requires_config).includes(field.key);
+        const secret = field.secret;
         html += `<div data-extension-field style="display:flex;align-items:center;gap:8px;margin-top:8px">
-          <label style="min-width:120px;font-size:12px">${esc(field.key)}</label>
+          <label style="min-width:120px;font-size:12px">${esc(field.label || field.key)}</label>
           <input class="form-input" type="${secret?'password':'text'}" autocomplete="off"
             aria-label="${esc(s.name + ' ' + field.key)}"
             placeholder="${s.config_status[field.key]?'已配置；输入新值替换':'尚未配置'}">

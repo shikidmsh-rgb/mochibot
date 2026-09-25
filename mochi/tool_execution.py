@@ -40,7 +40,7 @@ def sanitize_arguments(tool_name: str, args: dict) -> dict:
     sanitized = _sanitize_value(args)
     if not isinstance(sanitized, dict):
         sanitized = {}
-    if tool_name == "set_skill_config" and "value" in sanitized:
+    if tool_name == "manage_settings" and "value" in sanitized:
         sanitized["value"] = "[REDACTED]"
     if tool_name in {"save_mochi_file", "write_extension", "edit_workspace"}:
         for key in ("content", "old_text", "new_text", "skill_md", "handler_py", "smoke_py", "files"):
@@ -71,8 +71,6 @@ def action_for(tool_name: str, args: dict) -> str:
         "update_core": "update",
         "delete_memory": "delete",
         "write_diary": "update",
-        "toggle_skill": "update",
-        "set_skill_config": "update",
     }
     return defaults.get(tool_name, "")
 
@@ -80,11 +78,6 @@ def action_for(tool_name: str, args: dict) -> str:
 def _compact_summary(tool_name: str, args: dict, result: SkillResult) -> str:
     if result.summary:
         summary = result.summary
-    elif tool_name == "set_skill_config":
-        summary = (
-            f"Updated configuration {args.get('skill_name', '?')}."
-            f"{args.get('key', '?')}."
-        )
     else:
         summary = result.output or "No result"
     summary = " ".join(str(summary).split())

@@ -339,6 +339,23 @@ class ModelPool:
 _pool: ModelPool | None = None
 
 
+def loaded_config_summary() -> dict[str, dict]:
+    """Inspect already-loaded clients without constructing or probing a pool."""
+    if _pool is None:
+        return {}
+    with _pool._lock:
+        result = {
+            tier: {"provider": client.provider_name, "model": _pool._tier_models[tier]}
+            for tier, client in _pool._tiers.items()
+        }
+        result["embedding"] = {
+            "provider": "openai" if _pool._embed_client is not None else "none",
+            "model": _pool._embed_model,
+            "configured": _pool._embed_client is not None,
+        }
+    return result
+
+
 def get_pool() -> ModelPool:
     """Get (or create) the global ModelPool singleton."""
     global _pool
