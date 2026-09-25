@@ -38,7 +38,7 @@ from mochi.heartbeat_runtime import (
     store_delivery_progress,
     store_prepared_result,
 )
-from mochi.main_runtime import DurableChatResult
+from mochi.main_runtime import DurableChatResult, MainRuntimeEntry
 
 
 log = logging.getLogger(__name__)
@@ -85,7 +85,7 @@ def _persist_state(state: str, changed_at: datetime | None = None) -> None:
         log.debug("Failed to persist heartbeat state: %s", exc)
 
 
-def _init_state() -> str:
+def _init_state() -> tuple[str, datetime]:
     now = datetime.now(TZ)
     try:
         if _STATE_FILE.exists():
@@ -94,23 +94,22 @@ def _init_state() -> str:
             saved_at = datetime.fromisoformat(data["at"])
             if saved_at.tzinfo is None:
                 saved_at = saved_at.replace(tzinfo=TZ)
-            if (
-                (now - saved_at).total_seconds() < 12 * 3600
-                and saved in {SLEEPING, AWAKE, TRANSITIONING}
-            ):
-                return SLEEPING if saved == TRANSITIONING else saved
+            if saved in {SLEEPING, TRANSITIONING}:
+                return SLEEPING, saved_at
+            if saved == AWAKE and (now - saved_at).total_seconds() < 12 * 3600:
+                return AWAKE, saved_at
     except Exception as exc:
         log.debug("Failed to read persisted heartbeat state: %s", exc)
-    return AWAKE if _is_awake_hour(now.hour) else SLEEPING
+    return (AWAKE if _is_awake_hour(now.hour) else SLEEPING), now
 
 
-_state: str = _init_state()
-_state_changed_at: datetime = datetime.now(TZ)
+_state, _state_changed_at = _init_state()
 _wake_reason: str | None = None
-_last_sleep_at: datetime | None = None
+_last_sleep_at: datetime | None = (
+    _state_changed_at if _state == SLEEPING else None
+)
 _silent_pause = False
 
-_bedtime_callback = None
 _weekly_callback = None
 _runtime_prepare_callback = None
 _runtime_delivery_callback = None
@@ -121,14 +120,9 @@ _chat_activity_generation = 0
 
 def reload_state_after_config_seed() -> None:
     """Resolve initial state again after .env settings enter the DB."""
-    global _state, _state_changed_at
-    _state = _init_state()
-    _state_changed_at = datetime.now(TZ)
-
-
-def set_bedtime_callback(callback) -> None:
-    global _bedtime_callback
-    _bedtime_callback = callback
+    global _state, _state_changed_at, _last_sleep_at
+    _state, _state_changed_at = _init_state()
+    _last_sleep_at = _state_changed_at if _state == SLEEPING else None
 
 
 def set_weekly_callback(callback) -> None:
@@ -253,10 +247,19 @@ def should_wake_on_message() -> bool:
     )
 
 
+def should_wake_on_schedule(now: datetime) -> bool:
+    fallback_hour = int(_effective("FALLBACK_WAKE_HOUR"))
+    return (
+        _state == SLEEPING
+        and fallback_hour <= now.hour < _sleep_after_hour()
+        and _state_changed_at < now.replace(
+            hour=fallback_hour, minute=0, second=0, microsecond=0,
+        )
+    )
+
+
 def bedtime_tool_available() -> bool:
-    if _state != AWAKE or not bedtime_entry_enabled():
-        return False
-    return _is_rest_hour(datetime.now(TZ).hour)
+    return _state == AWAKE and bedtime_entry_enabled()
 
 
 def bedtime_entry_enabled() -> bool:
@@ -268,20 +271,43 @@ def bedtime_entry_timeout() -> float:
 
 
 async def run_silent_bedtime(user_id: int, trigger: str) -> bool:
+    from mochi.transport import DeliveryError
+
     if not claim_sleep_transition(trigger):
         return False
     try:
-        if not bedtime_entry_enabled() or _bedtime_callback is None:
+        if not bedtime_entry_enabled():
             return False
-        delivered = bool(
-            await asyncio.wait_for(
-                _bedtime_callback(user_id, trigger),
-                timeout=bedtime_entry_timeout(),
-            )
+        if _runtime_prepare_callback is None or _runtime_delivery_callback is None:
+            raise RuntimeError("Bedtime Main callbacks are not registered")
+        entry = MainRuntimeEntry.bedtime(
+            trigger=trigger, user_id=user_id, channel_id=user_id,
+            transport=_runtime_transport,
         )
-        if delivered:
+        result = await asyncio.wait_for(
+            _runtime_prepare_callback(entry),
+            timeout=bedtime_entry_timeout(),
+        )
+        if result.disposition == "skip":
             log_heartbeat(_state, "bedtime_entry", trigger)
-        return delivered
+            return True
+        if not result.text and not result.stickers:
+            raise ValueError("Bedtime Main returned no valid outcome")
+        delivered = await _runtime_delivery_callback(
+            user_id, result, can_deliver=lambda: _state == TRANSITIONING,
+        )
+        if not delivered:
+            raise DeliveryError(
+                "Bedtime transport did not confirm delivery",
+                outcome="delivery_unknown",
+            )
+        result.confirm_delivered()
+        log_heartbeat(_state, "bedtime_entry", trigger)
+        return True
+    except DeliveryError as exc:
+        log.warning("Bedtime %s: %s", exc.outcome, exc)
+        log_heartbeat(_state, f"bedtime_{exc.outcome}", str(exc)[:200])
+        return False
     except asyncio.TimeoutError:
         log_heartbeat(_state, "bedtime_timeout", trigger)
         return False
@@ -696,7 +722,7 @@ async def heartbeat_loop() -> None:
                 continue
             if _state == SLEEPING:
                 fallback_hour = int(_effective("FALLBACK_WAKE_HOUR"))
-                if fallback_hour <= now.hour < _sleep_after_hour():
+                if should_wake_on_schedule(now):
                     wake_up(f"fallback_{fallback_hour}:00")
                 else:
                     log_heartbeat(_state, "sleeping")

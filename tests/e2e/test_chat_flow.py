@@ -382,7 +382,12 @@ class TestSimpleReply:
     async def test_main_can_request_bedtime(self, mock_llm_factory, monkeypatch):
         import mochi.heartbeat as heartbeat
 
-        monkeypatch.setattr(heartbeat, "bedtime_tool_available", lambda: True)
+        class EveningClock:
+            @classmethod
+            def now(cls, _tz):
+                return SimpleNamespace(hour=21)
+
+        monkeypatch.setattr(heartbeat, "datetime", EveningClock)
         mock = mock_llm_factory([
             make_response(tool_calls=[
                 make_tool_call("enter_bedtime", {}),
@@ -396,9 +401,6 @@ class TestSimpleReply:
         assert any(
             tool["function"]["name"] == "enter_bedtime"
             for tool in mock.call_log[0]["tools"]
-        )
-        assert "Bedtime will begin after your farewell" in (
-            mock.call_log[1]["messages"][-1]["content"]
         )
 
     @pytest.mark.asyncio
@@ -454,7 +456,7 @@ class TestSimpleReply:
                 return SimpleNamespace(hour=22)
 
         monkeypatch.setattr(heartbeat, "datetime", NightClock)
-        assert heartbeat.bedtime_tool_available() is True
+        assert heartbeat._is_rest_hour(22) is True
 
         mock = mock_llm_factory([
             make_response(tool_calls=[
@@ -477,7 +479,7 @@ class TestSimpleReply:
             setting_tool["function"]["parameters"]["properties"]["key"]["enum"]
         )
         assert admin_db.get_system_config("SLEEP_AFTER_HOUR") == 23
-        assert heartbeat.bedtime_tool_available() is False
+        assert heartbeat._is_rest_hour(22) is False
         receipt = mock.call_log[1]["messages"][-1]
         assert receipt["role"] == "tool"
         assert "sleep_after_hour: 21 → 23" in receipt["content"]

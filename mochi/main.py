@@ -32,7 +32,6 @@ from mochi.transport import DeliveryError, Transport, IncomingMessage
 from mochi.heartbeat import (
     heartbeat_loop,
     reload_state_after_config_seed,
-    set_bedtime_callback,
     set_main_runtime_callbacks,
     set_weekly_callback,
 )
@@ -243,23 +242,6 @@ async def main():
                 user_id, ChatResult(text=text), can_deliver=can_deliver,
             )
 
-        async def enter_bedtime(user_id: int, trigger: str) -> bool:
-            entry = MainRuntimeEntry.bedtime(
-                trigger=trigger,
-                user_id=user_id,
-                channel_id=user_id,
-                transport=_t.name,
-            )
-            result = await chat(runtime_entry=entry)
-            if result.disposition == "skip":
-                return True
-            if not result.text and not result.stickers:
-                return False
-            delivered = await _t.send_proactive_result_checked(user_id, result)
-            if delivered:
-                result.confirm_delivered()
-            return delivered
-
         async def enter_weekly(
             user_id: int,
             logical_date: str,
@@ -274,7 +256,7 @@ async def main():
             )
             await chat(runtime_entry=entry)
 
-        async def prepare_self_reminder(entry: MainRuntimeEntry) -> ChatResult:
+        async def prepare_main_runtime(entry: MainRuntimeEntry) -> ChatResult:
             return await chat(runtime_entry=entry)
 
         async def deliver_self_reminder(
@@ -298,15 +280,14 @@ async def main():
             )
 
         set_main_runtime_callbacks(
-            prepare_self_reminder,
+            prepare_main_runtime,
             deliver_autonomous,
             _t.name,
         )
-        set_bedtime_callback(enter_bedtime)
         set_weekly_callback(enter_weekly)
         set_reminder_callback(send_proactive)
         set_self_reminder_callbacks(
-            prepare_self_reminder,
+            prepare_main_runtime,
             deliver_self_reminder,
             _t.name,
         )

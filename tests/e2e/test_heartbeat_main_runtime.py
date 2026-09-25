@@ -1,5 +1,6 @@
 """Essential autonomous Main behavior."""
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 import random
 
@@ -12,6 +13,82 @@ from mochi.heartbeat_runtime import ensure_daily_free_time_plan
 from mochi.main_runtime import DurableChatResult, MainRuntimeEntry
 from mochi.transport import DeliveryError, IncomingMessage
 from tests.e2e.mock_llm import main_context, make_response, make_tool_call
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("confirmed", [True, False])
+async def test_bedtime_delivery_outlives_preparation_deadline(monkeypatch, confirmed):
+    import mochi.heartbeat as heartbeat
+
+    monkeypatch.setattr(heartbeat, "bedtime_entry_timeout", lambda: 0.01)
+    prepared = []
+    deliveries = []
+
+    async def prepare(entry):
+        prepared.append(entry)
+        return ChatResult(text="Good night.", _pending_history={
+            "user_id": 1, "content": "Good night.", "turn_id": "bedtime:deadline",
+            "processed": True, "tool_history": None,
+        })
+
+    async def deliver(_channel_id, _result, *, can_deliver):
+        deliveries.append(True)
+        assert can_deliver()
+        assert get_recent_messages(1) == []
+        await asyncio.sleep(0.03)
+        assert can_deliver()
+        if not confirmed:
+            raise DeliveryError("receipt timed out", outcome="delivery_unknown")
+        return True
+
+    heartbeat.set_main_runtime_callbacks(prepare, deliver, "fake")
+    assert await heartbeat.run_silent_bedtime(1, "silence") is confirmed
+    assert heartbeat._state == heartbeat.SLEEPING
+    assert len(prepared) == len(deliveries) == 1
+    assert prepared[0].kind == "bedtime"
+    assert prepared[0].trigger == "silence"
+    messages = get_recent_messages(1)
+    assert len(messages) == int(confirmed)
+    if confirmed:
+        assert messages[0]["turn_id"] == "bedtime:deadline"
+        assert messages[0]["role"] == "assistant"
+    conn = _connect()
+    action = conn.execute(
+        "SELECT action FROM heartbeat_log ORDER BY id DESC LIMIT 1",
+    ).fetchone()[0]
+    conn.close()
+    assert action == ("bedtime_entry" if confirmed else "bedtime_delivery_unknown")
+    assert not await heartbeat.run_silent_bedtime(1, "silence")
+    assert len(prepared) == len(deliveries) == 1
+
+
+@pytest.mark.asyncio
+async def test_bedtime_preparation_still_times_out_without_sending(monkeypatch):
+    import mochi.heartbeat as heartbeat
+
+    monkeypatch.setattr(heartbeat, "bedtime_entry_timeout", lambda: 0.01)
+    cancelled = []
+
+    async def prepare(_entry):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.append(True)
+
+    async def deliver(*_args, **_kwargs):
+        pytest.fail("timed-out preparation must not deliver")
+
+    heartbeat.set_main_runtime_callbacks(prepare, deliver, "fake")
+    assert not await heartbeat.run_silent_bedtime(1, "silence")
+    assert cancelled == [True]
+    assert heartbeat._state == heartbeat.SLEEPING
+    assert get_recent_messages(1) == []
+    conn = _connect()
+    action = conn.execute(
+        "SELECT action FROM heartbeat_log ORDER BY id DESC LIMIT 1",
+    ).fetchone()[0]
+    conn.close()
+    assert action == "bedtime_timeout"
 
 
 def _schedule_due(now):

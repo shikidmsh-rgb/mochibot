@@ -1,4 +1,4 @@
-"""Daily Free Time scheduling and cancellation, using the existing fixture DB."""
+"""Heartbeat sleep state and daily Free Time scheduling."""
 
 from datetime import datetime, timedelta, timezone
 
@@ -169,3 +169,77 @@ def test_blocked_due_opportunity_expires_instead_of_waiting(active_chat, awake):
     assert saved[keys[0]]["attempt_count"] == 0
     assert saved[keys[1]]["status"] == "pending"
     assert runtime.get_schedulable_runs(now=due + timedelta(seconds=30)) == []
+
+
+@pytest.fixture
+def bedtime_clock(monkeypatch, tmp_path):
+    import mochi.heartbeat as heartbeat
+
+    clock = {"now": DAY.replace(hour=21, minute=58)}
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock["now"].astimezone(tz)
+
+    settings = {
+        "WAKE_EARLIEST_HOUR": 6, "SLEEP_AFTER_HOUR": 23,
+        "FALLBACK_WAKE_HOUR": 10, "BEDTIME_ENTRY_ENABLED": True,
+        "FREE_TIME_ENABLED": True, "MAX_DAILY_PROACTIVE": 5,
+    }
+    monkeypatch.setattr(heartbeat, "datetime", Clock)
+    monkeypatch.setattr(heartbeat, "TZ", UTC)
+    monkeypatch.setattr(heartbeat, "_effective", settings.__getitem__)
+    monkeypatch.setattr(heartbeat, "_STATE_FILE", tmp_path / ".heartbeat_state")
+    monkeypatch.setattr(heartbeat, "_state", heartbeat.AWAKE)
+    monkeypatch.setattr(heartbeat, "_state_changed_at", clock["now"])
+    monkeypatch.setattr(heartbeat, "_last_sleep_at", None)
+    monkeypatch.setattr(heartbeat, "_wake_reason", None)
+    monkeypatch.setattr(heartbeat, "_silent_pause", False)
+    return clock, settings, heartbeat
+
+
+@pytest.mark.parametrize("hour", [8, 21])
+def test_main_can_rest_before_scheduled_bedtime_without_immediate_wake(
+    bedtime_clock, hour,
+):
+    clock, settings, heartbeat = bedtime_clock
+    clock["now"] = clock["now"].replace(hour=hour)
+    assert heartbeat.bedtime_tool_available()
+    settings["BEDTIME_ENTRY_ENABLED"] = False
+    assert not heartbeat.bedtime_tool_available()
+    settings["BEDTIME_ENTRY_ENABLED"] = True
+    assert heartbeat.claim_sleep_transition("explicit")
+    assert not heartbeat.bedtime_tool_available()
+    heartbeat.go_to_sleep("explicit")
+    assert not heartbeat.free_time_turn_available(None)
+    assert heartbeat.check_silence_sleep() is None
+    assert not heartbeat.bedtime_tool_available()
+    assert not heartbeat.should_wake_on_schedule(clock["now"] + timedelta(seconds=30))
+
+    wake_at = clock["now"].replace(hour=10, minute=0)
+    if hour > 10:
+        wake_at += timedelta(days=1)
+    assert not heartbeat.should_wake_on_schedule(wake_at - timedelta(seconds=1))
+    assert heartbeat.should_wake_on_schedule(wake_at)
+    assert heartbeat.should_wake_on_message()
+    heartbeat.wake_up("user_message")
+    assert heartbeat._state == heartbeat.AWAKE
+
+
+@pytest.mark.parametrize("complete_transition", [True, False])
+def test_sleep_start_survives_restart_even_after_twelve_hours(
+    bedtime_clock, complete_transition,
+):
+    clock, _, heartbeat = bedtime_clock
+    began_at = clock["now"]
+    assert heartbeat.claim_sleep_transition("explicit")
+    if complete_transition:
+        heartbeat.go_to_sleep("explicit")
+    clock["now"] = began_at + timedelta(hours=12, minutes=1)
+    heartbeat.reload_state_after_config_seed()
+    assert heartbeat._state == heartbeat.SLEEPING
+    assert heartbeat._state_changed_at == began_at
+    assert heartbeat._last_sleep_at == began_at
+    assert not heartbeat.should_wake_on_schedule(clock["now"])
+    assert heartbeat.should_wake_on_schedule(clock["now"] + timedelta(minutes=1))

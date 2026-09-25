@@ -270,17 +270,23 @@ through this launcher-only path.
 
 ## Bedtime flow
 
-During night conversations, Main may call the framework-scoped
+During conversations, Main may call the framework-scoped
 `enter_bedtime` tool when it understands that the user is genuinely ending the
 conversation to sleep. Main leaves a natural farewell in the same tool loop,
 then the transport claims and completes the sleep transition. No keyword or
-separate classifier decides what the user meant.
+separate classifier decides what the user meant, and the tool is not restricted
+to scheduled rest hours. Sleep pauses Free Time until an eligible owner message
+or the next fallback wake time after sleep began. The existing persisted state
+timestamp preserves this boundary across restarts.
 
 Heartbeat-detected silence still creates a `MainRuntimeEntry(kind="bedtime")`
 with a lived sleep-transition situation. The heartbeat atomically claims the
 transition, Main may use the abilities available in the turn, and the runtime
-completes sleep even when model or delivery work fails. When the recent
-conversation already completed a bedtime farewell, Main may choose `[SKIP]`
+completes sleep even when model or delivery work fails. Bedtime uses the shared
+Main preparation and delivery callbacks: its model timeout ends before transport
+delivery begins, leaving delivery its own timeout and confirmation boundary.
+Unconfirmed delivery is recorded without adding a delivered message or retrying.
+When the recent conversation already completed a bedtime farewell, Main may choose `[SKIP]`
 and let the transition finish without sending a duplicate goodbye.
 
 ## Nightly and Weekly memory flow

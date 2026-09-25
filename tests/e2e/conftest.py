@@ -102,11 +102,12 @@ def reset_tool_policy(monkeypatch):
 # ── Heartbeat state reset ──
 
 @pytest.fixture(autouse=True)
-def reset_heartbeat_state(monkeypatch):
+def reset_heartbeat_state(monkeypatch, tmp_path):
     """Reset heartbeat module-level state between tests."""
     import mochi.heartbeat as hb
     monkeypatch.setattr(hb, "_state", "AWAKE")
-    monkeypatch.setattr(hb, "_bedtime_callback", None)
+    monkeypatch.setattr(hb, "_STATE_FILE", tmp_path / ".heartbeat_state")
+    monkeypatch.setattr(hb, "_state_changed_at", hb.datetime.now(hb.TZ))
     monkeypatch.setattr(hb, "_weekly_callback", None)
     monkeypatch.setattr(hb, "_runtime_prepare_callback", None)
     monkeypatch.setattr(hb, "_runtime_delivery_callback", None)
