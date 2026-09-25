@@ -1,6 +1,6 @@
 # MochiBot Architecture
 
-MochiBot is a single-owner companion running as one Python process with SQLite
+MochiBot is a single-user companion running as one Python process with SQLite
 storage. Its primary design goal is a consistent relationship with minimal
 setup, not broad provider or multi-user infrastructure.
 
