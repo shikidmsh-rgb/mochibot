@@ -27,6 +27,16 @@ log = logging.getLogger(__name__)
 # reasoning-model latency on slow third-party gateways but fails fast on hangs.
 _HTTP_TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0)
 
+_RESPONSES_API_MODELS = frozenset({
+    "gpt-6-astra",
+    "gpt-6-sol",
+})
+
+
+def _uses_responses_api(model: str) -> bool:
+    """Return whether a verified model requires the Responses API."""
+    return model.strip().lower() in _RESPONSES_API_MODELS
+
 
 def _decode_data_image(block: dict) -> tuple[str, bytes]:
     """Decode one canonical OpenAI image_url block for native providers."""
@@ -522,14 +532,14 @@ class OpenAIProvider(_OpenAICompatChat, LLMProvider):
     def reasoning_source(self) -> str:
         return (
             f"{self._caps_cache_key}::responses"
-            if self._model == "gpt-6-sol"
+            if _uses_responses_api(self._model)
             else self._caps_cache_key
         )
 
     def chat(self, messages: list[dict], tools: list[dict] | None = None,
              temperature: float | None = None, max_tokens: int = 2048,
              json_mode: bool = False) -> LLMResponse:
-        if self._model == "gpt-6-sol":
+        if _uses_responses_api(self._model):
             kwargs: dict = {
                 "model": self._model,
                 "input": _responses_input(messages),

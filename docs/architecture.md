@@ -160,9 +160,9 @@ adapter; Anthropic uses its own adapter. A user-supplied HTTPS
 OpenAI-compatible API root may use the same OpenAI adapter as an escape hatch;
 MochiBot does not add gateway-specific compatibility or guarantee tools,
 images, JSON mode, or model parameters beyond what that endpoint implements.
-GPT-6 Sol uses the Responses API to keep reasoning and function tools available
-together; its tool rounds replay provider output and paired function results
-without relying on provider-stored conversation state.
+Verified GPT-6 Sol and Astra models use the Responses API to keep reasoning and
+function tools available together; their tool rounds replay provider output and
+paired function results without relying on provider-stored conversation state.
 Embedding is optional and off by default. OpenAI, Alibaba Cloud Bailian, and
 Azure AI Foundry embedding use the same OpenAI-compatible embedding adapter.
 

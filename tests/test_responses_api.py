@@ -35,7 +35,7 @@ def _response(*output, status="completed"):
     )
 
 
-def _provider(responses):
+def _provider(responses, model="gpt-6-sol"):
     calls = []
 
     def create(**kwargs):
@@ -43,8 +43,8 @@ def _provider(responses):
         return responses.pop(0)
 
     provider = OpenAIProvider.__new__(OpenAIProvider)
-    provider._model = "gpt-6-sol"
-    provider._init_caps_from_cache("gpt-6-sol", "https://example.openai.azure.com/openai/v1")
+    provider._model = model
+    provider._init_caps_from_cache(model, "https://example.openai.azure.com/openai/v1")
     provider._client = SimpleNamespace(responses=SimpleNamespace(create=create))
     return provider, calls
 
@@ -66,7 +66,7 @@ def test_gpt6_responses_tool_round_preserves_reasoning_and_function_pairing(monk
     provider, calls = _provider([
         _response(reasoning, call),
         _response(final),
-    ])
+    ], model="gpt-6-astra")
     tool = {
         "type": "function",
         "function": {
@@ -78,6 +78,8 @@ def test_gpt6_responses_tool_round_preserves_reasoning_and_function_pairing(monk
     messages = [{"role": "system", "content": "You are Mochi"},
                 {"role": "user", "content": "Weather?"}]
     first = provider.chat(messages, tools=[tool])
+    assert first.model == "gpt-6-astra"
+    assert first.reasoning_source.endswith("::gpt-6-astra::responses")
     assert calls[0]["store"] is False
     assert calls[0]["include"] == ["reasoning.encrypted_content"]
     assert calls[0]["reasoning"] == {"effort": "high"}
