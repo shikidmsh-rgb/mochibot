@@ -387,6 +387,7 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         ("cost_usd", "REAL DEFAULT NULL"),
         ("reasoning_tokens", "INTEGER DEFAULT NULL"),
         ("cached_prompt_tokens", "INTEGER DEFAULT NULL"),
+        ("cache_write_tokens", "INTEGER DEFAULT NULL"),
     ]:
         _add_col("usage_log", col, typedef)
 
@@ -2620,7 +2621,8 @@ def log_usage(prompt_tokens: int, completion_tokens: int, total_tokens: int,
               prompt_tool_tokens: int | None = None,
               cost_usd: float | None = None,
               reasoning_tokens: int | None = None,
-              cached_prompt_tokens: int | None = None) -> None:
+              cached_prompt_tokens: int | None = None,
+              cache_write_tokens: int | None = None) -> None:
     now = datetime.now(TZ).isoformat()
     eff_call_type = call_type or purpose
     conn = _connect()
@@ -2629,12 +2631,12 @@ def log_usage(prompt_tokens: int, completion_tokens: int, total_tokens: int,
            tool_calls, model, purpose, created_at,
            tool_name, model_role, call_type, usage_stage,
            prompt_system_tokens, prompt_history_tokens, prompt_tool_tokens, cost_usd,
-           reasoning_tokens, cached_prompt_tokens)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           reasoning_tokens, cached_prompt_tokens, cache_write_tokens)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (prompt_tokens, completion_tokens, total_tokens, tool_calls, model, purpose, now,
          tool_name, model_role, eff_call_type, usage_stage,
          prompt_system_tokens, prompt_history_tokens, prompt_tool_tokens, cost_usd,
-         reasoning_tokens, cached_prompt_tokens),
+         reasoning_tokens, cached_prompt_tokens, cache_write_tokens),
     )
     conn.commit()
     conn.close()

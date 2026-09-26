@@ -135,6 +135,7 @@ async def classify_skills_llm(message: str, user_id: int | None = None,
             response.total_tokens, model=response.model, purpose="tool_router",
             reasoning_tokens=response.reasoning_tokens,
             cached_prompt_tokens=response.cached_prompt_tokens,
+            cache_write_tokens=response.cache_write_tokens,
         )
 
         result = json.loads(extract_json(response.content))

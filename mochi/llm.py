@@ -76,6 +76,7 @@ class LLMResponse:
     # for cost telemetry — see plan P1-2.
     reasoning_tokens: int | None = None
     cached_prompt_tokens: int | None = None
+    cache_write_tokens: int | None = None
     reasoning_source: str = ""
     response_items: list[dict] = field(default_factory=list)
 
@@ -218,6 +219,7 @@ def _openai_response(choice, usage, model: str, tool_calls: list[ToolCallDict]) 
     """Build LLMResponse from OpenAI-style completion."""
     reasoning: int | None = None
     cached: int | None = None
+    cache_write: int | None = None
     if usage:
         comp_details = getattr(usage, "completion_tokens_details", None)
         if comp_details is not None:
@@ -227,6 +229,8 @@ def _openai_response(choice, usage, model: str, tool_calls: list[ToolCallDict]) 
         if prompt_details is not None:
             c = getattr(prompt_details, "cached_tokens", None)
             cached = int(c) if c is not None else None
+            w = getattr(prompt_details, "cache_write_tokens", None)
+            cache_write = int(w) if w is not None else None
         if cached is None:
             c = getattr(usage, "prompt_cache_hit_tokens", None)
             cached = int(c) if c is not None else None
@@ -242,6 +246,7 @@ def _openai_response(choice, usage, model: str, tool_calls: list[ToolCallDict]) 
         tool_calls_complete=choice.finish_reason == "tool_calls",
         reasoning_tokens=reasoning,
         cached_prompt_tokens=cached,
+        cache_write_tokens=cache_write,
     )
 
 
@@ -349,6 +354,7 @@ def _responses_result(resp, model: str, source: str) -> LLMResponse:
         finish_reason=resp.status,
         reasoning_tokens=getattr(output_details, "reasoning_tokens", None),
         cached_prompt_tokens=getattr(input_details, "cached_tokens", None),
+        cache_write_tokens=getattr(input_details, "cache_write_tokens", None),
     )
 
 
@@ -650,13 +656,12 @@ class AnthropicProvider(LLMProvider):
 
         usage = resp.usage
         cached: int | None = None
+        cache_write: int | None = None
         if usage:
             cache_read = getattr(usage, "cache_read_input_tokens", None)
             cache_create = getattr(usage, "cache_creation_input_tokens", None)
-            if cache_read is not None or cache_create is not None:
-                # Only "read" counts as savings. cache_creation is the FIRST
-                # write (full price + 25% surcharge) — don't conflate.
-                cached = int(cache_read or 0)
+            cached = int(cache_read) if cache_read is not None else None
+            cache_write = int(cache_create) if cache_create is not None else None
 
         return LLMResponse(
             content=content,
@@ -672,6 +677,7 @@ class AnthropicProvider(LLMProvider):
             # semantic (None = not reported by SDK).
             reasoning_tokens=None,
             cached_prompt_tokens=cached,
+            cache_write_tokens=cache_write,
         )
 
     @staticmethod

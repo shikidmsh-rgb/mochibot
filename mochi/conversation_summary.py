@@ -78,6 +78,7 @@ def _log_response_usage(response, stage: str) -> None:
             model_role="LITE", call_type="background", usage_stage=stage,
             reasoning_tokens=response.reasoning_tokens,
             cached_prompt_tokens=response.cached_prompt_tokens,
+            cache_write_tokens=response.cache_write_tokens,
         )
 
 

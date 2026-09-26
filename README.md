@@ -120,6 +120,13 @@ Telegram 和微信均支持以下命令；除 `/help` 外仅对 Owner 生效。
 | `/reset` | 清空后续对话可见的短期上下文，保留数据库和长期记忆 |
 | `/restart` | 重启 MochiBot |
 
+模型用量的缓存诊断记录保存在数据库 `usage_log`：`cached_prompt_tokens`
+是缓存读取量，`cache_write_tokens` 是缓存写入量；未报告为 `NULL`，
+只有接口明确报告零时才记为 `0`。Main 的 `usage_stage` 区分每轮首次请求
+（`initial`）与工具后的继续请求（`tool_continuation`），结合 `purpose`
+区分普通聊天和自主入口。历史记录不倒推补填，也不把缓存读取量直接换算为节省金额。
+`/cost` 仍展示 Token 总量，不是服务商账单。
+
 ## 数据放在哪里
 
 - `data/`：数据库、Core、Diary、个人资料、扩展和运行数据。

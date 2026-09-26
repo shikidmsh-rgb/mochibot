@@ -231,17 +231,19 @@ class TestSimpleReply:
         import mochi.config as config
         import mochi.heartbeat as heartbeat
         import mochi.turn_tool_policy as turn_tool_policy
-        from mochi.db import set_context_reset
+        from mochi.db import _connect, set_context_reset
 
         monkeypatch.setattr(config, "TOOL_ESCALATION_ENABLED", True)
         monkeypatch.setattr(heartbeat, "bedtime_tool_available", lambda: False)
-        mock = mock_llm_factory([
-            make_response(tool_calls=[
-                make_tool_call("request_tools", {"skills": ["habit"]}),
-            ]),
-            make_response("Loaded."),
-            make_response("Follow-up."),
+        first = make_response(tool_calls=[
+            make_tool_call("request_tools", {"skills": ["habit"]}),
         ])
+        first.cached_prompt_tokens = 0
+        first.cache_write_tokens = 10
+        continuation = make_response("Loaded.")
+        continuation.cached_prompt_tokens = 10
+        continuation.cache_write_tokens = 0
+        mock = mock_llm_factory([first, continuation, make_response("Follow-up.")])
         await chat(_msg("Check my habits."))
         if expiry == "idle":
             started, reset_at, names = turn_tool_policy._session_toolboxes[1]
@@ -252,6 +254,21 @@ class TestSimpleReply:
         elif expiry == "reset":
             set_context_reset(1)
         await chat(_msg("And the second one?"))
+
+        conn = _connect()
+        try:
+            usage = conn.execute(
+                "SELECT usage_stage, tool_calls, cached_prompt_tokens, "
+                "cache_write_tokens FROM usage_log "
+                "WHERE purpose='chat:main' ORDER BY id",
+            ).fetchall()
+            assert [tuple(row) for row in usage] == [
+                ("initial", 1, 0, 10),
+                ("tool_continuation", 0, 10, 0),
+                ("initial", 0, None, None),
+            ]
+        finally:
+            conn.close()
 
         def tool_names(call):
             return [tool["function"]["name"] for tool in call["tools"]]

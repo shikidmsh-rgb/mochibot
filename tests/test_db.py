@@ -46,6 +46,36 @@ def _save_turn(name):
     save_message(1, "assistant", f"assistant-{name}", turn_id=name)
 
 
+def test_usage_preserves_unknown_and_zero_cache_counts():
+    db.log_usage(100, 20, 120, model="main")
+    db.log_usage(
+        100, 20, 120, model="main", usage_stage="initial",
+        cached_prompt_tokens=0, cache_write_tokens=80,
+    )
+    db.log_usage(
+        100, 20, 120, model="main", usage_stage="tool_continuation",
+        cached_prompt_tokens=80, cache_write_tokens=0,
+    )
+    conn = db._connect()
+    try:
+        rows = conn.execute(
+            "SELECT usage_stage, cached_prompt_tokens, cache_write_tokens "
+            "FROM usage_log ORDER BY id",
+        ).fetchall()
+        assert [tuple(row) for row in rows] == [
+            ("", None, None),
+            ("initial", 0, 80),
+            ("tool_continuation", 80, 0),
+        ]
+        totals = conn.execute(
+            "SELECT SUM(prompt_tokens), SUM(cached_prompt_tokens), "
+            "SUM(cache_write_tokens), COUNT(cache_write_tokens) FROM usage_log",
+        ).fetchone()
+        assert tuple(totals) == (300, 80, 80, 2)
+    finally:
+        conn.close()
+
+
 def test_day_conversation_respects_logical_day_reset_and_visible_budget():
     import json
     from datetime import datetime, timezone

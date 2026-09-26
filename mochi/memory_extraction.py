@@ -220,6 +220,7 @@ def _run_batch(user_id: int, cursor: int, batch: list[dict]) -> list[int]:
             usage_stage="fixed_batch",
             reasoning_tokens=response.reasoning_tokens,
             cached_prompt_tokens=response.cached_prompt_tokens,
+            cache_write_tokens=response.cache_write_tokens,
         )
 
     candidates = validate_extraction_response(response.content, batch)

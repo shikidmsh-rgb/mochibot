@@ -1157,6 +1157,7 @@ async def chat(
     def _log_main_usage(
         response: LLMResponse,
         *,
+        usage_stage: str,
         call_type: str | None = None,
     ) -> None:
         log_usage(
@@ -1176,8 +1177,10 @@ async def chat(
                 else f"chat:{tier}"
             ),
             call_type=call_type,
+            usage_stage=usage_stage,
             reasoning_tokens=response.reasoning_tokens,
             cached_prompt_tokens=response.cached_prompt_tokens,
+            cache_write_tokens=response.cache_write_tokens,
         )
 
     def _free_time_cancelled() -> bool:
@@ -1332,7 +1335,10 @@ async def chat(
                     )
                 return ChatResult(text=f"API 报错：{e}")
 
-        _log_main_usage(response)
+        _log_main_usage(
+            response,
+            usage_stage="initial" if round_num == 0 else "tool_continuation",
+        )
         if _free_time_cancelled():
             return _cancelled_result()
         if recalled_memories and not recall_exposure_recorded:
