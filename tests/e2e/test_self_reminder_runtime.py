@@ -1,5 +1,6 @@
 """One durable Self Reminder delivery path."""
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -12,6 +13,96 @@ from mochi.skills.reminder.queries import (
     get_schedulable_reminders,
 )
 from tests.e2e.mock_llm import make_response, make_tool_call
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("expires_while_waiting", [False, True])
+async def test_self_turns_wait_for_confirmed_history_without_blocking_notify(
+    monkeypatch, expires_while_waiting,
+):
+    from mochi.ai_client import ChatResult
+    from mochi.db import _connect
+    import mochi.reminder_timer as timer
+    import mochi.skills.reminder.queries as queries
+
+    clock = {"now": datetime(2026, 9, 26, 15, 0, tzinfo=timezone.utc)}
+    monkeypatch.setattr(timer, "_utc_now", lambda: clock["now"])
+    monkeypatch.setattr(queries, "_now", lambda: clock["now"])
+    due = clock["now"].isoformat()
+    first_id = create_self_reminder(1, 100, "Review the evening", due, "fake")
+    second_id = create_self_reminder(1, 100, "Review the evening again", due, "fake")
+    notify_id = queries.create_reminder(1, 100, "An explicit alarm", due)
+    reminders = {row["id"]: row for row in get_schedulable_reminders(now=clock["now"])}
+    first_preparing = asyncio.Event()
+    first_sending = asyncio.Event()
+    second_started = asyncio.Event()
+    allow_preparation = asyncio.Event()
+    allow_delivery = asyncio.Event()
+    seen_history = {}
+
+    def status(rid):
+        with _connect() as conn:
+            return conn.execute(
+                "SELECT status FROM reminders WHERE id = ?", (rid,),
+            ).fetchone()[0]
+
+    async def prepare(entry):
+        seen_history[entry.reminder_id] = [
+            row["turn_id"] for row in get_recent_messages(1)
+        ]
+        if entry.reminder_id == first_id:
+            first_preparing.set()
+            await allow_preparation.wait()
+        return ChatResult(
+            text="A prepared check-in.",
+            _pending_history={
+                "user_id": 1, "content": "A prepared check-in.",
+                "turn_id": entry.idempotency_key,
+                "tool_history": None, "processed": True,
+            },
+        )
+
+    async def deliver(_channel, _result, *, can_deliver):
+        assert can_deliver()
+        if not first_sending.is_set():
+            first_sending.set()
+            await allow_delivery.wait()
+        return True
+
+    async def notify(_user, _text, *, can_deliver):
+        assert can_deliver()
+        return True
+
+    async def fire_second():
+        second_started.set()
+        await _fire_reminder(reminders[second_id])
+
+    set_self_reminder_callbacks(prepare, deliver, "fake")
+    timer.set_send_callback(notify)
+    async with asyncio.timeout(5):
+        async with asyncio.TaskGroup() as tasks:
+            tasks.create_task(_fire_reminder(reminders[first_id]))
+            await first_preparing.wait()
+            tasks.create_task(fire_second())
+            await second_started.wait()
+            assert status(second_id) == "pending"
+            await _fire_reminder(reminders[notify_id])
+            assert status(notify_id) == "delivered"
+            allow_preparation.set()
+            await first_sending.wait()
+            assert status(second_id) == "pending"
+            if expires_while_waiting:
+                clock["now"] += timedelta(minutes=5)
+            allow_delivery.set()
+
+    assert status(first_id) == "delivered"
+    assert seen_history[first_id] == []
+    if expires_while_waiting:
+        assert second_id not in seen_history
+        assert status(second_id) == "expired"
+    else:
+        assert f"self-reminder:{first_id}:{due}" in seen_history[second_id]
+        assert status(second_id) == "delivered"
 
 
 @pytest.mark.asyncio

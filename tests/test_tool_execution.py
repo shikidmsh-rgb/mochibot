@@ -153,14 +153,20 @@ def test_autonomous_receipts_include_silent_work_without_inventing_delivery():
     )
     _execution("failed", source="runtime:attention", status="failed", summary="TRY_FAILED")
     _execution("unfinished", source="runtime:self_reminder", status="running")
+    _execution(
+        "bedtime", "schedule_self_reminder", source="runtime:bedtime",
+        changed=True, summary="Reminder #60 set for tomorrow at 23:00",
+    )
     _execution("unseen-chat", summary="UNSEEN_CHAT")
     _execution("weekly", source="weekly", summary="WEEKLY")
-    _execution("other", source="runtime:free_time", user_id=2, summary="OTHER_USER")
+    _execution("other", source="runtime:bedtime", user_id=2, summary="OTHER_USER")
 
     context = recent_operations_context(1, [], include_autonomous=True)
 
     assert "Reminder #54 set for tonight at 23:00" in context
     assert '"source":"runtime:free_time"' in context
+    assert "Reminder #60 set for tomorrow at 23:00" in context
+    assert '"source":"runtime:bedtime"' in context
     assert "TRY_FAILED" in context
     assert '"status":"running"' in context
     assert not any(value in context for value in ("UNSEEN_CHAT", "WEEKLY", "OTHER_USER"))
@@ -168,12 +174,13 @@ def test_autonomous_receipts_include_silent_work_without_inventing_delivery():
     assert recent_operations_context(1, []) == ""
 
 
-def test_autonomous_receipts_respect_time_reset_and_shared_budget():
-    _execution("old-epoch", source="runtime:free_time", summary="OLD_EPOCH")
+@pytest.mark.parametrize("source", ["runtime:free_time", "runtime:bedtime"])
+def test_autonomous_receipts_respect_time_reset_and_shared_budget(source):
+    _execution("old-epoch", source=source, summary="OLD_EPOCH")
     db.set_context_reset(1)
     _turn("visible")
     visible_id = _execution("visible", summary="VISIBLE_OLD")
-    stale_id = _execution("stale", source="runtime:attention", summary="STALE_RUNTIME")
+    stale_id = _execution("stale", source=source, summary="STALE_RUNTIME")
     with db._connect() as conn:
         conn.execute(
             "UPDATE tool_executions SET started_at = '2020-01-01T00:00:00+00:00' "
@@ -195,7 +202,7 @@ def test_autonomous_receipts_respect_time_reset_and_shared_budget():
     )
     for number in range(14):
         _execution(
-            f"silent-{number}", source="runtime:free_time",
+            f"silent-{number}", source=source,
             summary=f"LATEST_{number:02}",
         )
     context = recent_operations_context(
@@ -371,4 +378,3 @@ def test_tool_results_report_real_outcome(monkeypatch):
     )))
     assert failed["ok"] is False
     assert "source" not in failed and "authority" not in failed
-

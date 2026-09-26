@@ -135,7 +135,7 @@ counted only after a subsequent successful Main call has received the results.
 
 The existing execution ledger supplies bounded receipts for the completed turns
 visible in Main's conversation context, independent of message wording or routing,
-plus the last 24 hours of autonomous runtime work. Silent
+plus the last 24 hours of autonomous runtime work, including bedtime. Silent
 operations remain visible without inventing an assistant message or implying
 delivery. These receipts share one count/text budget and respect context resets.
 Receipts include read-only, failed and unfinished calls as well as successful
@@ -371,6 +371,12 @@ At the scheduled time, the reminder scheduler claims the
 row and creates `MainRuntimeEntry(kind="self_reminder")`; Main sees current
 Core, conversation, Diary, and the capabilities available on the pinned
 transport, without a synthetic user message.
+
+Self Reminder turns run one at a time, through delivery confirmation, so the
+next turn reads the preceding turn's recorded work and delivered speech.
+Waiting does not claim the reminder or extend its original expiry; cancellation
+and schedule changes remain effective until its turn begins. Ordinary `notify`
+reminders do not wait for Self Reminder turns.
 
 Main may act, prepare a user-visible result, or finish with `[SKIP]`. Tool-only
 success and skip are terminal outcomes that require no transport delivery. A

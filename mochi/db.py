@@ -1057,7 +1057,8 @@ def get_recent_tool_executions(user_id: int, *, hours: int = 24,
         if include_autonomous:
             scopes.append(
                 "(source IN ('runtime:free_time', 'runtime:attention', "
-                "'runtime:self_reminder') AND julianday(started_at) >= julianday(?))"
+                "'runtime:self_reminder', 'runtime:bedtime') "
+                "AND julianday(started_at) >= julianday(?))"
             )
             params.append(cutoff)
         if not scopes:

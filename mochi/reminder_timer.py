@@ -37,6 +37,7 @@ _send_callback = None
 _self_prepare_callback = None
 _self_delivery_callback = None
 _self_transport = ""
+_self_reminder_lock = asyncio.Lock()
 _heap: list[tuple[str, int, dict]] = []
 _heap_event: asyncio.Event | None = None
 _active_ids: set[int] = set()
@@ -315,6 +316,15 @@ async def _deliver_self_reminder(
 
 
 async def _fire_reminder(reminder: dict) -> None:
+    if reminder.get("kind", "notify") == "self":
+        # Read fresh context only after the prior self turn finishes delivery.
+        async with _self_reminder_lock:
+            await _process_reminder(reminder)
+    else:
+        await _process_reminder(reminder)
+
+
+async def _process_reminder(reminder: dict) -> None:
     claimed = claim_reminder(
         reminder["id"],
         now=_utc_now(),

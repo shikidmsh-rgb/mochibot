@@ -12,7 +12,7 @@ ENTER_BEDTIME_DEF = {
     "type": "function",
     "function": {
         "name": ENTER_BEDTIME_TOOL_NAME,
-        "description": "准备休息，回看今天的聊天和日记；本轮结束后进入休息，暂停 Free Time。",
+        "description": "准备结束这轮相处、休息时使用。本轮结束后暂停 Free Time，已有提醒不受影响。返回今天的聊天和日记，供你回看。",
         "parameters": {
             "type": "object",
             "properties": {},

@@ -8,6 +8,8 @@ Provides:
 - reset_tool_policy: clear rate-limit and deny state between tests
 """
 
+import asyncio
+
 import pytest
 
 from mochi.db import init_db
@@ -123,6 +125,7 @@ def reset_heartbeat_state(monkeypatch, tmp_path):
     monkeypatch.setattr(timer, "_self_prepare_callback", None)
     monkeypatch.setattr(timer, "_self_delivery_callback", None)
     monkeypatch.setattr(timer, "_self_transport", "")
+    monkeypatch.setattr(timer, "_self_reminder_lock", asyncio.Lock())
     monkeypatch.setattr(timer, "_heap", [])
     monkeypatch.setattr(timer, "_heap_event", None)
     monkeypatch.setattr(timer, "_active_ids", set())
