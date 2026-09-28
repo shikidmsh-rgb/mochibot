@@ -14,7 +14,7 @@ import unicodedata
 from datetime import datetime, timedelta
 
 from mochi.config import (
-    DB_PATH, TZ,
+    DB_PATH, TZ, MEMORY_EXTRACTION_BATCH_TURNS,
     RECALL_VEC_SIM_THRESHOLD, RECALL_BM25_WEIGHT, RECALL_VEC_SIM_WEIGHT,
     RECALL_KEYWORD_BOOST, RECALL_FTS_CANDIDATE_MULTIPLIER, RECALL_FALLBACK_LIMIT,
     RECALL_DECAY_HALF_LIFE_DAYS, VEC_SEARCH_NATIVE_ENABLED, VEC_SEARCH_CANDIDATE_LIMIT,
@@ -1265,7 +1265,7 @@ def _ensure_memory_extraction_state(
 
 
 def get_memory_extraction_batch(
-    user_id: int, batch_turns: int = 10,
+    user_id: int, batch_turns: int = MEMORY_EXTRACTION_BATCH_TURNS,
 ) -> tuple[int, list[dict]]:
     """Return the exact next complete ordinary-turn batch after the cursor."""
     conn = _connect()
@@ -1293,7 +1293,7 @@ def get_memory_extraction_batch(
 
 
 def get_memory_extraction_status(
-    user_id: int, batch_turns: int = 10,
+    user_id: int, batch_turns: int = MEMORY_EXTRACTION_BATCH_TURNS,
 ) -> dict:
     """Return the extraction cursor and complete pending turns."""
     conn = _connect()

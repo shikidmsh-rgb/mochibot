@@ -3,7 +3,12 @@ import json
 import pytest
 
 import mochi.memory_extraction as extraction
-from mochi.db import _connect, get_memory_extraction_status, save_message
+from mochi.db import (
+    _connect,
+    get_memory_extraction_batch,
+    get_memory_extraction_status,
+    save_message,
+)
 from mochi.llm import LLMResponse
 
 
@@ -30,6 +35,26 @@ def _save_turns(count):
         )
         rows.append((user_id, assistant_id))
     return rows
+
+
+def test_default_batch_waits_for_twenty_complete_turns():
+    _save_turns(19)
+    save_message(1, "user", "twentieth user message", turn_id="turn-19")
+
+    assert get_memory_extraction_batch(1) == (0, [])
+    status = get_memory_extraction_status(1)
+    assert status["pending_turns"] == 19
+    assert status["batch_turns"] == 20
+    assert status["threshold"] == 40
+
+    assistant_id = save_message(
+        1, "assistant", "twentieth reply", turn_id="turn-19",
+    )
+    cursor, batch = get_memory_extraction_batch(1)
+    assert cursor == 0
+    assert len(batch) == 40
+    assert batch[-1]["id"] == assistant_id
+    assert get_memory_extraction_status(1)["pending_turns"] == 20
 
 
 @pytest.fixture(autouse=True)
