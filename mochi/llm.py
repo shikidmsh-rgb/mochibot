@@ -361,8 +361,9 @@ def _responses_result(resp, model: str, source: str) -> LLMResponse:
 class _OpenAICompatChat:
     """Mixin: negotiate max_tokens vs max_completion_tokens.
 
-    On first call, tries the modern token parameter. Precise protocol 400s can
-    negotiate the alternate token parameter or empty reasoning placeholders.
+    Known endpoint contracts take precedence over cached guesses. Otherwise,
+    the first call tries the modern token parameter, and precise protocol 400s
+    can negotiate the alternate parameter or empty reasoning placeholders.
 
     Learned capabilities are also persisted in a class-level cache keyed by
     endpoint and model, so a fresh equivalent provider instance can skip the
@@ -405,6 +406,9 @@ class _OpenAICompatChat:
                 model, self._use_max_completion_tokens,
                 self._requires_reasoning_placeholders,
             )
+        if base_url and urlsplit(base_url).hostname == "api.deepseek.com":
+            # DeepSeek silently ignores max_completion_tokens rather than rejecting it.
+            self._use_max_completion_tokens = False
 
     def _save_caps_to_cache(self, model: str) -> None:
         """Persist resolved capability flags to the class-level cache."""

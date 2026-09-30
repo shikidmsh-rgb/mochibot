@@ -101,6 +101,26 @@ def test_malformed_provider_tool_arguments_are_not_parsed():
     )
 
 
+def test_known_endpoint_token_contract_overrides_cached_capability_guess():
+    cache = {
+        f"{endpoint}::model": {
+            "use_max_completion_tokens": True,
+            "requires_reasoning_placeholders": True,
+        }
+        for endpoint in ("https://api.deepseek.com/v1", "https://api.openai.com/v1")
+    }
+    deepseek = llm.OpenAIProvider.__new__(llm.OpenAIProvider)
+    deepseek._model_caps = cache
+    deepseek._init_caps_from_cache("model", "https://api.deepseek.com/v1")
+    assert deepseek._use_max_completion_tokens is False
+    assert deepseek._requires_reasoning_placeholders is True
+
+    openai = llm.OpenAIProvider.__new__(llm.OpenAIProvider)
+    openai._model_caps = cache
+    openai._init_caps_from_cache("model", "https://api.openai.com/v1")
+    assert openai._use_max_completion_tokens is True
+
+
 def test_reasoning_placeholders_are_negotiated_per_endpoint_and_model():
     def _bad_request(message):
         return BadRequestError(
@@ -218,14 +238,14 @@ def test_reasoning_placeholders_are_negotiated_per_endpoint_and_model():
         ordered._use_max_completion_tokens = None
         ordered._requires_reasoning_placeholders = False
         ordered._init_caps_from_cache(
-            "deepseek-reasoner", "https://api.deepseek.com/v1",
+            "compatible-model", "https://api.example.com/v1",
         )
         ordered_calls = NegotiatingCompletions(error_order)
         ordered._do_chat(
             SimpleNamespace(
                 chat=SimpleNamespace(completions=ordered_calls),
             ),
-            "deepseek-reasoner",
+            "compatible-model",
             history,
             tools=[{"type": "function"}],
             temperature=None,
