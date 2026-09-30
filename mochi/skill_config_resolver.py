@@ -69,6 +69,9 @@ def resolve_skill_config_details(
             value = _cast(raw, field.type)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"配置值无效：{skill_name}.{field.key}。") from exc
+        if field.secret and isinstance(value, str):
+            from mochi.runtime_trace import register_secret
+            register_secret(value)
         result[field.key] = ResolvedConfig(value, source)
     return result
 

@@ -203,6 +203,31 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS idx_tool_exec_turn
             ON tool_executions(turn_id, id);
 
+        CREATE TABLE IF NOT EXISTS runtime_traces (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            trace_id      TEXT NOT NULL,
+            span_id       TEXT NOT NULL UNIQUE,
+            turn_id       TEXT NOT NULL,
+            user_id       INTEGER,
+            run_kind      TEXT NOT NULL,
+            span_kind     TEXT NOT NULL,
+            name          TEXT NOT NULL,
+            process_id    TEXT NOT NULL,
+            status        TEXT NOT NULL,
+            request_json  TEXT,
+            response_json TEXT,
+            error         TEXT,
+            started_at    TEXT NOT NULL,
+            finished_at   TEXT,
+            duration_ms   REAL
+        );
+        CREATE INDEX IF NOT EXISTS idx_runtime_traces_run
+            ON runtime_traces(trace_id, id);
+        CREATE INDEX IF NOT EXISTS idx_runtime_traces_turn
+            ON runtime_traces(turn_id, id);
+        CREATE INDEX IF NOT EXISTS idx_runtime_traces_created
+            ON runtime_traces(started_at);
+
         -- Proactive message history
         CREATE TABLE IF NOT EXISTS proactive_log (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,

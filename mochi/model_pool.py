@@ -125,6 +125,8 @@ def _make_embed_client(provider: str, api_key: str, model: str,
         return None, ""
 
     from openai import OpenAI
+    from mochi.runtime_trace import register_secret
+    register_secret(api_key)
     kwargs: dict = {"api_key": api_key}
     if base_url:
         kwargs["base_url"] = base_url
@@ -305,7 +307,12 @@ class ModelPool:
         if not missing_keys:
             return results
         try:
-            resp = self._embed_client.embeddings.create(
+            from mochi.runtime_trace import sdk_call
+            resp = sdk_call(
+                self._embed_client.embeddings.create,
+                protocol="embeddings.create", provider="openai",
+                endpoint=str(getattr(self._embed_client, "base_url", "")),
+                client_timeout=getattr(self._embed_client, "timeout", None),
                 model=self._embed_model, input=missing_keys,
             )
             packed_by_key: dict[str, bytes] = {}

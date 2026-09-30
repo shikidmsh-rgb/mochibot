@@ -129,6 +129,8 @@ async def main():
 
     # 0. Database (before config validation — tier models live in DB)
     init_db()
+    from mochi.runtime_trace import initialize_process
+    initialize_process()
     from mochi.db import recover_interrupted_scheduled_runs
     recover_interrupted_scheduled_runs()
     from mochi.heartbeat_runtime import expire_abandoned_runs

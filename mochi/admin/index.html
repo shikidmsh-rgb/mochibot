@@ -180,6 +180,7 @@ select.form-input { cursor:pointer; }
     <button class="nav-item" data-page="memory"><span class="nav-icon">🧠</span> 记忆</button>
     <button class="nav-item" data-page="advanced"><span class="nav-icon">🛠️</span> 模型</button>
     <button class="nav-item" data-page="system"><span class="nav-icon">⚙️</span> 系统</button>
+    <button class="nav-item" data-page="traces"><span class="nav-icon">🔎</span> 运行记录</button>
   </nav>
   <div style="padding:8px 12px; border-top:1px solid var(--border);">
     <button onclick="restartAdminServer()" style="display:flex;align-items:center;gap:6px;padding:8px 10px;border-radius:8px;cursor:pointer;font-size:13px;color:var(--text-dim);border:none;background:none;width:100%;text-align:left;transition:background .15s;" onmouseover="this.style.background='var(--primary-bg)'" onmouseout="this.style.background='none'" id="admin-restart-btn">🔄 重启 Agent</button>
@@ -252,6 +253,17 @@ select.form-input { cursor:pointer; }
 <section id="page-system" class="page">
   <h2 class="page-title">系统</h2>
   <div id="system-content"><div class="loading"><div class="spinner"></div> 加载中...</div></div>
+</section>
+
+<section id="page-traces" class="page">
+  <h2 class="page-title">运行记录</h2>
+  <p style="color:var(--text-soft);font-size:13px;margin-bottom:16px">
+    保留最近 7 天的实际模型请求、响应和执行过程，仅供排障，不进入 Mochi 的记忆。
+    凭据已脱敏，图片和二进制内容已省略；请求正文包含私人对话，请谨慎分享。
+  </p>
+  <button class="btn btn-ghost btn-sm" onclick="loadTraces()">↻ 刷新</button>
+  <div id="trace-list" style="margin-top:12px"></div>
+  <div id="trace-detail" style="margin-top:20px"></div>
 </section>
 
 </main>
@@ -357,7 +369,7 @@ function statusIcon(type) {
 const loaded = {};
 let _settingsRequestGeneration = 0;
 let _systemRequestGeneration = 0;
-const loaders = { settings:loadSettings, memory:loadMemory, advanced:loadAdvanced, system:loadSystem };
+const loaders = { settings:loadSettings, memory:loadMemory, advanced:loadAdvanced, system:loadSystem, traces:loadTraces };
 
 document.getElementById('sidebar-nav').addEventListener('click', e => {
   const item = e.target.closest('.nav-item');
@@ -1660,6 +1672,111 @@ async function savePreferences() {
   } catch(e) {
     showToast('保存失败: ' + e.message);
   }
+}
+
+let _traceRuns = [];
+let _traceListGeneration = 0;
+let _traceDetailGeneration = 0;
+let _traceDetail = null;
+const _traceStatuses = {
+  running: '执行中', prepared: '模型已完成，等待送达结果',
+  completed: '已完成', completed_late: '等待结束后才返回',
+  delivered: '已确认送达', failed: '失败', invalid: '无有效结果',
+  cancelled: '等待已取消', interrupted: '进程中断',
+  skip: '安静结束', handled: '工具处理结束', tools_only: '仅工具操作',
+  delivery_unknown: '送达未确认', delivery_unavailable: '无法送达',
+  delivery_rejected: '送达被拒绝', expired: '已过期',
+  active_chat: '让位于用户对话', retry_scheduled: '本次失败，已安排重试',
+};
+
+function traceStatus(value) {
+  return _traceStatuses[value] || value;
+}
+
+function tracePayload(value) {
+  return `<pre style="white-space:pre-wrap;overflow-wrap:anywhere;max-height:420px;overflow:auto;font-size:12px">${esc(JSON.stringify(value, null, 2))}</pre>`;
+}
+
+async function loadTraces(before = null) {
+  const generation = ++_traceListGeneration;
+  const container = document.getElementById('trace-list');
+  if (before === null) _traceRuns = [];
+  container.innerHTML = '<div class="loading">读取运行记录…</div>';
+  try {
+    const data = await api('GET', '/diagnostics/traces?limit=30' + (before ? '&before=' + before : ''));
+    if (generation !== _traceListGeneration) return;
+    _traceRuns.push(...data.runs);
+    if (!_traceRuns.length) {
+      container.innerHTML = '<div class="card" style="color:var(--text-soft)">暂无记录。新功能启用前的请求不会被伪造补录。</div>';
+      return;
+    }
+    container.innerHTML = _traceRuns.map(run => `
+      <button class="card trace-open" data-trace-id="${esc(run.trace_id)}"
+        style="display:block;width:100%;text-align:left;cursor:pointer;margin-bottom:8px">
+        <strong>${esc(run.run_kind)}</strong>
+        <span class="badge badge-info" style="margin-left:8px">${esc(traceStatus(run.status))}</span>
+        <div style="font-size:12px;color:var(--text-soft);margin-top:6px">
+          ${esc(run.started_at)} · ${run.duration_ms == null ? '尚未结束' : (run.duration_ms / 1000).toFixed(2) + ' 秒'}
+        </div>
+        <div style="font-size:11px;overflow-wrap:anywhere">${esc(run.turn_id)}</div>
+      </button>`).join('');
+    for (const button of container.querySelectorAll('.trace-open')) {
+      button.onclick = () => openTrace(button.dataset.traceId);
+    }
+    if (data.next_before) {
+      const more = document.createElement('button');
+      more.className = 'btn btn-ghost';
+      more.textContent = '加载更早记录';
+      more.onclick = () => loadTraces(data.next_before);
+      container.appendChild(more);
+    }
+  } catch (error) {
+    if (generation !== _traceListGeneration) return;
+    container.innerHTML = `<div class="card" style="color:var(--danger)">读取失败：${esc(error.message)}</div>`;
+  }
+}
+
+async function openTrace(traceId) {
+  const generation = ++_traceDetailGeneration;
+  const container = document.getElementById('trace-detail');
+  container.innerHTML = '<div class="loading">读取完整过程…</div>';
+  try {
+    const data = await api('GET', '/diagnostics/traces/' + encodeURIComponent(traceId));
+    if (generation !== _traceDetailGeneration) return;
+    _traceDetail = data;
+    let html = '<div class="card"><div class="card-title">本次运行</div>';
+    html += `<div style="overflow-wrap:anywhere;font-size:12px">${esc(data.trace_id)}</div>`;
+    html += '<button class="btn btn-ghost btn-sm" style="margin-top:8px" onclick="exportTrace()">下载这次记录</button>';
+    html += '<p style="font-size:12px;color:var(--text-soft);margin-top:8px">“等待已取消”不代表底层请求已停止；“等待结束后才返回”保留迟到结果。工具是否成功和消息是否送达分别记录。</p></div>';
+    for (const item of data.spans) {
+      html += `<details class="card" style="margin-bottom:10px">
+        <summary style="cursor:pointer"><strong>${esc(item.span_kind)} · ${esc(item.name)}</strong>
+          <span style="margin-left:8px">${esc(traceStatus(item.status))}</span>
+          <span style="font-size:12px;color:var(--text-soft)">${item.duration_ms == null ? '' : (item.duration_ms / 1000).toFixed(2) + ' 秒'}</span>
+        </summary>
+        <div style="font-size:12px;color:var(--text-soft);margin-top:8px">${esc(item.started_at)} → ${esc(item.finished_at || '尚未结束')}</div>
+        ${item.error ? '<pre style="white-space:pre-wrap;color:var(--danger)">' + esc(item.error) + '</pre>' : ''}
+        ${item.request === null ? '' : '<h4>实际输入 / 参数</h4>' + tracePayload(item.request)}
+        ${item.response === null ? '' : '<h4>实际结果</h4>' + tracePayload(item.response)}
+      </details>`;
+    }
+    html += '<details class="card"><summary style="cursor:pointer">关联的工具执行账本 (' + data.tools.length + ')</summary>' + tracePayload(data.tools) + '</details>';
+    container.innerHTML = html;
+    container.scrollIntoView({behavior:'smooth', block:'start'});
+  } catch (error) {
+    if (generation !== _traceDetailGeneration) return;
+    container.innerHTML = `<div class="card" style="color:var(--danger)">读取失败：${esc(error.message)}</div>`;
+  }
+}
+
+function exportTrace() {
+  if (!_traceDetail) return;
+  const url = URL.createObjectURL(new Blob([JSON.stringify(_traceDetail, null, 2)], {type:'application/json'}));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'mochibot-trace-' + _traceDetail.trace_id + '.json';
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 async function loadSystem() {

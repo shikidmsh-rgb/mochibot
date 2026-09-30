@@ -304,6 +304,9 @@ def complete_without_delivery(
             ),
         )
         conn.commit()
+        if cursor.rowcount == 1:
+            from mochi.runtime_trace import finish_turn
+            finish_turn(claimed["run_key"], outcome)
         return cursor.rowcount == 1
     finally:
         conn.close()
@@ -442,6 +445,9 @@ def record_failure(
             ),
         )
         conn.commit()
+        if cursor.rowcount == 1:
+            from mochi.runtime_trace import finish_turn
+            finish_turn(claimed["run_key"], outcome)
         return cursor.rowcount == 1
     finally:
         conn.close()
@@ -459,6 +465,9 @@ def complete_delivery(claimed: dict) -> bool:
             (now_iso, claimed["run_key"], claimed["claim_token"]),
         )
         conn.commit()
+        if cursor.rowcount == 1:
+            from mochi.runtime_trace import finish_turn
+            finish_turn(claimed["run_key"], "delivered")
         return cursor.rowcount == 1
     finally:
         conn.close()

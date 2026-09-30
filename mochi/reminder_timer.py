@@ -130,6 +130,12 @@ async def _persist_failure(reminder: dict, error: str) -> None:
         error,
         now=_utc_now(),
     )
+    if reminder.get("kind") == "self":
+        from mochi.runtime_trace import finish_turn
+        finish_turn(
+            f"self-reminder:{reminder['id']}:{reminder['remind_at']}",
+            "retry_scheduled" if retry_at is not None else "failed",
+        )
     if retry_at is not None:
         log.warning(
             "Reminder #%d will retry at %s: %s",
@@ -271,9 +277,11 @@ async def _deliver_self_reminder(
             await _persist_failure(claimed, "reminder delivery window ended")
             return False
         component = (
-            ChatResult(text=value)
+            ChatResult(text=value, _trace_id=durable.trace_id, _trace_component=True)
             if component_kind == "text"
-            else ChatResult(stickers=[value])
+            else ChatResult(
+                stickers=[value], _trace_id=durable.trace_id, _trace_component=True,
+            )
         )
         try:
             delivered = await _self_delivery_callback(
@@ -426,6 +434,9 @@ async def _process_reminder(reminder: dict) -> None:
         )
         return
     if completed:
+        if durable_result is not None:
+            from mochi.runtime_trace import finish_run
+            finish_run(durable_result.trace_id, "delivered")
         log.info(
             "Reminder #%d delivered at cursor %d",
             claimed["id"], cursor,

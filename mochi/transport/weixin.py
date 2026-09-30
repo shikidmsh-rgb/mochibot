@@ -23,6 +23,7 @@ from mochi.transport import (
     MAX_IMAGE_BYTES, ensure_delivery_allowed,
 )
 from mochi.transport.utils import clean_reply_markers, split_bubbles, split_text
+from mochi.runtime_trace import delivery_method
 from mochi.config import (
     OWNER_USER_ID,
     WEIXIN_ALLOWED_USERS,
@@ -322,6 +323,7 @@ class WeixinTransport(Transport):
             log.warning("WeChat: %s: %s", exc.outcome, exc)
             return False
 
+    @delivery_method
     async def send_chat_result_checked(
         self, user_id: int, result, *, context_token: str | None = None,
         can_deliver: Callable[[], bool] | None = None,
@@ -941,6 +943,9 @@ class WeixinTransport(Transport):
                             not bedtime_claimed
                             or result.disposition in {"skip", "handled"}
                         ):
+                            if not bedtime_claimed and result.disposition == "deliver":
+                                from mochi.runtime_trace import record_delivery
+                                record_delivery(result, "suppressed")
                             return
                     delivered = await self.send_chat_result(
                         user_id,

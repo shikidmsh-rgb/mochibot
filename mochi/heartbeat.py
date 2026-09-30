@@ -307,6 +307,8 @@ async def run_silent_bedtime(user_id: int, trigger: str) -> bool:
                 outcome="delivery_unknown",
             )
         result.confirm_delivered()
+        from mochi.runtime_trace import record_delivery
+        record_delivery(result, "delivered")
         log_heartbeat(_state, "bedtime_entry", trigger)
         return True
     except DeliveryError as exc:
@@ -568,9 +570,11 @@ async def _deliver_autonomous(
             _finish_unavailable_claim(claimed, remaining)
             return False
         component = (
-            ChatResult(text=value)
+            ChatResult(text=value, _trace_id=durable.trace_id, _trace_component=True)
             if kind == "text"
-            else ChatResult(stickers=[value])
+            else ChatResult(
+                stickers=[value], _trace_id=durable.trace_id, _trace_component=True,
+            )
         )
         try:
             delivered = await _runtime_delivery_callback(

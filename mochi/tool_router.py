@@ -119,16 +119,18 @@ async def classify_skills_llm(message: str, user_id: int | None = None,
 
     try:
         client = get_client_for_tier("lite")
-        response = await asyncio.to_thread(
-            client.chat,
-            messages=[
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": message},
-            ],
-            temperature=0.0,
-            max_tokens=TOOL_ROUTER_MAX_TOKENS,
-            json_mode=True,
-        )
+        from mochi.runtime_trace import stage
+        with stage("router"):
+            response = await asyncio.to_thread(
+                client.chat,
+                messages=[
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": message},
+                ],
+                temperature=0.0,
+                max_tokens=TOOL_ROUTER_MAX_TOKENS,
+                json_mode=True,
+            )
 
         log_usage(
             response.prompt_tokens, response.completion_tokens,

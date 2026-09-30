@@ -17,7 +17,7 @@ import re
 import sqlite3
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from typing import Callable
 
@@ -50,6 +50,7 @@ from mochi.bedtime_tool import (
     EMPTY_DIARY, ENTER_BEDTIME_DEF, ENTER_BEDTIME_TOOL_NAME, bedtime_context,
 )
 import mochi.skills as skill_registry
+import mochi.runtime_trace as runtime_trace
 from mochi.file_text import MAX_FILE_TEXT_CHARS, extract_file_text
 from mochi.transport import DeliveryError, FileAttachment, IncomingMessage, ImageAttachment
 
@@ -399,6 +400,8 @@ class ChatResult:
     _delivery_confirmed: bool = field(default=False, init=False, repr=False)
     _after_delivery: list[Callable[[], None]] = field(default_factory=list, repr=False)
     _final_delivery_confirmed: bool = field(default=False, init=False, repr=False)
+    _trace_id: str = field(default="", repr=False)
+    _trace_component: bool = field(default=False, repr=False)
 
     def confirm_delivered(self, *, final: bool = False) -> bool:
         """Persist text once; lifecycle actions also require the whole reply."""
@@ -422,6 +425,7 @@ class ChatResult:
             for callback in callbacks:
                 callback()
             confirmed = confirmed or bool(callbacks)
+            runtime_trace.record_delivery(self, "delivered")
         return confirmed
 
     def to_durable(self) -> DurableChatResult:
@@ -432,6 +436,7 @@ class ChatResult:
             tool_audit=tuple(self.tool_audit),
             successful_effects=self.successful_effects,
             disposition=self.disposition,
+            trace_id=self._trace_id,
         )
 
     @classmethod
@@ -443,6 +448,7 @@ class ChatResult:
             successful_effects=result.successful_effects,
             disposition=result.disposition,
             _pending_history=result.pending_history,
+            _trace_id=result.trace_id,
         )
 
 
@@ -677,6 +683,65 @@ async def chat(
     *,
     runtime_entry: MainRuntimeEntry | None = None,
 ) -> ChatResult:
+    from mochi import config
+    from mochi.admin.admin_db import get_system_config
+
+    entry = runtime_entry or (message.runtime_entry if message is not None else None)
+    if message is None and entry is None:
+        raise ValueError("chat requires an incoming message or runtime entry")
+    turn_id = (
+        entry.idempotency_key
+        if entry and entry.kind in {"self_reminder", "weekly_maintenance", "free_time"}
+        and entry.idempotency_key
+        else uuid.uuid4().hex
+    )
+    user_id = message.user_id if message is not None else entry.user_id
+    kind = entry.kind if entry else "chat"
+    metadata = {
+        **runtime_trace.code_version(),
+        "transport": message.transport if message is not None else entry.transport,
+        "owner_authorized": bool(message and message.owner_authorized),
+        "input": message.text if message is not None else None,
+        "entry": {
+            key: value for key, value in asdict(entry).items()
+            if key not in {"claim_token", "lease_until"}
+        } if entry else None,
+        "settings": {
+            key: getattr(config, key)
+            for key in (
+                "AI_CHAT_MAX_COMPLETION_TOKENS", "TOOL_LOOP_MAX_ROUNDS",
+                "TOOL_LOOP_TOTAL_TOOL_LIMIT", "TOOL_LOOP_PER_TOOL_LIMIT",
+                "TOOL_ROUTER_ENABLED", "TOOL_ESCALATION_ENABLED",
+            )
+        },
+        "bedtime_timeout_s": get_system_config("BEDTIME_ENTRY_TIMEOUT_S"),
+        "heartbeat_timeout_s": get_system_config("LLM_HEARTBEAT_TIMEOUT_SECONDS"),
+    }
+    with runtime_trace.run_scope(turn_id, kind, user_id, metadata) as trace:
+        with runtime_trace.span("runtime", "main"):
+            result = await _chat(message, runtime_entry=entry, _turn_id=turn_id)
+        result._trace_id = trace.trace_id
+        runtime_trace.finish_run(
+            trace.trace_id,
+            "prepared" if result.disposition == "deliver" and (result.text or result.stickers)
+            else result.disposition,
+            result={
+                "disposition": result.disposition,
+                "successful_effects": result.successful_effects,
+                "tool_audit": result.tool_audit,
+                "text": result.text,
+                "stickers": result.stickers,
+            },
+        )
+        return result
+
+
+async def _chat(
+    message: IncomingMessage | None = None,
+    *,
+    runtime_entry: MainRuntimeEntry | None = None,
+    _turn_id: str,
+) -> ChatResult:
     """Process an incoming message and return the bot's response.
 
     Flow:
@@ -690,6 +755,7 @@ async def chat(
     6. Save messages to DB
     7. Return ChatResult (text + optional sticker file_ids)
     """
+    preparation_started = time.monotonic()
     from mochi.config import (
         TOOL_LOOP_MAX_ROUNDS, AI_CHAT_MAX_COMPLETION_TOKENS,
         TOOL_ROUTER_ENABLED, TOOL_ESCALATION_ENABLED,
@@ -734,12 +800,7 @@ async def chat(
         runtime_entry and runtime_entry.kind == "free_time"
     )
     prompt_policy = context_policy(runtime_entry)
-    turn_id = (
-        runtime_entry.idempotency_key
-        if (is_self_reminder or is_weekly or is_autonomous)
-        and runtime_entry.idempotency_key
-        else uuid.uuid4().hex
-    )
+    turn_id = _turn_id
     pending_stickers: list[str] = []
     after_delivery: list[Callable[[], None]] = []
     pending_exposure_ids: set[int] = set()
@@ -1184,6 +1245,19 @@ async def chat(
             ),
         })
 
+    runtime_trace.event("context_ready", {
+        "preparation_ms": (time.monotonic() - preparation_started) * 1000,
+        "policy": asdict(prompt_policy),
+        "history_message_ids": [item["id"] for item in history],
+        "core_sha256": hashlib.sha256(core_memory.encode()).hexdigest(),
+        "diary_date": diary_source_date,
+        "diary_visible": prompt_policy.diary_journal,
+        "diary_sha256": hashlib.sha256(diary_today.encode()).hexdigest(),
+        "habit_context": habit_progress_context,
+        "tools": list(availability.names),
+        "message_roles": [item["role"] for item in messages],
+    })
+
     # ── LLM call with tool loop ──
     max_tool_rounds = TOOL_LOOP_MAX_ROUNDS
     tool_names_used: list[str] = []  # track for tool_history persistence
@@ -1347,16 +1421,17 @@ async def chat(
                 return _cancelled_result()
             call_started = time.monotonic()
             try:
-                response = await asyncio.to_thread(
-                    client.chat,
-                    messages=messages,
-                    tools=(
-                        round_availability.provider_tools()
-                        if round_availability.entries
-                        else None
-                    ),
-                    max_tokens=AI_CHAT_MAX_COMPLETION_TOKENS,
-                )
+                with runtime_trace.stage(f"main.round_{round_num + 1}.attempt_{_attempt + 1}"):
+                    response = await asyncio.to_thread(
+                        client.chat,
+                        messages=messages,
+                        tools=(
+                            round_availability.provider_tools()
+                            if round_availability.entries
+                            else None
+                        ),
+                        max_tokens=AI_CHAT_MAX_COMPLETION_TOKENS,
+                    )
                 break
             except asyncio.CancelledError:
                 log.warning(
@@ -1417,6 +1492,7 @@ async def chat(
             return _final_result(reply)
 
         # Add assistant message with tool_calls to context
+        tool_messages_start = len(messages)
         assistant_msg = {"role": "assistant", "content": response.content or ""}
         if response.reasoning_content:
             assistant_msg["reasoning_content"] = response.reasoning_content
@@ -1754,6 +1830,9 @@ async def chat(
                 elif tc["name"] == "read_diary" and not arguments.get("date"):
                     document_updates[diary_source_date] = result.document_snapshot
 
+        runtime_trace.event("tool_results", {"round": round_num + 1}, [
+            item for item in messages[tool_messages_start:] if item["role"] == "tool"
+        ])
         for generated_image in generated_images:
             messages.append({
                 "role": "user",

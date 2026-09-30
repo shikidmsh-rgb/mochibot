@@ -235,6 +235,7 @@ class DurableChatResult:
     tool_audit: tuple[dict, ...] = ()
     successful_effects: bool = False
     disposition: Literal["deliver", "skip", "handled", "invalid"] = "deliver"
+    trace_id: str = ""
 
     def to_json(self) -> str:
         return json.dumps(
@@ -246,6 +247,7 @@ class DurableChatResult:
                 "tool_audit": list(self.tool_audit),
                 "successful_effects": self.successful_effects,
                 "disposition": self.disposition,
+                "trace_id": self.trace_id,
             },
             ensure_ascii=False,
             separators=(",", ":"),
@@ -261,6 +263,9 @@ class DurableChatResult:
         pending_history = payload.get("pending_history")
         tool_audit = payload.get("tool_audit", [])
         disposition = payload.get("disposition", "invalid")
+        trace_id = payload.get("trace_id", "")
+        if not isinstance(trace_id, str):
+            raise ValueError("durable trace id must be a string")
         if not isinstance(text, str):
             raise ValueError("durable chat result text must be a string")
         if not isinstance(stickers, list) or not all(
@@ -282,4 +287,5 @@ class DurableChatResult:
             tool_audit=tuple(tool_audit),
             successful_effects=bool(payload.get("successful_effects")),
             disposition=disposition,
+            trace_id=trace_id,
         )

@@ -305,6 +305,54 @@ async def test_free_time_sees_current_habits_without_loading_write_tools(
 
 
 @pytest.mark.asyncio
+async def test_runtime_trace_links_model_tools_and_delivery_without_becoming_context(
+    mock_llm_factory, monkeypatch,
+):
+    from mochi import runtime_trace as trace
+    from mochi.diary import diary
+
+    with trace.run_scope("diagnostic-only", "provider", 1, {
+        "evidence": "ADMIN_ONLY_EVIDENCE",
+    }) as previous:
+        trace.finish_run(previous.trace_id, "completed")
+
+    mock = mock_llm_factory([
+        make_response(tool_calls=[
+            make_tool_call("write_diary", {"content": "Persisted by this turn."}),
+        ]),
+        make_response("A deliverable response."),
+    ])
+    original = mock.chat
+
+    def recorded(**kwargs):
+        return trace.sdk_call(original, protocol="test", provider="test", **kwargs)
+
+    monkeypatch.setattr(mock, "chat", recorded)
+    entry = MainRuntimeEntry.free_time(
+        run_key="free_time:traced", wake_reason="periodic", user_id=1,
+        channel_id=1, transport="fake", claim_token="claim",
+        lease_until="2099-01-01T00:00:00+00:00",
+    )
+    result = await chat(runtime_entry=entry)
+    evidence = trace.get_run(1, result._trace_id)
+    assert evidence["turn_id"] == entry.run_key
+    assert evidence["spans"][0]["status"] == "prepared"
+    assert len([item for item in evidence["spans"] if item["span_kind"] == "model"]) == 2
+    assert [item["tool_name"] for item in evidence["tools"]] == ["write_diary"]
+    assert evidence["tools"][0]["state_changed"] == 1
+    assert diary.read("今日日記") == "Persisted by this turn."
+    assert "ADMIN_ONLY_EVIDENCE" not in json.dumps(mock.call_log)
+    assert get_recent_messages(1) == []
+
+    restored = ChatResult.from_durable(result.to_durable())
+    assert restored._trace_id == result._trace_id
+    assert restored.confirm_delivered(final=True)
+    evidence = trace.get_run(1, result._trace_id)
+    assert evidence["spans"][0]["status"] == "delivered"
+    assert any(item["span_kind"] == "delivery" for item in evidence["spans"])
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("carrier", ["chat", "free_time"])
 async def test_day_start_look_rides_only_the_first_owner_turn(
     mock_llm_factory, monkeypatch, carrier,

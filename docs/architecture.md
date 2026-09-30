@@ -157,6 +157,29 @@ user's overall task is complete. Only compact summaries and operation identifier
 are carried, rather than replaying full outputs or arguments. Main retains
 judgment about what to do next.
 
+## Human-only runtime evidence
+
+`runtime_trace` records request-time evidence in SQLite for seven days. Each
+Main invocation has a trace linked to its existing conversation/run turn ID.
+Context preparation records the selected history, document versions, policy and
+eligible tools; SDK-boundary spans preserve the actual model, endpoint, request
+parameters and response for every attempt, including protocol negotiation.
+Tool results and delivery attempts are associated with that trace, while the
+existing tool execution ledger remains the authority for executed operations.
+
+Evidence is written before requests begin, not only after successful responses.
+Cancellation of a waiter and completion of a synchronous provider request are
+distinct facts: a response arriving after cancellation is marked late and does
+not reopen the run. Startup marks unfinished work from the previous process as
+interrupted. Prepared output is not treated as confirmed delivery.
+
+Admin alone lists and reads this evidence; it is never fed to Main, recall,
+summaries or memory extraction. Credential fields and known credential values
+are redacted, media bytes are omitted, and oversized payloads are explicitly
+marked rather than silently truncated. Trace failures are logged without
+changing the agent's execution outcome. Recording adds no model calls and does
+not implement automatic alerting, replay or recovery.
+
 ## Model and provider boundary
 
 The product has exactly two model roles. **Main** owns every personality-bearing

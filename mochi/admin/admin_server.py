@@ -140,6 +140,8 @@ if HAS_FASTAPI:
         from mochi import skills as skill_registry
         from mochi import observers as observer_registry
         init_db()
+        from mochi.runtime_trace import initialize_process
+        initialize_process()
         from mochi.core_store import initialize_core
         initialize_core()
         skill_registry.discover()
@@ -1231,6 +1233,25 @@ if HAS_FASTAPI:
     # ═══════════════════════════════════════════════════════════════════════
     # Diagnostics
     # ═══════════════════════════════════════════════════════════════════════
+
+    @app.get("/api/diagnostics/traces", dependencies=[Depends(_verify_token)])
+    async def api_runtime_traces(limit: int = 30, before: int | None = None):
+        from mochi.config import OWNER_USER_ID
+        from mochi.runtime_trace import list_runs
+
+        if not 1 <= limit <= 100 or (before is not None and before <= 0):
+            raise HTTPException(400, "Invalid trace page")
+        return list_runs(OWNER_USER_ID or 0, limit=limit, before=before)
+
+    @app.get("/api/diagnostics/traces/{trace_id}", dependencies=[Depends(_verify_token)])
+    async def api_runtime_trace(trace_id: str):
+        from mochi.config import OWNER_USER_ID
+        from mochi.runtime_trace import get_run
+
+        result = get_run(OWNER_USER_ID or 0, trace_id)
+        if result is None:
+            raise HTTPException(404, "Trace not found")
+        return result
 
     @app.get("/api/diagnostics/errors", dependencies=[Depends(_verify_token)])
     async def api_diagnostics_errors():

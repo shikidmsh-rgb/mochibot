@@ -19,6 +19,7 @@ from mochi.transport import (
     MAX_IMAGE_BYTES,
 )
 from mochi.transport.utils import split_bubbles as _split_bubbles_util
+from mochi.runtime_trace import delivery_method
 from mochi.config import (
     TELEGRAM_BOT_TOKEN, set_owner_user_id,
     TG_BUBBLE_DELAY_S, TG_BUBBLE_MAX, TG_BUBBLE_DELIMITER,
@@ -334,6 +335,7 @@ class TelegramTransport(Transport):
             wake_up("user_message")
         clear_silent_pause()
 
+    @delivery_method
     async def send_chat_result(
         self, chat_id: int, result, *, can_deliver: Callable[[], bool] | None = None,
     ) -> bool:
@@ -497,6 +499,9 @@ class TelegramTransport(Transport):
                             not bedtime_claimed
                             or result.disposition in {"skip", "handled"}
                         ):
+                            if not bedtime_claimed and result.disposition == "deliver":
+                                from mochi.runtime_trace import record_delivery
+                                record_delivery(result, "suppressed")
                             if TG_STATUS_REACTIONS_ENABLED:
                                 status.reaction_state = ""
                                 await _set_reaction(
@@ -563,6 +568,9 @@ class TelegramTransport(Transport):
                         delivered = await self.send_chat_result(chat_id, result)
                     if delivered:
                         result.confirm_delivered(final=True)
+                    else:
+                        from mochi.runtime_trace import record_delivery
+                        record_delivery(result, "delivery_unknown")
 
             try:
                 await _process_main_turn()

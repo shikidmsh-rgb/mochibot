@@ -20,6 +20,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
+from mochi.runtime_trace import register_secret, sdk_call
+
 log = logging.getLogger(__name__)
 
 # Explicit timeout for OpenAI-compatible HTTP clients. SDK default is 600s read,
@@ -468,7 +470,13 @@ class _OpenAICompatChat:
 
         for attempt in range(3):
             try:
-                resp = client.chat.completions.create(**kwargs)
+                resp = sdk_call(
+                    client.chat.completions.create,
+                    protocol="chat.completions.create", provider="openai",
+                    endpoint=str(getattr(client, "base_url", getattr(self, "_base_url", ""))),
+                    client_timeout=getattr(client, "timeout", None),
+                    **kwargs,
+                )
                 if self._use_max_completion_tokens is None:
                     self._use_max_completion_tokens = True
                     log.debug("Model %s: using max_completion_tokens", model)
@@ -522,6 +530,7 @@ class OpenAIProvider(_OpenAICompatChat, LLMProvider):
 
     def __init__(self, api_key: str, model: str, base_url: str = ""):
         from openai import OpenAI
+        register_secret(api_key)
         self._model = model
         self._base_url = base_url
         self._use_max_completion_tokens = None
@@ -567,7 +576,13 @@ class OpenAIProvider(_OpenAICompatChat, LLMProvider):
                 kwargs["temperature"] = temperature
             if json_mode:
                 kwargs["text"] = {"format": {"type": "json_object"}}
-            resp = self._client.responses.create(**kwargs)
+            resp = sdk_call(
+                self._client.responses.create,
+                protocol="responses.create", provider="openai",
+                endpoint=str(getattr(self._client, "base_url", self._base_url)),
+                client_timeout=getattr(self._client, "timeout", None),
+                **kwargs,
+            )
             result = _responses_result(resp, self._model, self.reasoning_source)
             if json_mode and result.content:
                 result.content = extract_json(result.content)
@@ -589,6 +604,7 @@ class AnthropicProvider(LLMProvider):
 
     def __init__(self, api_key: str, model: str):
         import anthropic
+        register_secret(api_key)
         self._model = model
         self._client = anthropic.Anthropic(api_key=api_key)
 
@@ -633,7 +649,13 @@ class AnthropicProvider(LLMProvider):
             # Convert OpenAI tool format to Anthropic format
             kwargs["tools"] = self._convert_tools(tools)
 
-        resp = self._client.messages.create(**kwargs)
+        resp = sdk_call(
+            self._client.messages.create,
+            protocol="messages.create", provider="anthropic",
+            endpoint=str(getattr(self._client, "base_url", "https://api.anthropic.com")),
+            client_timeout=getattr(self._client, "timeout", None),
+            **kwargs,
+        )
 
         content = ""
         tool_calls = []
