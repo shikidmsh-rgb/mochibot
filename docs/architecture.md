@@ -63,9 +63,11 @@ The registry retains complete tool ownership separately from current eligibility
 changing the development setting can hide execution tools without losing their
 registration.
 
-Main 可通过 resident `look_around` 读取 Observer 已有缓存的安全视图。
-该工具只读，不触发采集或外部请求；Free Time 默认
-仍不注入生活上下文，只有 Main 主动查看时才获得有界事实。
+Main 可通过 resident `look_around` 读取 Observer 已有缓存的安全视图，
+不触发采集或外部请求。Free Time 会带入当天适用习惯的已记录进度
+（含已完成项目）与今日日记正文；习惯数据由 Skill 从原始记录生成，
+遵守技能开关与当前工具资格，不从 Core 猜测完成情况。其他 Observer
+事实仍由 Main 主动查看。是否跟进约定、如何表达，由 Main 决定。
 
 Main is the semantic judge and author of its actions. The harness gives Main a
 lived situation, relevant facts and relationship context, available

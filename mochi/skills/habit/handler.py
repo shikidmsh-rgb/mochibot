@@ -565,7 +565,15 @@ class HabitSkill(Skill):
 
     # ── Diary integration ─────────────────────────────────────
 
-    def diary_status(self, user_id: int, today: str, now: datetime) -> list[str] | None:
+    def daily_context(self, user_id: int) -> str:
+        now = datetime.now(TZ)
+        return "\n".join(
+            self.diary_status(user_id, logical_today(now), now, for_main=True) or []
+        )
+
+    def diary_status(
+        self, user_id: int, today: str, now: datetime, *, for_main: bool = False,
+    ) -> list[str] | None:
         habits = list_habits(user_id, active_only=True)
         if not habits:
             return None
@@ -594,6 +602,12 @@ class HabitSkill(Skill):
 
             name = h["name"]
             imp = "⚡" if h.get("importance") == "important" else ""
+            if for_main:
+                scope = "今日" if cycle == "daily" else "本周"
+                lines.append(
+                    f"- {imp}{name} [habit_id={h['id']}]：{scope}已记录 {done}/{target}"
+                )
+                continue
             ctx = h.get("context", "")
             ctx_tag = f" ({ctx})" if ctx else ""
 

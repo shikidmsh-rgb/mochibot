@@ -328,7 +328,7 @@ SYSTEM_DEFAULTS: dict[str, tuple[str, any]] = {
     "MAX_DAILY_PROACTIVE":            ("int",   5),
     "FALLBACK_WAKE_HOUR":             ("int",   10),
     "BEDTIME_ENTRY_ENABLED":          ("bool",  True),
-    "BEDTIME_ENTRY_TIMEOUT_S":        ("int",   60),
+    "BEDTIME_ENTRY_TIMEOUT_S":        ("int",   120),
     # ── Sleep/Wake ──
     "WAKE_EARLIEST_HOUR":             ("int",   6),
     "SLEEP_AFTER_HOUR":               ("int",   23),

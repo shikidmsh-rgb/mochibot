@@ -546,7 +546,7 @@ def _build_prompt_zones(user_id: int, capability_context: str = "",
 
     capability_parts = []
     dynamic_live_context = []
-    if habit_progress_context:
+    if habit_progress_context and not is_autonomous:
         dynamic_live_context.append(
             f"## 本轮习惯进度快照（只读事实）\n{habit_progress_context}"
         )
@@ -577,7 +577,14 @@ def _build_prompt_zones(user_id: int, capability_context: str = "",
             dynamic_live_context.append(
                 hist_ts_inst.replace("{{history_timestamps}}", history_timestamps)
             )
-    if "runtime_context" in modules:
+    if is_autonomous:
+        today_parts = ["## 今天"]
+        if habit_progress_context:
+            today_parts.append(f"### 习惯\n{habit_progress_context}")
+        if policy.diary_journal:
+            today_parts.append(f"### 日记\n{diary_journal or EMPTY_DIARY}")
+        dynamic_live_context.append("\n\n".join(today_parts))
+    elif "runtime_context" in modules:
         rendered_rc = _render_runtime_context(
             modules["runtime_context"], diary_status,
             diary_journal if policy.diary_journal and not bedtime_review else None,
@@ -1033,7 +1040,14 @@ async def chat(
     habit_skill = skill_registry.all_skills().get("habit")
 
     async def _habit_progress_context() -> str:
-        if isinstance(habit_skill, HabitSkill) and "habit_progress" in availability.names:
+        if not isinstance(habit_skill, HabitSkill):
+            return ""
+        if is_autonomous:
+            if filter_tools(skill_registry.get_tools_by_tool_names(
+                ["habit_progress"], transport=transport,
+            )):
+                return await asyncio.to_thread(habit_skill.daily_context, user_id)
+        elif "habit_progress" in availability.names:
             return await asyncio.to_thread(habit_skill.progress_context, user_id)
         return ""
 
@@ -1317,7 +1331,10 @@ async def chat(
             if habit_progress_context:
                 messages.append({
                     "role": "system",
-                    "content": f"## 本轮习惯进度快照（只读事实）\n{habit_progress_context}",
+                    "content": (
+                        f"### 习惯\n{habit_progress_context}" if is_autonomous
+                        else f"## 本轮习惯进度快照（只读事实）\n{habit_progress_context}"
+                    ),
                 })
                 habit_context_loaded = True
         document_updates: dict[str, str] = {}
@@ -1328,6 +1345,7 @@ async def chat(
         for _attempt in range(2):
             if _free_time_cancelled():
                 return _cancelled_result()
+            call_started = time.monotonic()
             try:
                 response = await asyncio.to_thread(
                     client.chat,
@@ -1340,6 +1358,14 @@ async def chat(
                     max_tokens=AI_CHAT_MAX_COMPLETION_TOKENS,
                 )
                 break
+            except asyncio.CancelledError:
+                log.warning(
+                    "Main call cancelled: entry=%s turn=%s round=%d attempt=%d elapsed=%.1fs",
+                    runtime_entry.kind if runtime_entry else "chat",
+                    turn_id, round_num + 1, _attempt + 1,
+                    time.monotonic() - call_started,
+                )
+                raise
             except Exception as e:
                 if _attempt == 0:
                     log.warning("LLM call failed (attempt 1), retrying: %s", e)

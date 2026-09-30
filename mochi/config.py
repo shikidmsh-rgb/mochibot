@@ -163,7 +163,7 @@ WEEKLY_MAINTENANCE_MINUTE = _env_int("WEEKLY_MAINTENANCE_MINUTE", 15)
 # ═══════════════════════════════════════════════════════════════════════════
 
 BEDTIME_ENTRY_ENABLED = _env_bool("BEDTIME_ENTRY_ENABLED", True)
-BEDTIME_ENTRY_TIMEOUT_S = _env_int("BEDTIME_ENTRY_TIMEOUT_S", 60)
+BEDTIME_ENTRY_TIMEOUT_S = _env_int("BEDTIME_ENTRY_TIMEOUT_S", 120)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Diary

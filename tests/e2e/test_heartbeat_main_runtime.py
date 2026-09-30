@@ -64,7 +64,7 @@ async def test_bedtime_delivery_outlives_preparation_deadline(monkeypatch, confi
 
 
 @pytest.mark.asyncio
-async def test_bedtime_preparation_still_times_out_without_sending(monkeypatch):
+async def test_bedtime_preparation_still_times_out_without_sending(monkeypatch, caplog):
     import mochi.heartbeat as heartbeat
 
     monkeypatch.setattr(heartbeat, "bedtime_entry_timeout", lambda: 0.01)
@@ -85,11 +85,13 @@ async def test_bedtime_preparation_still_times_out_without_sending(monkeypatch):
     assert heartbeat._state == heartbeat.SLEEPING
     assert get_recent_messages(1) == []
     conn = _connect()
-    action = conn.execute(
-        "SELECT action FROM heartbeat_log ORDER BY id DESC LIMIT 1",
-    ).fetchone()[0]
+    record = conn.execute(
+        "SELECT action, summary FROM heartbeat_log ORDER BY id DESC LIMIT 1",
+    ).fetchone()
     conn.close()
-    assert action == "bedtime_timeout"
+    assert record["action"] == "bedtime_timeout"
+    assert "preparation_timeout_s=0.01" in record["summary"]
+    assert "Bedtime preparation timed out" in caplog.text
 
 
 def _schedule_due(now):
@@ -177,7 +179,7 @@ async def test_free_time_carries_completed_history_without_reopening_old_turns(
     result = await chat(runtime_entry=entry)
 
     prompt = mock.call_log[0]["messages"][0]["content"]
-    assert result.disposition == "skip"
+    assert result.disposition == "handled"
     assert "CORE_MARKER" in prompt
     initial = mock.call_log[0]["messages"]
     assert [item["role"] for item in initial] == ["system", "user"]
@@ -207,7 +209,7 @@ async def test_free_time_carries_completed_history_without_reopening_old_turns(
 
 
 @pytest.mark.asyncio
-async def test_free_time_diary_snapshot_allows_retry_only_after_visible(
+async def test_free_time_diary_revisions_preserve_visible_snapshot_boundary(
     mock_llm_factory,
 ):
     from mochi.db import get_tool_executions_for_turn
@@ -218,11 +220,12 @@ async def test_free_time_diary_snapshot_allows_retry_only_after_visible(
     diary.replace_section_exact(
         "今日日記", expected_content="", content=original, target_date=source_date,
     )
-    revised = original + "\nNew observation."
+    intermediate = original + "\nFirst observation."
+    revised = intermediate + "\nNew observation."
     mock = mock_llm_factory([
         make_response(tool_calls=[
-            make_tool_call("write_diary", {"content": "Blind replacement"}),
-            make_tool_call("write_diary", {"content": "Still unseen this round"}),
+            make_tool_call("write_diary", {"content": intermediate}),
+            make_tool_call("write_diary", {"content": "A stale revision in the same round"}),
         ]),
         make_response(tool_calls=[
             make_tool_call("write_diary", {"content": revised}),
@@ -237,18 +240,68 @@ async def test_free_time_diary_snapshot_allows_retry_only_after_visible(
 
     await chat(runtime_entry=entry)
 
-    assert original not in main_context(mock.call_log[0]["messages"])
+    assert original in main_context(mock.call_log[0]["messages"])
     snapshots = [
         message["content"] for message in mock.call_log[1]["messages"]
         if message["role"] == "tool"
     ]
     assert len(snapshots) == 2
-    assert all(original in snapshot for snapshot in snapshots)
+    assert intermediate in json.loads(snapshots[1])["message"]
     executions = get_tool_executions_for_turn(entry.run_key)
     assert [(row["status"], bool(row["state_changed"])) for row in executions] == [
-        ("failed", False), ("failed", False), ("success", True),
+        ("success", True), ("failed", False), ("success", True),
     ]
     assert diary.read("今日日記") == revised
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_free_time_sees_current_habits_without_loading_write_tools(
+    mock_llm_factory, enabled,
+):
+    from mochi.db import set_skill_enabled
+    from mochi.diary import diary
+    from mochi.skills.habit.handler import _current_period
+    from mochi.skills.habit.queries import (
+        add_habit, get_habit_checkins, mutate_habit, record_habit_progress,
+    )
+
+    pending = add_habit(0, "Supplement", "daily:1", importance="important")
+    complete = add_habit(0, "Water", "daily:6")
+    period = _current_period("daily")
+    record_habit_progress(complete, 0, period, total=6)
+    paused = add_habit(0, "Paused walk", "daily:1")
+    mutate_habit(0, paused, paused_until="2099-01-01")
+    add_habit(2, "Another user's habit", "daily:1")
+    day, _, _ = diary.read_write_snapshot()
+    diary.replace_section_exact(
+        "今日日記", expected_content="", content="Today journal context", target_date=day,
+    )
+    set_skill_enabled("habit", enabled)
+    mock = mock_llm_factory([make_response("[SKIP]")])
+
+    await chat(runtime_entry=MainRuntimeEntry.free_time(
+        run_key="free_time:habit-context", wake_reason="periodic",
+        user_id=0, channel_id=0, transport="fake", claim_token="claim",
+        lease_until="2099-01-01T00:00:00+00:00",
+    ))
+
+    context = main_context(mock.call_log[0]["messages"])
+    assert "Today journal context" in context
+    if enabled:
+        pending_line = next(line for line in context.splitlines() if "Supplement" in line)
+        complete_line = next(line for line in context.splitlines() if "Water" in line)
+        assert f"[habit_id={pending}]" in pending_line and "0/1" in pending_line
+        assert "⚡" in pending_line
+        assert f"[habit_id={complete}]" in complete_line and "6/6" in complete_line
+    else:
+        assert "Supplement" not in context and "Water" not in context
+    assert "Paused walk" not in context
+    assert "Another user's habit" not in context
+    tool_names = {tool["function"]["name"] for tool in mock.call_log[0]["tools"]}
+    assert not tool_names & {"habit_progress", "edit_habit"}
+    assert get_habit_checkins(pending, period) == []
+    assert len(get_habit_checkins(complete, period)) == 6
 
 
 @pytest.mark.asyncio

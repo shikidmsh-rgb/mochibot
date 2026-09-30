@@ -275,6 +275,7 @@ async def run_silent_bedtime(user_id: int, trigger: str) -> bool:
 
     if not claim_sleep_transition(trigger):
         return False
+    timeout = bedtime_entry_timeout()
     try:
         if not bedtime_entry_enabled():
             return False
@@ -286,7 +287,7 @@ async def run_silent_bedtime(user_id: int, trigger: str) -> bool:
         )
         result = await asyncio.wait_for(
             _runtime_prepare_callback(entry),
-            timeout=bedtime_entry_timeout(),
+            timeout=timeout,
         )
         if result.disposition in {"skip", "handled"}:
             log_heartbeat(
@@ -313,7 +314,13 @@ async def run_silent_bedtime(user_id: int, trigger: str) -> bool:
         log_heartbeat(_state, f"bedtime_{exc.outcome}", str(exc)[:200])
         return False
     except asyncio.TimeoutError:
-        log_heartbeat(_state, "bedtime_timeout", trigger)
+        log.warning(
+            "Bedtime preparation timed out after %.1fs (trigger=%s)",
+            timeout, trigger,
+        )
+        log_heartbeat(
+            _state, "bedtime_timeout", f"{trigger}; preparation_timeout_s={timeout:g}",
+        )
         return False
     except Exception as exc:
         log.error("Bedtime entry failed: %s", exc, exc_info=True)

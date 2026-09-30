@@ -46,7 +46,7 @@ def mock_config(monkeypatch):
     monkeypatch.setattr(cfg, "MAX_DAILY_PROACTIVE", 10)
     monkeypatch.setattr(cfg, "FREE_TIME_ENABLED", True)
     monkeypatch.setattr(cfg, "BEDTIME_ENTRY_ENABLED", True)
-    monkeypatch.setattr(cfg, "BEDTIME_ENTRY_TIMEOUT_S", 60)
+    monkeypatch.setattr(cfg, "BEDTIME_ENTRY_TIMEOUT_S", 120)
     monkeypatch.setattr(cfg, "WEEKLY_MAINTENANCE_ENABLED", True)
     monkeypatch.setattr(cfg, "WEEKLY_MAINTENANCE_MINUTE", 15)
 
