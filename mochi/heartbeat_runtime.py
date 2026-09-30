@@ -67,7 +67,7 @@ def ensure_daily_free_time_plan(
     max_daily = max(0, min(10, int(max_daily)))
     start = local_now.replace(hour=wake_hour, minute=0, second=0, microsecond=0)
     end = datetime.combine(
-        local_now.date(), min(FREE_TIME_AWAKE_END, time(sleep_hour)), tzinfo=TZ,
+        local_now.date(), time(min(FREE_TIME_AWAKE_END.hour, sleep_hour)), tzinfo=TZ,
     )
     if not awake or not start <= local_now < end:
         return []

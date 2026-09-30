@@ -82,7 +82,10 @@ def test_activation_cutoff_and_missed_times_do_not_catch_up():
     assert runtime.get_schedulable_runs(now=DAY + timedelta(days=1)) == []
 
 
-def test_daily_plan_waits_for_waking_and_uses_only_remaining_awake_time():
+@pytest.mark.parametrize("sleep_hour, end_hour", [(20, 20), (24, 21)])
+def test_daily_plan_waits_for_waking_and_uses_only_remaining_awake_time(
+    sleep_hour, end_hour,
+):
     assert plan(max_daily=3, now=DAY.replace(hour=5), draws=[]) == []
     assert plan(max_daily=3, now=DAY.replace(hour=7), awake=False, draws=[]) == []
     conn = _connect()
@@ -90,19 +93,19 @@ def test_daily_plan_waits_for_waking_and_uses_only_remaining_awake_time():
     conn.close()
     wake = DAY.replace(hour=10, minute=27)
     keys = plan(
-        max_daily=3, now=wake, sleep_hour=20,
+        max_daily=3, now=wake, sleep_hour=sleep_hour,
         draws=[0.0, 0.01, 0.0, 0.5, 0.0, 0.99],
     )
     assert len(keys) == 3
     planned = rows()
     assert all(
-        wake <= datetime.fromisoformat(row["next_attempt_at"]) < DAY.replace(hour=20)
+        wake <= datetime.fromisoformat(row["next_attempt_at"]) < DAY.replace(hour=end_hour)
         for row in planned.values()
     )
     assert plan(max_daily=3, now=wake + timedelta(hours=1), awake=False, draws=[]) == []
-    assert plan(max_daily=3, now=wake + timedelta(hours=2), sleep_hour=20, draws=[]) == []
+    assert plan(max_daily=3, now=wake + timedelta(hours=2), sleep_hour=sleep_hour, draws=[]) == []
     assert rows() == planned
-    assert plan(max_daily=3, now=DAY.replace(hour=22), draws=[]) == []
+    assert plan(max_daily=3, now=DAY.replace(hour=end_hour), sleep_hour=sleep_hour, draws=[]) == []
 
 
 def test_setting_changes_and_failed_claims_share_one_daily_budget():
