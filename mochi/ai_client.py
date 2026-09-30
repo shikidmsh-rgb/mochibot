@@ -340,6 +340,26 @@ def _format_history_timestamps(history: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _format_free_time_activation(history: list[dict]) -> str:
+    completed_turns = [
+        {
+            "speaker": message["role"],
+            "timestamp": message["created_at"],
+            "content": message["content"],
+        }
+        for message in history
+    ]
+    payload = json.dumps(completed_turns, ensure_ascii=False, separators=(",", ":"))
+    return (
+        '<free_time_activation source="runtime">\n'
+        "本轮是 Free Time 系统唤醒，没有新的用户消息。\n"
+        '<recent_completed_turns role="read_only_evidence">\n'
+        f"{payload}\n"
+        "</recent_completed_turns>\n"
+        "</free_time_activation>"
+    )
+
+
 def _expand_history(history: list[dict]) -> list[dict]:
     """Preserve stored speech without inserting metadata into either role.
 
@@ -792,7 +812,7 @@ async def chat(
                 recent_turns,
                 include_summary=prompt_policy.conversation_summary,
                 include_standalone=prompt_policy.standalone_history,
-                reasoning_source=client.reasoning_source,
+                reasoning_source="" if is_autonomous else client.reasoning_source,
             )
         except Exception as e:
             log.warning("Conversation context skipped: %s", e)
@@ -1106,7 +1126,9 @@ async def chat(
         ),
         policy=prompt_policy,
         habit_progress_context=habit_progress_context,
-        history_timestamps=_format_history_timestamps(history),
+        history_timestamps=(
+            "" if is_autonomous else _format_history_timestamps(history)
+        ),
         day_start_context=day_start_context,
         bedtime_review=bedtime_review,
     )
@@ -1118,7 +1140,13 @@ async def chat(
 
     # Build messages array
     messages = [{"role": "system", "content": system_prompt}]
-    messages.extend(_expand_history(history))
+    if is_autonomous:
+        messages.append({
+            "role": "user",
+            "content": _format_free_time_activation(history),
+        })
+    else:
+        messages.extend(_expand_history(history))
     if image:
         _replace_current_user_content(messages, stored_text, _image_content(text, image))
         # Image understanding belongs to the configured Main model.

@@ -9,7 +9,7 @@ import pytest
 
 from mochi.ai_client import ChatResult, chat
 from mochi.core_store import replace_core
-from mochi.db import _connect, get_recent_messages, save_message
+from mochi.db import _connect, get_conversation_context, get_recent_messages, save_message
 from mochi.heartbeat_runtime import ensure_daily_free_time_plan
 from mochi.main_runtime import DurableChatResult, MainRuntimeEntry
 from mochi.transport import DeliveryError, IncomingMessage
@@ -128,7 +128,7 @@ def test_observer_rediscovery_preserves_runtime_cache():
 
 
 @pytest.mark.asyncio
-async def test_free_time_keeps_only_immediate_conversation_context(
+async def test_free_time_carries_completed_history_without_reopening_old_turns(
     mock_llm_factory,
     monkeypatch,
 ):
@@ -140,12 +140,30 @@ async def test_free_time_keeps_only_immediate_conversation_context(
         "_retrieve_memories_for_turn",
         lambda *args: pytest.fail("Free Time must not auto-recall"),
     )
+    reasoning_source = "https://api.deepseek.com/v1::model"
     for number in range(3):
         turn_id = f"free-time-history-{number}"
         save_message(1, "user", f"user-{number}", turn_id=turn_id)
-        save_message(1, "assistant", f"assistant-{number}", turn_id=turn_id)
+        save_message(
+            1, "assistant", f"assistant-{number}", turn_id=turn_id,
+            reasoning_content="OLD_TURN_REASONING", reasoning_source=reasoning_source,
+        )
+    save_message(
+        1, "assistant", "Already delivered.\nDo not lose this context.",
+        turn_id="free_time:delivered", processed=True,
+        reasoning_content="OLD_WAKE_REASONING", reasoning_source=reasoning_source,
+    )
     save_message(1, "user", "unpaired-user-message", turn_id="incomplete-turn")
-    mock = mock_llm_factory([make_response("[SKIP]")])
+    before = get_recent_messages(1)
+    expected = get_conversation_context(1, 2, include_summary=False)["recent"]
+    tool_response = make_response(tool_calls=[
+        make_tool_call("write_diary", {"content": "A new observation."}),
+    ])
+    tool_response.reasoning_content = "CURRENT_TOOL_REASONING"
+    mock = mock_llm_factory([tool_response, make_response("[SKIP]")])
+    monkeypatch.setattr(
+        type(mock), "reasoning_source", property(lambda self: reasoning_source),
+    )
     entry = MainRuntimeEntry.free_time(
         run_key="free_time:test",
         wake_reason="periodic",
@@ -161,13 +179,31 @@ async def test_free_time_keeps_only_immediate_conversation_context(
     prompt = mock.call_log[0]["messages"][0]["content"]
     assert result.disposition == "skip"
     assert "CORE_MARKER" in prompt
-    history =  mock.call_log[0]["messages"][1:]
-    assert [item["role"] for item in history] == [
-        "user", "assistant", "user", "assistant",
+    initial = mock.call_log[0]["messages"]
+    assert [item["role"] for item in initial] == ["system", "user"]
+    records = json.loads(initial[-1]["content"].split(
+        '<recent_completed_turns role="read_only_evidence">\n', 1,
+    )[1].split("\n</recent_completed_turns>", 1)[0])
+    assert records == [
+        {
+            "speaker": item["role"], "timestamp": item["created_at"],
+            "content": item["content"],
+        }
+        for item in expected
     ]
-    assert [item["content"] for item in history] == [
+    assert [item["content"] for item in records] == [
         "user-1", "assistant-1", "user-2", "assistant-2",
+        "Already delivered.\nDo not lose this context.",
     ]
+    replay = json.dumps(mock.call_log, ensure_ascii=False)
+    assert "OLD_TURN_REASONING" not in replay
+    assert "OLD_WAKE_REASONING" not in replay
+    continuation = next(
+        message for message in mock.call_log[1]["messages"]
+        if message["role"] == "assistant" and message.get("tool_calls")
+    )
+    assert continuation["reasoning_content"] == "CURRENT_TOOL_REASONING"
+    assert get_recent_messages(1) == before
 
 
 @pytest.mark.asyncio
@@ -305,6 +341,14 @@ async def test_main_sees_delivered_autonomous_history_only(
         review = json.loads(line)
         assert review["messages"][0]["role"] == "assistant"
         assert review["messages"][0]["content"] == "ALREADY_SAID_GOODNIGHT"
+    elif kind == "free_time":
+        assert delivered_messages[0]["role"] == "user"
+        records = json.loads(delivered_messages[0]["content"].split(
+            '<recent_completed_turns role="read_only_evidence">\n', 1,
+        )[1].split("\n</recent_completed_turns>", 1)[0])
+        assert len(records) == 1
+        assert records[0]["speaker"] == "assistant"
+        assert records[0]["content"] == "ALREADY_SAID_GOODNIGHT"
     else:
         assert delivered_messages[0]["role"] == "assistant"
         assert delivered_messages[0]["content"] == "ALREADY_SAID_GOODNIGHT"
