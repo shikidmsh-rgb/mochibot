@@ -171,6 +171,51 @@ async def test_free_time_keeps_only_immediate_conversation_context(
 
 
 @pytest.mark.asyncio
+async def test_free_time_diary_snapshot_allows_retry_only_after_visible(
+    mock_llm_factory,
+):
+    from mochi.db import get_tool_executions_for_turn
+    from mochi.diary import diary
+
+    source_date, _, _ = diary.read_write_snapshot()
+    original = "Existing journal."
+    diary.replace_section_exact(
+        "今日日記", expected_content="", content=original, target_date=source_date,
+    )
+    revised = original + "\nNew observation."
+    mock = mock_llm_factory([
+        make_response(tool_calls=[
+            make_tool_call("write_diary", {"content": "Blind replacement"}),
+            make_tool_call("write_diary", {"content": "Still unseen this round"}),
+        ]),
+        make_response(tool_calls=[
+            make_tool_call("write_diary", {"content": revised}),
+        ]),
+        make_response("[SKIP]"),
+    ])
+    entry = MainRuntimeEntry.free_time(
+        run_key="free_time:diary-retry", wake_reason="periodic",
+        user_id=1, channel_id=100, transport="fake", claim_token="claim",
+        lease_until="2099-01-01T00:00:00+00:00",
+    )
+
+    await chat(runtime_entry=entry)
+
+    assert original not in main_context(mock.call_log[0]["messages"])
+    snapshots = [
+        message["content"] for message in mock.call_log[1]["messages"]
+        if message["role"] == "tool"
+    ]
+    assert len(snapshots) == 2
+    assert all(original in snapshot for snapshot in snapshots)
+    executions = get_tool_executions_for_turn(entry.run_key)
+    assert [(row["status"], bool(row["state_changed"])) for row in executions] == [
+        ("failed", False), ("failed", False), ("success", True),
+    ]
+    assert diary.read("今日日記") == revised
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("carrier", ["chat", "free_time"])
 async def test_day_start_look_rides_only_the_first_owner_turn(
     mock_llm_factory, monkeypatch, carrier,

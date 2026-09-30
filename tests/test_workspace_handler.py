@@ -65,6 +65,47 @@ async def test_diary_write_can_be_read_back(workspace):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("day", ["today", "tomorrow"])
+async def test_unseen_journal_returns_snapshot_without_overwriting(workspace, day):
+    skill, diary = workspace
+    args = {
+        "day": day, "_source_date": "2025-06-15",
+        "_target_date": "2025-06-15" if day == "today" else "2025-06-16",
+    }
+    original = "Keep existing notes.\n\n## Details\n" + "Journal detail.\n" * 40
+    original = original.strip()
+    seeded = await skill.execute(_context("write_diary", {
+        **args, "content": original, "_expected_content": "",
+    }))
+    assert seeded.success
+
+    unseen = await skill.execute(_context("write_diary", {
+        **args, "content": "A blind replacement", "_expected_content": None,
+    }))
+    assert not unseen.success
+    assert not unseen.state_changed
+    assert unseen.document_snapshot == original
+    assert original in unseen.output
+    _, today, tomorrow = diary.read_write_snapshot()
+    assert (today if day == "today" else tomorrow) == original
+
+    concurrent = original + "\nAnother update."
+    changed = await skill.execute(_context("write_diary", {
+        **args, "content": concurrent, "_expected_content": original,
+    }))
+    assert changed.success
+    stale = await skill.execute(_context("write_diary", {
+        **args, "content": "A stale replacement",
+        "_expected_content": unseen.document_snapshot,
+    }))
+    assert not stale.success
+    assert not stale.state_changed
+    assert stale.document_snapshot == concurrent
+    _, today, tomorrow = diary.read_write_snapshot()
+    assert (today if day == "today" else tomorrow) == concurrent
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("next_day", ["2025-06-16", "2025-06-18"])
 async def test_tomorrow_journal_reaches_its_exact_date(workspace, monkeypatch, next_day):
     skill, diary = workspace

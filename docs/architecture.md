@@ -83,8 +83,10 @@ Main and Weekly submit complete Core revisions. The runtime retains the exact
 visible document for concurrency checks rather than asking Main to reproduce
 patch anchors or old content. Diary uses the same visible-snapshot boundary for
 complete journal bodies; deterministic status updates preserve the journal's
-formatting. Next-day drafts belong to their logical date and enter that day's
-journal or archive without replacing existing content.
+formatting. A write without a visible journal returns the current body without
+writing, so Main can revise it in a later tool round of the same turn; concurrent
+changes still reject stale revisions. Next-day drafts belong to their logical
+date and enter that day's journal or archive without replacing existing content.
 
 ## Main conversation flow
 

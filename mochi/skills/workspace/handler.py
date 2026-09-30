@@ -42,17 +42,16 @@ class WorkspaceSkill(Skill):
             return SkillResult(
                 output="Diary target changed during this turn. Try again.", success=False,
             )
+        label = "Today's" if day == "today" else "Tomorrow's"
         try:
             if not isinstance(expected, str):
-                if day == "today":
-                    return SkillResult(
-                        output="Diary update context is unavailable. Try again next turn.",
-                        success=False,
-                    )
-                current = diary.read_tomorrow_draft(target_date)
+                current = (
+                    diary.read(section="今日日記") if day == "today"
+                    else diary.read_tomorrow_draft(target_date)
+                )
                 return SkillResult(
                     output=(
-                        "Tomorrow's journal needs a current snapshot; no write was applied."
+                        f"{label} journal needs a current snapshot; no write was applied."
                         f"\n\nCurrent journal:\n{current}"
                     ),
                     success=False,
@@ -84,7 +83,6 @@ class WorkspaceSkill(Skill):
                 success=False,
                 document_snapshot=current,
             )
-        label = "Today's" if day == "today" else "Tomorrow's"
         receipt = (
             f"{label} journal ({target_date}) "
             f"{'updated' if result['changed'] else 'unchanged'} ({result['chars']} chars)."
