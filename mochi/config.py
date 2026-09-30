@@ -319,7 +319,7 @@ KG_MAX_TRIPLES_PER_ENTITY = _env_int("KG_MAX_TRIPLES_PER_ENTITY", 20)
 # ═══════════════════════════════════════════════════════════════════════════
 
 AI_CHAT_MAX_COMPLETION_TOKENS = _env_int("AI_CHAT_MAX_COMPLETION_TOKENS", 4096)
-# Empty keeps the provider default; currently applied only to GPT-6 Sol.
+# Empty keeps the provider default; applied to models using the Responses API.
 REASONING_EFFORT = _env("REASONING_EFFORT").strip().lower()
 DEFAULT_TOOL_LOOP_MAX_ROUNDS = 16
 TOOL_LOOP_MAX_ROUNDS = _env_int("TOOL_LOOP_MAX_ROUNDS", DEFAULT_TOOL_LOOP_MAX_ROUNDS)

@@ -44,12 +44,13 @@ def _provider(responses, model="gpt-6-sol"):
 
     provider = OpenAIProvider.__new__(OpenAIProvider)
     provider._model = model
-    provider._init_caps_from_cache(model, "https://example.openai.azure.com/openai/v1")
+    provider._base_url = "https://example.openai.azure.com/openai/v1"
+    provider._init_caps_from_cache(model, provider._base_url)
     provider._client = SimpleNamespace(responses=SimpleNamespace(create=create))
     return provider, calls
 
 
-def test_gpt6_responses_tool_round_preserves_reasoning_and_function_pairing(monkeypatch):
+def test_gpt56_high_tool_round_preserves_reasoning_and_function_pairing(monkeypatch):
     from mochi import config
     monkeypatch.setattr(config, "REASONING_EFFORT", "high")
     reasoning = _item(
@@ -66,7 +67,7 @@ def test_gpt6_responses_tool_round_preserves_reasoning_and_function_pairing(monk
     provider, calls = _provider([
         _response(reasoning, call),
         _response(final),
-    ], model="gpt-6-astra")
+    ], model="gpt-5.6-sol")
     tool = {
         "type": "function",
         "function": {
@@ -78,8 +79,8 @@ def test_gpt6_responses_tool_round_preserves_reasoning_and_function_pairing(monk
     messages = [{"role": "system", "content": "You are Mochi"},
                 {"role": "user", "content": "Weather?"}]
     first = provider.chat(messages, tools=[tool])
-    assert first.model == "gpt-6-astra"
-    assert first.reasoning_source.endswith("::gpt-6-astra::responses")
+    assert first.model == "gpt-5.6-sol"
+    assert first.reasoning_source.endswith("::gpt-5.6-sol::responses")
     assert calls[0]["store"] is False
     assert calls[0]["include"] == ["reasoning.encrypted_content"]
     assert calls[0]["reasoning"] == {"effort": "high"}
@@ -166,7 +167,7 @@ def test_gpt6_rejects_incomplete_text_and_other_failure_statuses():
 
 def test_other_models_keep_chat_completions():
     provider, _ = _provider([])
-    provider._model = "gpt-5.6-sol"
+    provider._model = "gpt-5.4-mini"
     provider._client = SimpleNamespace(
         chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **kwargs: SimpleNamespace(
             choices=[SimpleNamespace(

@@ -28,6 +28,7 @@ log = logging.getLogger(__name__)
 _HTTP_TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0)
 
 _RESPONSES_API_MODELS = frozenset({
+    "gpt-5.6-sol",
     "gpt-6-astra",
     "gpt-6-sol",
 })
