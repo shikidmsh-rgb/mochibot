@@ -238,7 +238,7 @@ async def test_free_time_diary_revisions_preserve_visible_snapshot_boundary(
         lease_until="2099-01-01T00:00:00+00:00",
     )
 
-    await chat(runtime_entry=entry)
+    result = await chat(runtime_entry=entry)
 
     assert original in main_context(mock.call_log[0]["messages"])
     snapshots = [
@@ -252,6 +252,11 @@ async def test_free_time_diary_revisions_preserve_visible_snapshot_boundary(
         ("success", True), ("failed", False), ("success", True),
     ]
     assert diary.read("今日日記") == revised
+    from mochi.runtime_trace import get_run
+    diagnostics = get_run(1, result._trace_id)["diagnostics"]
+    assert diagnostics["state"] == "recovered"
+    assert diagnostics["issues"][0]["ref"] == f"tool:{executions[1]['id']}"
+    assert diagnostics["issues"][0]["recovered_by"] == f"tool:{executions[2]['id']}"
 
 
 @pytest.mark.asyncio

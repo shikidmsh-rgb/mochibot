@@ -56,6 +56,7 @@ _current: ContextVar[Run | None] = ContextVar("runtime_trace", default=None)
 @dataclass
 class Phase:
     name: str
+    operation_id: str
     waiting_cancelled: bool = False
 
 
@@ -222,16 +223,16 @@ def purge() -> None:
         _last_purge_day = _now()[:10]
 
 
-def _insert(run: Run, kind: str, name: str, request, *, span_id: str) -> bool:
+def _insert(run: Run, kind: str, name: str, request, *, span_id: str, facts=None) -> bool:
     if _last_purge_day != _now()[:10]:
         purge()
     return _write(
         "INSERT INTO runtime_traces "
         "(trace_id,span_id,turn_id,user_id,run_kind,span_kind,name,process_id,"
-        "status,request_json,started_at) VALUES (?,?,?,?,?,?,?,?,'running',?,?)",
+        "status,request_json,started_at,facts_json) VALUES (?,?,?,?,?,?,?,?,'running',?,?,?)",
         (
             run.trace_id, span_id, run.turn_id, run.user_id, run.kind,
-            kind, name, PROCESS_ID, _payload(request), _now(),
+            kind, name, PROCESS_ID, _payload(request), _now(), _payload(facts),
         ),
     )
 
@@ -286,8 +287,8 @@ def run_scope(turn_id: str, kind: str, user_id: int | None, request):
 
 
 @contextmanager
-def stage(name: str):
-    phase = Phase(name)
+def stage(name: str, *, operation_id: str | None = None):
+    phase = Phase(name, operation_id or uuid.uuid4().hex)
     token = _stage.set(phase)
     try:
         yield
@@ -304,19 +305,20 @@ class Span:
     span_id: str
     started: float
     response: object = None
+    facts: dict | None = None
 
 
 @contextmanager
-def span(kind: str, name: str, request=None, *, run: Run | None = None):
+def span(kind: str, name: str, request=None, *, run: Run | None = None, facts=None):
     active = run or _current.get()
     if active is None:
         yield None
         return
-    item = Span(active, uuid.uuid4().hex, time.monotonic())
+    item = Span(active, uuid.uuid4().hex, time.monotonic(), facts=facts)
     phase = _stage.get()
     _insert(
         active, kind, f"{phase.name}:{name}" if phase else name,
-        request, span_id=item.span_id,
+        request, span_id=item.span_id, facts=facts,
     )
     status, error = "completed", None
     try:
@@ -333,17 +335,17 @@ def span(kind: str, name: str, request=None, *, run: Run | None = None):
             "WHEN ?='completed' AND span_kind='model' "
             "AND EXISTS (SELECT 1 FROM runtime_traces r "
             "WHERE r.span_id=? AND r.status NOT IN ('running','prepared')) "
-            "THEN 'completed_late' ELSE ? END, response_json=?, error=?, "
+            "THEN 'completed_late' ELSE ? END, response_json=?, facts_json=?, error=?, "
             "finished_at=?, duration_ms=? WHERE span_id=?",
             (
-                status, active.trace_id, status, _payload(item.response), error,
+                status, active.trace_id, status, _payload(item.response), _payload(item.facts), error,
                 _now(), (time.monotonic() - item.started) * 1000, item.span_id,
             ),
         )
 
 
-def event(name: str, request=None, response=None) -> None:
-    with span("event", name, request) as item:
+def event(name: str, request=None, response=None, *, facts=None) -> None:
+    with span("event", name, request, facts=facts) as item:
         if item:
             item.response = response
 
@@ -365,9 +367,11 @@ def sdk_call(
     timeout = (
         client_timeout.as_dict() if hasattr(client_timeout, "as_dict") else client_timeout
     )
+    phase = _stage.get()
+    operation_id = phase.operation_id if phase else uuid.uuid4().hex
     with span("model", protocol, {
         "provider": provider, "endpoint": endpoint, "client_timeout": timeout, **kwargs,
-    }) as item:
+    }, facts={"kind": "model", "operation_id": operation_id}) as item:
         try:
             response = fn(**kwargs)
         except Exception as exc:
@@ -383,7 +387,129 @@ def sdk_call(
             item.response = (
                 {"body": response, "request_id": request_id} if request_id else response
             )
+            try:
+                from mochi.execution_diagnostics import model_facts
+                item.facts = model_facts(
+                    protocol=protocol, endpoint=endpoint, request=kwargs,
+                    response=response, operation_id=operation_id,
+                )
+            except Exception:
+                log.exception("Could not summarize model terminal evidence")
         return response
+
+
+def start_tool(execution_id: int, tool: str, arguments: dict, *, document_target=None) -> Span | None:
+    run = _current.get()
+    if run is None:
+        return None
+    from mochi.tool_execution import sanitize_arguments
+
+    operation_id = None
+    try:
+        if document_target is not None:
+            identity = {"tool": tool, "document": document_target}
+        else:
+            safe = _sanitize(sanitize_arguments(tool, arguments))
+            identity = {"tool": tool, "arguments": arguments} if safe == arguments else None
+        if identity is not None:
+            operation_id = hashlib.sha256(
+                json.dumps(identity, sort_keys=True, ensure_ascii=False).encode()
+            ).hexdigest()
+    except Exception:
+        log.exception("Could not identify a diagnostic tool retry")
+    facts = {
+        "kind": "tool", "execution_id": execution_id, "operation_id": operation_id,
+        "state_change_unknown": True,
+    }
+    item = Span(run, uuid.uuid4().hex, time.monotonic(), facts=facts)
+    _insert(run, "tool", tool, {"execution_id": execution_id}, span_id=item.span_id, facts=facts)
+    return item
+
+
+def finish_tool(item: Span | None, result) -> None:
+    if item is None:
+        return
+    facts = {
+        **item.facts, "success": result.success, "error_code": result.error_code,
+        "state_changed": result.state_changed,
+        "state_change_unknown": result.state_change_unknown,
+        "execution_started": result.execution_started,
+    }
+    _write(
+        "UPDATE runtime_traces SET status=?,facts_json=?,finished_at=?,duration_ms=? "
+        "WHERE span_id=?",
+        (
+            "completed" if result.success else "failed", _payload(facts),
+            _now(), (time.monotonic() - item.started) * 1000, item.span_id,
+        ),
+    )
+
+
+def tool_rejection_facts(calls: list[dict], results: list[dict], executed: set[str]) -> dict | None:
+    try:
+        names = {call["id"]: call["name"] for call in calls}
+        rejected = []
+        for result in results:
+            call_id = result["tool_call_id"]
+            if call_id in executed:
+                continue
+            payload = json.loads(result["content"])
+            if payload.get("ok") is False:
+                rejected.append({
+                    "call_id": call_id, "tool": names[call_id], "code": payload.get("code"),
+                })
+        return {"kind": "rejections", "items": rejected} if rejected else None
+    except (KeyError, ValueError, AttributeError):
+        log.exception("Could not summarize rejected tool calls")
+        return None
+
+
+def _read_diagnostics(conn, roots: list[dict]) -> dict[str, dict]:
+    from mochi.execution_diagnostics import summarize
+
+    if not roots:
+        return {}
+    trace_ids = [row["trace_id"] for row in roots]
+    placeholders = ",".join("?" for _ in trace_ids)
+    rows = conn.execute(
+        "SELECT id,trace_id,span_id,span_kind,name,status,started_at,finished_at,facts_json "
+        f"FROM runtime_traces WHERE trace_id IN ({placeholders}) ORDER BY id",
+        trace_ids,
+    ).fetchall()
+    grouped = {trace_id: [] for trace_id in trace_ids}
+    for row in rows:
+        item = dict(row)
+        raw = item.pop("facts_json")
+        item["facts"] = json.loads(raw) if raw else None
+        grouped[item["trace_id"]].append(item)
+    # The ledger remains authoritative; explicit execution IDs prevent repeated
+    # invocations sharing a turn_id from inheriting one another's successes.
+    tool_rows = conn.execute(
+        "SELECT t.trace_id,e.id,e.tool_name,e.status,e.state_changed,e.started_at,e.finished_at "
+        "FROM runtime_traces t JOIN tool_executions e "
+        "ON e.id=json_extract(t.facts_json,'$.execution_id') AND e.user_id=t.user_id "
+        f"WHERE t.span_kind='tool' AND t.trace_id IN ({placeholders}) ORDER BY e.id",
+        trace_ids,
+    ).fetchall()
+    tools = {trace_id: [] for trace_id in trace_ids}
+    for row in tool_rows:
+        tools[row["trace_id"]].append(dict(row))
+    summaries = {}
+    for root in roots:
+        trace_id = root["trace_id"]
+        # Old traces lack execution IDs. Preserve their failures as evidence,
+        # but do not infer recovery relationships from redacted argument text.
+        if not any(row["span_kind"] == "tool" for row in grouped[trace_id]):
+            tools[trace_id] = [dict(row) for row in conn.execute(
+                "SELECT id,tool_name,status,state_changed,started_at,finished_at "
+                "FROM tool_executions WHERE turn_id=? AND user_id=? "
+                "AND julianday(started_at)>=julianday(?) "
+                "AND julianday(started_at)<=julianday(COALESCE(?,?)) ORDER BY id",
+                (root["turn_id"], root["user_id"], root["started_at"],
+                 root["finished_at"], _now()),
+            )]
+        summaries[trace_id] = summarize(root, grouped[trace_id], tools[trace_id])
+    return summaries
 
 
 def record_delivery(result, status: str, *, detail=None) -> None:
@@ -406,9 +532,18 @@ def delivery_method(fn):
         if not trace_id:
             return await fn(self, user_id, result, *args, **kwargs)
         run = Run(trace_id, "", user_id, "delivery")
+        component = getattr(result, "_trace_component", False)
+        operation_id = (
+            hashlib.sha256(json.dumps(
+                {"text": result.text, "stickers": result.stickers},
+                ensure_ascii=False, sort_keys=True,
+            ).encode()).hexdigest() if component else "whole_reply"
+        )
         with span("delivery", self.name, {
             "text_chars": len(result.text), "stickers": len(result.stickers),
-        }, run=run) as item:
+        }, run=run, facts={
+            "kind": "delivery_attempt", "operation_id": operation_id,
+        }) as item:
             try:
                 delivered = await fn(self, user_id, result, *args, **kwargs)
             except BaseException as exc:
@@ -416,10 +551,16 @@ def delivery_method(fn):
                     "cancelled" if isinstance(exc, asyncio.CancelledError)
                     else getattr(exc, "outcome", "delivery_unknown")
                 )
+                if item:
+                    item.facts.update(outcome=status, confirmed=False)
                 record_delivery(result, status, detail=type(exc).__name__)
                 raise
             if item:
                 item.response = {"confirmed": bool(delivered)}
+                item.facts.update(
+                    confirmed=bool(delivered),
+                    outcome="delivered" if delivered else "delivery_unknown",
+                )
             record_delivery(result, "delivered" if delivered else "delivery_unknown")
             return delivered
     return wrapped
@@ -431,14 +572,18 @@ def list_runs(user_id: int, *, limit: int = 30, before: int | None = None) -> di
     conn = _connect()
     try:
         rows = conn.execute(
-            "SELECT id,trace_id,turn_id,run_kind,status,started_at,finished_at,duration_ms "
+            "SELECT id,trace_id,span_id,user_id,turn_id,run_kind,status,started_at,finished_at,duration_ms "
             "FROM runtime_traces WHERE span_kind='run' AND user_id=? "
             "AND (? IS NULL OR id < ?) ORDER BY id DESC LIMIT ?",
             (user_id, before, before, limit + 1),
         ).fetchall()
+        page = [dict(row) for row in rows[:limit]]
+        diagnostics = _read_diagnostics(conn, page)
+        for row in page:
+            summary = diagnostics[row["trace_id"]]
+            row["diagnostics"] = {key: value for key, value in summary.items() if key != "issues"}
     finally:
         conn.close()
-    page = [dict(row) for row in rows[:limit]]
     return {"runs": page, "next_before": page[-1]["id"] if len(rows) > limit else None}
 
 
@@ -456,12 +601,26 @@ def get_run(user_id: int, trace_id: str) -> dict | None:
         rows = conn.execute(
             "SELECT * FROM runtime_traces WHERE trace_id=? ORDER BY id", (trace_id,),
         ).fetchall()
+        tool_ids = [
+            json.loads(row["facts_json"])["execution_id"]
+            for row in rows if row["span_kind"] == "tool" and row["facts_json"]
+        ]
+        if tool_ids:
+            tool_filter = f"AND id IN ({','.join('?' for _ in tool_ids)})"
+            tool_params = tuple(tool_ids)
+        else:
+            tool_filter = (
+                "AND julianday(started_at)>=julianday(?) "
+                "AND julianday(started_at)<=julianday(COALESCE(?,?))"
+            )
+            tool_params = (root["started_at"], root["finished_at"], _now())
         tools = conn.execute(
             "SELECT id,tool_call_id,source,tool_name,action,arguments_json,status,"
             "result_summary,state_changed,started_at,finished_at "
-            "FROM tool_executions WHERE turn_id=? AND user_id=? ORDER BY id",
-            (root["turn_id"], user_id),
+            f"FROM tool_executions WHERE turn_id=? AND user_id=? {tool_filter} ORDER BY id",
+            (root["turn_id"], user_id, *tool_params),
         ).fetchall()
+        diagnostics = _read_diagnostics(conn, [dict(root)])[trace_id]
     finally:
         conn.close()
     spans = []
@@ -470,9 +629,12 @@ def get_run(user_id: int, trace_id: str) -> dict | None:
         for key in ("request_json", "response_json"):
             encoded = item.pop(key)
             item[key.removesuffix("_json")] = json.loads(encoded) if encoded else None
+        encoded = item.pop("facts_json")
+        item["facts"] = json.loads(encoded) if encoded else None
         spans.append(item)
     return {
         "trace_id": trace_id, "turn_id": root["turn_id"],
         "spans": spans, "tools": _sanitize([dict(row) for row in tools]),
         "retention_days": RETENTION_DAYS,
+        "diagnostics": diagnostics,
     }

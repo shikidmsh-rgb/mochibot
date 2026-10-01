@@ -216,6 +216,7 @@ def init_db() -> None:
             status        TEXT NOT NULL,
             request_json  TEXT,
             response_json TEXT,
+            facts_json    TEXT,
             error         TEXT,
             started_at    TEXT NOT NULL,
             finished_at   TEXT,
@@ -368,6 +369,7 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
     _add_col("messages", "turn_id", "TEXT DEFAULT NULL")
     _add_col("messages", "reasoning_content", "TEXT DEFAULT NULL")
     _add_col("messages", "reasoning_source", "TEXT NOT NULL DEFAULT ''")
+    _add_col("runtime_traces", "facts_json", "TEXT DEFAULT NULL")
 
     # memory_items
     _add_col("memory_items", "access_count", "INTEGER NOT NULL DEFAULT 0")

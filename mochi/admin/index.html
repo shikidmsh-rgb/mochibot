@@ -1697,6 +1697,59 @@ function tracePayload(value) {
   return `<pre style="white-space:pre-wrap;overflow-wrap:anywhere;max-height:420px;overflow:auto;font-size:12px">${esc(JSON.stringify(value, null, 2))}</pre>`;
 }
 
+const _diagnosticStates = {
+  unresolved: ['未确认恢复', 'var(--danger)'],
+  unknown: ['结果未知', '#b36b00'],
+  pending: ['执行中', 'var(--text-soft)'],
+  recovered: ['失败后已恢复', 'var(--success)'],
+  no_detected_error: ['未发现执行异常', 'var(--text-soft)'],
+};
+const _diagnosticCodes = {
+  tool_failed: '工具报告失败', tool_result_missing: '工具没有完整结果',
+  side_effects_unknown: '无法确认是否已产生数据改动', tool_rejected: '工具调用未执行',
+  request_failed: '模型请求失败', request_interrupted: '模型请求等待被取消或中断',
+  request_unfinished: '模型请求尚无终态',
+  output_truncated: '输出到达长度上限，已截断', response_failed: '模型未正常完成响应',
+  terminal_evidence_missing: '缺少可判定的结构化终态', late_response: '响应在等待结束后才返回',
+  output_budget_exceeded: '实际生成量超过请求上限', run_not_completed: '整轮未正常完成',
+  delivery_unknown: '消息送达未确认', delivery_rejected: '消息送达被拒绝',
+  delivery_unavailable: '消息无法送达',
+};
+function diagnosticBadge(summary) {
+  if (!summary) return '';
+  const [text, color] = _diagnosticStates[summary.state] || ['结果未知', '#b36b00'];
+  return `<span style="color:${color};font-size:12px;margin-left:8px">${esc(text)}</span>`;
+}
+function diagnosticFacts(summary) {
+  if (!summary) return '';
+  const m = summary.models || {}, t = summary.tools || {}, d = summary.data_changes || {};
+  const delivery = {confirmed:'已确认送达', pending:'等待送达', not_requested:'未请求送达', unknown:'未确认'};
+  const facts = [
+    ['模型', `${m.completed || 0} 完整 · ${m.failed || 0} 失败 · ${m.truncated || 0} 截断 · ${m.pending || 0} 等待中 · ${(m.unknown || 0) + (m.late || 0) + (m.cancelled || 0) + (m.interrupted || 0)} 未知/中断/迟到`],
+    ['工具', `${t.success || 0} 成功 · ${t.failed || 0} 失败 · ${t.rejected || 0} 未执行 · ${t.running || 0} 尚无结果`],
+    ['数据改动', `${d.confirmed || 0} 报告有改动 · ${d.no_change || 0} 报告未改动 · ${d.unknown || 0} 未知`],
+    ['消息', delivery[summary.delivery] || '未确认'],
+  ];
+  return facts.map(([label,value]) => `<div style="font-size:12px;margin-top:5px"><strong>${label}</strong>：${esc(value)}</div>`).join('');
+}
+function diagnosticReport(summary) {
+  if (!summary) return '';
+  let html = '<div class="card"><div class="card-title">执行结果' + diagnosticBadge(summary) + '</div>';
+  html += diagnosticFacts(summary);
+  html += '<p style="font-size:12px;color:var(--text-soft);margin-top:10px">回复送达不代表工具成功。恢复只表示同一请求或明确相同的操作目标后来成功，不代表整个用户意图已经完成。旧记录证据不足、迟到响应和未知副作用不会被自动当作成功；安静或没有写日记不属于执行异常。</p>';
+  for (const issue of summary.issues || []) {
+    const [state, color] = _diagnosticStates[issue.state] || ['结果未知', '#b36b00'];
+    html += `<div style="border-top:1px solid var(--border);padding:10px 0;font-size:13px">
+      <span style="color:${color}">${esc(state)}</span> · ${esc(_diagnosticCodes[issue.code] || issue.code)}
+      ${issue.tool ? ' · ' + esc(issue.tool) : ''}
+      ${issue.error_code ? ' (' + esc(issue.error_code) + ')' : ''}
+      ${issue.requested != null ? `<div>请求上限 ${esc(issue.requested)}，实际生成 ${esc(issue.actual)}</div>` : ''}
+      <div style="font-size:11px;color:var(--text-soft);overflow-wrap:anywhere">证据：${esc(issue.ref)}${issue.recovered_by ? ' → 恢复证据：' + esc(issue.recovered_by) : ''}</div>
+    </div>`;
+  }
+  return html + '</div>';
+}
+
 async function loadTraces(before = null) {
   const generation = ++_traceListGeneration;
   const container = document.getElementById('trace-list');
@@ -1715,6 +1768,8 @@ async function loadTraces(before = null) {
         style="display:block;width:100%;text-align:left;cursor:pointer;margin-bottom:8px">
         <strong>${esc(run.run_kind)}</strong>
         <span class="badge badge-info" style="margin-left:8px">${esc(traceStatus(run.status))}</span>
+        ${diagnosticBadge(run.diagnostics)}
+        ${diagnosticFacts(run.diagnostics)}
         <div style="font-size:12px;color:var(--text-soft);margin-top:6px">
           ${esc(run.started_at)} · ${run.duration_ms == null ? '尚未结束' : (run.duration_ms / 1000).toFixed(2) + ' 秒'}
         </div>
@@ -1748,6 +1803,7 @@ async function openTrace(traceId) {
     html += `<div style="overflow-wrap:anywhere;font-size:12px">${esc(data.trace_id)}</div>`;
     html += '<button class="btn btn-ghost btn-sm" style="margin-top:8px" onclick="exportTrace()">下载这次记录</button>';
     html += '<p style="font-size:12px;color:var(--text-soft);margin-top:8px">“等待已取消”不代表底层请求已停止；“等待结束后才返回”保留迟到结果。工具是否成功和消息是否送达分别记录。</p></div>';
+    html += diagnosticReport(data.diagnostics);
     for (const item of data.spans) {
       html += `<details class="card" style="margin-bottom:10px">
         <summary style="cursor:pointer"><strong>${esc(item.span_kind)} · ${esc(item.name)}</strong>
@@ -1758,6 +1814,7 @@ async function openTrace(traceId) {
         ${item.error ? '<pre style="white-space:pre-wrap;color:var(--danger)">' + esc(item.error) + '</pre>' : ''}
         ${item.request === null ? '' : '<h4>实际输入 / 参数</h4>' + tracePayload(item.request)}
         ${item.response === null ? '' : '<h4>实际结果</h4>' + tracePayload(item.response)}
+        ${item.facts ? '<h4>结构化执行事实</h4>' + tracePayload(item.facts) : ''}
       </details>`;
     }
     html += '<details class="card"><summary style="cursor:pointer">关联的工具执行账本 (' + data.tools.length + ')</summary>' + tracePayload(data.tools) + '</details>';

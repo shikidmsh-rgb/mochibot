@@ -180,6 +180,16 @@ marked rather than silently truncated. Trace failures are logged without
 changing the agent's execution outcome. Recording adds no model calls and does
 not implement automatic alerting, replay or recovery.
 
+Admin derives execution diagnostics from compact terminal facts alongside the
+original trace and tool ledger. Model retries share an explicit request identity;
+tool recovery requires identical unredacted arguments or a framework-owned
+document target. Unrelated successes and late responses cannot clear failures,
+and unknown side effects remain unknown after subsequent successes. Delivery,
+model completion, tool results and reported data changes stay separate.
+Truncation is distinct from exceeding a verified provider's output budget.
+Missing historical evidence is not reconstructed as success. These diagnostics
+neither assess Main's initiative nor change its tools, prompt or retry behavior.
+
 ## Model and provider boundary
 
 The product has exactly two model roles. **Main** owns every personality-bearing

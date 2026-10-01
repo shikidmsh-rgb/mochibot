@@ -1421,7 +1421,10 @@ async def _chat(
                 return _cancelled_result()
             call_started = time.monotonic()
             try:
-                with runtime_trace.stage(f"main.round_{round_num + 1}.attempt_{_attempt + 1}"):
+                with runtime_trace.stage(
+                    f"main.round_{round_num + 1}.attempt_{_attempt + 1}",
+                    operation_id=f"main.round_{round_num + 1}",
+                ):
                     response = await asyncio.to_thread(
                         client.chat,
                         messages=messages,
@@ -1493,6 +1496,7 @@ async def _chat(
 
         # Add assistant message with tool_calls to context
         tool_messages_start = len(messages)
+        executed_call_ids: set[str] = set()
         assistant_msg = {"role": "assistant", "content": response.content or ""}
         if response.reasoning_content:
             assistant_msg["reasoning_content"] = response.reasoning_content
@@ -1717,6 +1721,16 @@ async def _chat(
                 action=action_for(tc["name"], arguments),
                 arguments_json=serialized_arguments(tc["name"], arguments),
             )
+            executed_call_ids.add(tc["id"])
+            trace_tool = runtime_trace.start_tool(
+                execution_id, tc["name"], arguments,
+                document_target=(
+                    diary_target_dates[arguments.get("day", "today")]
+                    if tc["name"] == "write_diary"
+                    else "core" if tc["name"] == "update_core"
+                    else None
+                ),
+            )
             try:
                 dispatch_args = dict(arguments)
                 if tc["name"] == "update_core":
@@ -1796,6 +1810,7 @@ async def _chat(
                     entity_refs=outcome["entity_refs"],
                     state_changed=outcome["state_changed"],
                 )
+                runtime_trace.finish_tool(trace_tool, result)
             except Exception as e:
                 finish_tool_execution(
                     execution_id, status="failed",
@@ -1830,9 +1845,15 @@ async def _chat(
                 elif tc["name"] == "read_diary" and not arguments.get("date"):
                     document_updates[diary_source_date] = result.document_snapshot
 
-        runtime_trace.event("tool_results", {"round": round_num + 1}, [
+        paired_results = [
             item for item in messages[tool_messages_start:] if item["role"] == "tool"
-        ])
+        ]
+        runtime_trace.event(
+            "tool_results", {"round": round_num + 1}, paired_results,
+            facts=runtime_trace.tool_rejection_facts(
+                response.tool_calls, paired_results, executed_call_ids,
+            ),
+        )
         for generated_image in generated_images:
             messages.append({
                 "role": "user",

@@ -635,7 +635,7 @@ class TestSimpleReply:
                 make_response(f"Recovered {expected_error}"),
             ])
 
-            await chat(_msg(f"invalid call {index}", user_id=index))
+            result = await chat(_msg(f"invalid call {index}", user_id=index))
 
             model_error = json.loads(
                 mock.call_log[1]["messages"][-1]["content"]
@@ -653,6 +653,12 @@ class TestSimpleReply:
                 for message in assistant_messages
             )
             assert read_core() == unchanged_core
+            from mochi.runtime_trace import get_run
+            diagnostics = get_run(index, result._trace_id)["diagnostics"]
+            assert any(
+                issue["code"] == "tool_rejected" and issue["error_code"] == expected_error
+                for issue in diagnostics["issues"]
+            )
 
     @pytest.mark.asyncio
     async def test_complete_document_snapshots_advance_between_rounds(self, mock_llm_factory):
