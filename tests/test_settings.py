@@ -183,8 +183,13 @@ def test_extension_draft_config_does_not_import_code_or_collide_with_switch(exte
 
 
 def test_model_inspection_never_initializes_pool_and_reports_saved_separately(monkeypatch):
+    import json
+    import threading
+    from types import SimpleNamespace
+
     import mochi.model_pool as pool
     from mochi.admin import admin_env
+    from mochi.llm import OpenAIProvider
 
     monkeypatch.setattr(pool, "_pool", None)
     monkeypatch.setattr(admin_env, "read_env_value", lambda key: {
@@ -199,6 +204,16 @@ def test_model_inspection_never_initializes_pool_and_reports_saved_separately(mo
     with pytest.raises(settings.SettingsError) as rejected:
         settings.change_setting("models.embedding", "changed")
     assert rejected.value.code == "read_only_setting"
+    client = OpenAIProvider.__new__(OpenAIProvider)
+    monkeypatch.setattr(pool, "_pool", SimpleNamespace(
+        _lock=threading.Lock(), _tiers={"main": client},
+        _tier_models={"main": "gpt-6-sol"},
+        _embed_client=None, _embed_model="",
+    ))
+    running = json.loads(json.dumps(settings.get_setting("models.main")))
+    assert running["value"]["running"] == {
+        "provider": "openai", "model": "gpt-6-sol",
+    }
 
 
 def test_settings_schema_and_pure_chat_share_the_same_callable_entry():

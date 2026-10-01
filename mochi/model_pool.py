@@ -352,7 +352,7 @@ def loaded_config_summary() -> dict[str, dict]:
         return {}
     with _pool._lock:
         result = {
-            tier: {"provider": client.provider_name, "model": _pool._tier_models[tier]}
+            tier: {"provider": client.provider_name(), "model": _pool._tier_models[tier]}
             for tier, client in _pool._tiers.items()
         }
         result["embedding"] = {
