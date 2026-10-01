@@ -118,8 +118,8 @@ async def classify_skills_llm(message: str, user_id: int | None = None,
     prompt = _build_router_prompt(descriptions, active_habits=active_habits)
 
     try:
-        client = get_client_for_tier("lite")
-        from mochi.runtime_trace import stage
+        from mochi.runtime_trace import prepare_sync, span, stage
+        client = prepare_sync("router_client", get_client_for_tier, "lite")
         with stage("router"):
             response = await asyncio.to_thread(
                 client.chat,
@@ -140,7 +140,8 @@ async def classify_skills_llm(message: str, user_id: int | None = None,
             cache_write_tokens=response.cache_write_tokens,
         )
 
-        result = json.loads(extract_json(response.content))
+        with span("preparation", "router_parse"):
+            result = json.loads(extract_json(response.content))
         skills = result.get("skills", [])
         if isinstance(skills, list):
             selected: list[str] = []

@@ -112,7 +112,7 @@ def summarize(root: dict, spans: list[dict], tools: list[dict]) -> dict:
     }
     events = []
     for row in spans:
-        if row["span_kind"] == "model" or (row.get("facts") or {}).get("kind") in {
+        if row["span_kind"] in {"model", "preparation"} or (row.get("facts") or {}).get("kind") in {
             "rejections", "delivery_attempt",
         }:
             events.append((row.get("finished_at") or row["started_at"], row["id"], "span", row))
@@ -154,6 +154,16 @@ def summarize(root: dict, spans: list[dict], tools: list[dict]) -> dict:
 
         facts = row.get("facts") or {}
         ref = f"span:{row['span_id']}"
+        if row["span_kind"] == "preparation":
+            if row["status"] == "failed":
+                issue("preparation", ref, "preparation_failed", stage=row["name"])
+            elif row["status"] in {"cancelled", "interrupted", "running"}:
+                issue(
+                    "preparation", ref, "preparation_unfinished",
+                    "pending" if row["status"] == "running" and root_active else "unknown",
+                    stage=row["name"],
+                )
+            continue
         if facts.get("kind") == "delivery_attempt":
             key = facts.get("operation_id")
             if facts.get("confirmed") is True:

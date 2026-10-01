@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Dump the exact prompt input MochiBot receives for the latest user message.
+"""Reconstruct current prompt context, not a historical request.
 
-Replays the chat() assembly logic WITHOUT calling the API.
-Outputs the full system prompt (rendered), history, tool defs, and token estimates.
+This can call the router and embedding provider and read/update live stores.
+For read-only investigation of an actual run, use scripts/diagnose.py instead.
 
 Usage:
     python scripts/dump_prompt.py

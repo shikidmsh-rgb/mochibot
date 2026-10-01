@@ -190,6 +190,14 @@ Truncation is distinct from exceeding a verified provider's output budget.
 Missing historical evidence is not reconstructed as success. These diagnostics
 neither assess Main's initiative nor change its tools, prompt or retry behavior.
 
+Pre-model preparation has its own spans for model-client setup, Core, history,
+recall, routing, habits, Diary and tool/prompt assembly, including failed or
+cancelled waits. `scripts/diagnose.py` reads existing traces by time, runtime kind,
+diagnostic state or exact trace ID without constructing a model client. It can
+export the recorded evidence and an explicitly selected systemd journal window;
+missing logs are reported, and the export never overwrites an existing file.
+This developer path does not reconstruct prompts or replay user actions.
+
 ## Model and provider boundary
 
 The product has exactly two model roles. **Main** owns every personality-bearing

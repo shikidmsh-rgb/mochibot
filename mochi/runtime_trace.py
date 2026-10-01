@@ -156,6 +156,11 @@ def serialize(value) -> str:
     return encoded
 
 
+def sanitize_evidence(value):
+    """Apply trace redaction to an export without truncating the whole report."""
+    return _sanitize(value)
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -198,7 +203,7 @@ def code_version() -> dict:
             stderr=subprocess.DEVNULL, timeout=3,
         ).strip()
         result["tracked_changes"] = bool(subprocess.check_output(
-            ["git", "status", "--porcelain", "--untracked-files=no"],
+            ["git", "--no-optional-locks", "status", "--porcelain", "--untracked-files=no"],
             cwd=root, text=True, stderr=subprocess.DEVNULL, timeout=3,
         ).strip())
     except (OSError, subprocess.SubprocessError):
@@ -348,6 +353,22 @@ def event(name: str, request=None, response=None, *, facts=None) -> None:
     with span("event", name, request, facts=facts) as item:
         if item:
             item.response = response
+
+
+async def prepare(name: str, function, *args, **kwargs):
+    """Observe existing threaded preparation without changing its execution."""
+    with span("preparation", name):
+        return await asyncio.to_thread(function, *args, **kwargs)
+
+
+async def prepare_async(name: str, awaitable):
+    with span("preparation", name):
+        return await awaitable
+
+
+def prepare_sync(name: str, function, *args, **kwargs):
+    with span("preparation", name):
+        return function(*args, **kwargs)
 
 
 def sdk_call(
@@ -566,16 +587,30 @@ def delivery_method(fn):
     return wrapped
 
 
-def list_runs(user_id: int, *, limit: int = 30, before: int | None = None) -> dict:
-    from mochi.db import _connect
+def read_connection() -> sqlite3.Connection:
+    """Open existing evidence without creating or configuring a database."""
+    from mochi.db import DB_PATH
 
-    conn = _connect()
+    conn = sqlite3.connect(Path(DB_PATH).resolve().as_uri() + "?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA query_only=ON")
+    return conn
+
+
+def list_runs(
+    user_id: int, *, limit: int = 30, before: int | None = None,
+    since: str | None = None, until: str | None = None, kind: str | None = None,
+) -> dict:
+    conn = read_connection()
     try:
         rows = conn.execute(
             "SELECT id,trace_id,span_id,user_id,turn_id,run_kind,status,started_at,finished_at,duration_ms "
             "FROM runtime_traces WHERE span_kind='run' AND user_id=? "
-            "AND (? IS NULL OR id < ?) ORDER BY id DESC LIMIT ?",
-            (user_id, before, before, limit + 1),
+            "AND (? IS NULL OR id < ?) "
+            "AND (? IS NULL OR julianday(started_at)>=julianday(?)) "
+            "AND (? IS NULL OR julianday(started_at)<=julianday(?)) "
+            "AND (? IS NULL OR run_kind=?) ORDER BY id DESC LIMIT ?",
+            (user_id, before, before, since, since, until, until, kind, kind, limit + 1),
         ).fetchall()
         page = [dict(row) for row in rows[:limit]]
         diagnostics = _read_diagnostics(conn, page)
@@ -588,9 +623,7 @@ def list_runs(user_id: int, *, limit: int = 30, before: int | None = None) -> di
 
 
 def get_run(user_id: int, trace_id: str) -> dict | None:
-    from mochi.db import _connect
-
-    conn = _connect()
+    conn = read_connection()
     try:
         root = conn.execute(
             "SELECT * FROM runtime_traces WHERE span_id=? AND span_kind='run' AND user_id=?",

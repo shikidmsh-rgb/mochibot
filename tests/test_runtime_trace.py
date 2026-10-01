@@ -1,5 +1,6 @@
 import asyncio
 import json
+import sqlite3
 import threading
 
 import httpx
@@ -213,3 +214,35 @@ def test_oversize_trace_is_explicit_and_does_not_silently_truncate(monkeypatch):
     assert record["omitted"] == "payload exceeds trace storage limit"
     assert record["chars"] > 50
     assert len(record["sha256"]) == 64
+
+
+@pytest.mark.asyncio
+async def test_preparation_failure_and_cancelled_wait_remain_visible():
+    def broken_read():
+        raise sqlite3.OperationalError("read failed")
+
+    entered = asyncio.Event()
+
+    async def waiting():
+        entered.set()
+        await asyncio.Event().wait()
+
+    with trace.run_scope("preparation-boundaries", "chat", 1, {}) as run:
+        with pytest.raises(sqlite3.OperationalError):
+            await trace.prepare("conversation", broken_read)
+        pending = asyncio.create_task(trace.prepare_async("router", waiting()))
+        await entered.wait()
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+        trace.finish_run(run.trace_id, "skip")
+    evidence = trace.get_run(1, run.trace_id)
+    stages = [row for row in evidence["spans"] if row["span_kind"] == "preparation"]
+    assert [(row["name"], row["status"]) for row in stages] == [
+        ("conversation", "failed"), ("router", "cancelled"),
+    ]
+    assert all(row["duration_ms"] >= 0 for row in stages)
+    assert "OperationalError" in stages[0]["error"]
+    assert {issue["code"] for issue in evidence["diagnostics"]["issues"]} == {
+        "preparation_failed", "preparation_unfinished",
+    }

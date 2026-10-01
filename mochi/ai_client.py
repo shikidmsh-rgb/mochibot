@@ -225,7 +225,8 @@ def _retrieve_memories_for_turn(text: str, user_id: int) -> list[dict]:
     try:
         recalled = []
         for query, embedding in zip(queries, embeddings):
-            items = recall_memory(
+            items = runtime_trace.prepare_sync(
+                "memory_search", recall_memory,
                 user_id, query=query,
                 limit=max(1, MEMORY_AUTO_RECALL_TOP_K),
                 query_embedding=embedding,
@@ -846,14 +847,15 @@ async def _chat(
 
     # ── Parallel pre-fetch: router classification + DB queries ──
     tier = "main"
-    client = get_client_for_tier(tier)
+    with runtime_trace.span("preparation", "model_client"):
+        client = get_client_for_tier(tier)
     routed_skill_names: list[str] = []
 
     # Pre-fetch habits (fast sync DB) — shared by router hint + system prompt
     habits = (
         []
         if is_bedtime or is_self_reminder or is_weekly or is_autonomous
-        else await asyncio.to_thread(list_habits, user_id)
+        else await runtime_trace.prepare("habit_list", list_habits, user_id)
     )
 
     async def _safe_conversation_context() -> dict:
@@ -874,7 +876,8 @@ async def _chat(
             else MAX_HISTORY_TURNS
         )
         try:
-            return await asyncio.to_thread(
+            return await runtime_trace.prepare(
+                "conversation",
                 get_conversation_context,
                 user_id,
                 recent_turns,
@@ -894,7 +897,8 @@ async def _chat(
     async def _safe_recalled_memories() -> list[dict]:
         if not prompt_policy.auto_recall or not text.strip():
             return []
-        return await asyncio.to_thread(
+        return await runtime_trace.prepare(
+            "memory_recall",
             _retrieve_memories_for_turn, text, user_id,
         )
 
@@ -903,8 +907,9 @@ async def _chat(
     from mochi.turn_tool_policy import (
         build_turn_tool_plan, compose_chat_tools, extend_session_tools,
     )
-    skill_mode_off = get_skill_mode() == "off"
-    turn_plan = build_turn_tool_plan(transport)
+    with runtime_trace.span("preparation", "tool_plan"):
+        skill_mode_off = get_skill_mode() == "off"
+        turn_plan = build_turn_tool_plan(transport)
     tracks_tool_session = (
         message is not None and runtime_entry is None and not skill_mode_off
     )
@@ -942,7 +947,7 @@ async def _chat(
         )
         tools = weekly_session.definitions()
         core_memory, conversation_context = await asyncio.gather(
-            asyncio.to_thread(read_core),
+            runtime_trace.prepare("core", read_core),
             _safe_conversation_context(),
         )
         recalled_memories = []
@@ -956,7 +961,7 @@ async def _chat(
             from mochi.request_tools import REQUEST_TOOLS_DEF
             tools.append(REQUEST_TOOLS_DEF)
         core_memory, conversation_context = await asyncio.gather(
-            asyncio.to_thread(read_core),
+            runtime_trace.prepare("core", read_core),
             _safe_conversation_context(),
         )
         recalled_memories = []
@@ -966,7 +971,7 @@ async def _chat(
         tools = list(turn_plan.resident_definitions)
 
         core_memory, conversation_context, recalled_memories = await asyncio.gather(
-            asyncio.to_thread(read_core),
+            runtime_trace.prepare("core", read_core),
             _safe_conversation_context(),
             _safe_recalled_memories(),
         )
@@ -990,7 +995,7 @@ async def _chat(
             tools.append(REQUEST_TOOLS_DEF)
 
         core_memory, conversation_context, recalled_memories = await asyncio.gather(
-            asyncio.to_thread(read_core),
+            runtime_trace.prepare("core", read_core),
             _safe_conversation_context(),
             _safe_recalled_memories(),
         )
@@ -1002,10 +1007,12 @@ async def _chat(
             router_catalog.pop("image_generation", None)
         # Launch router (with habits hint) + remaining DB fetches concurrently
         skill_names, core_memory, conversation_context, recalled_memories = await asyncio.gather(
-            classify_skills(text, user_id=user_id, habits=habits,
-                            transport=transport,
-                            catalog=router_catalog),
-            asyncio.to_thread(read_core),
+            runtime_trace.prepare_async(
+                "router",
+                classify_skills(text, user_id=user_id, habits=habits,
+                                transport=transport, catalog=router_catalog),
+            ),
+            runtime_trace.prepare("core", read_core),
             _safe_conversation_context(),
             _safe_recalled_memories(),
         )
@@ -1037,7 +1044,7 @@ async def _chat(
             else list(turn_plan.resident_definitions)
         )
         core_memory, conversation_context, recalled_memories = await asyncio.gather(
-            asyncio.to_thread(read_core),
+            runtime_trace.prepare("core", read_core),
             _safe_conversation_context(),
             _safe_recalled_memories(),
         )
@@ -1080,17 +1087,20 @@ async def _chat(
     # ── Policy: filter denied tools before LLM sees them ──
     from mochi.tool_policy import check as policy_check
     tools = filter_tools(tools)
-    availability = ToolAvailability.from_definitions(
+    availability = runtime_trace.prepare_sync(
+        "tool_availability", ToolAvailability.from_definitions,
         tools, source="initial",
     )
 
     # Build context
     active_tool_names = list(availability.names)
-    capability_context = skill_registry.get_capability_context_for_tools(
+    capability_context = runtime_trace.prepare_sync(
+        "capability_context", skill_registry.get_capability_context_for_tools,
         active_tool_names,
     )
     requestable_tools = (
-        skill_registry.get_requestable_tool_lines(
+        runtime_trace.prepare_sync(
+            "requestable_tools", skill_registry.get_requestable_tool_lines,
             active_tool_names,
             transport=transport,
             excluded_skills=excluded_skills,
@@ -1107,9 +1117,13 @@ async def _chat(
             if filter_tools(skill_registry.get_tools_by_tool_names(
                 ["habit_progress"], transport=transport,
             )):
-                return await asyncio.to_thread(habit_skill.daily_context, user_id)
+                return await runtime_trace.prepare(
+                    "habit_progress", habit_skill.daily_context, user_id,
+                )
         elif "habit_progress" in availability.names:
-            return await asyncio.to_thread(habit_skill.progress_context, user_id)
+            return await runtime_trace.prepare(
+                "habit_progress", habit_skill.progress_context, user_id,
+            )
         return ""
 
     habit_progress_context = await _habit_progress_context()
@@ -1125,7 +1139,8 @@ async def _chat(
         if prompt_policy.diary_status
         else ""
     )
-    diary_source_date, diary_today, diary_tomorrow = await asyncio.to_thread(
+    diary_source_date, diary_today, diary_tomorrow = await runtime_trace.prepare(
+        "diary",
         _diary.read_write_snapshot,
     )
     _dj = diary_today if prompt_policy.diary_journal else ""
@@ -1149,7 +1164,8 @@ async def _chat(
     bedtime_review = ""
     receipt_history = history
     if is_bedtime:
-        conversation = await asyncio.to_thread(
+        conversation = await runtime_trace.prepare(
+            "bedtime_conversation",
             get_day_conversation, user_id, diary_source_date,
         )
         bedtime_review = bedtime_context(conversation, diary_today, diary_tomorrow)
@@ -1159,7 +1175,8 @@ async def _chat(
     recent_operations = (
         ""
         if not prompt_policy.recent_operations
-        else await asyncio.to_thread(
+        else await runtime_trace.prepare(
+            "recent_operations",
             recent_operations_context, user_id, receipt_history,
             include_autonomous=True,
         )
@@ -1173,11 +1190,13 @@ async def _chat(
         from mochi import day_start
         from mochi.config import TZ as _TZ
 
-        day_start_day = await asyncio.to_thread(
+        day_start_day = await runtime_trace.prepare(
+            "day_start_status",
             day_start.pending_day, datetime.now(_TZ),
         )
         if day_start_day:
-            day_start_context = await asyncio.to_thread(
+            day_start_context = await runtime_trace.prepare(
+                "day_start_diaries",
                 day_start.context, day_start_day,
             )
         if not day_start_context:
@@ -1187,7 +1206,8 @@ async def _chat(
                 lambda: day_start.mark_done(day_start_day)
             )
 
-    system_prompt, turn_context = _build_prompt_zones(
+    system_prompt, turn_context = runtime_trace.prepare_sync(
+        "prompt", _build_prompt_zones,
         user_id, capability_context=capability_context,
         requestable_tools=requestable_tools, tool_names=active_tool_names,
         core_memory=core_memory, habits=habits, transport=transport,
@@ -1229,7 +1249,7 @@ async def _chat(
     elif attachment:
         _replace_current_user_content(
             messages, stored_text,
-            await asyncio.to_thread(_file_content, text, attachment),
+            await runtime_trace.prepare("attachment", _file_content, text, attachment),
         )
     if split_turn_context:
         current_index = (

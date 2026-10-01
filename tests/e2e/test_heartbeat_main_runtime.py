@@ -346,6 +346,14 @@ async def test_runtime_trace_links_model_tools_and_delivery_without_becoming_con
     assert [item["tool_name"] for item in evidence["tools"]] == ["write_diary"]
     assert evidence["tools"][0]["state_changed"] == 1
     assert diary.read("今日日記") == "Persisted by this turn."
+    stages = {item["name"]: item for item in evidence["spans"] if item["span_kind"] == "preparation"}
+    assert {"model_client", "core", "conversation", "diary", "tool_plan", "prompt"} <= stages.keys()
+    assert all(item["status"] == "completed" for item in stages.values())
+    first_model = next(item for item in evidence["spans"] if item["span_kind"] == "model")
+    assert all(
+        datetime.fromisoformat(stages[name]["finished_at"]) <= datetime.fromisoformat(first_model["started_at"])
+        for name in ("core", "conversation", "diary", "prompt")
+    )
     assert "ADMIN_ONLY_EVIDENCE" not in json.dumps(mock.call_log)
     assert get_recent_messages(1) == []
 
