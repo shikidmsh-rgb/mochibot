@@ -684,6 +684,54 @@ class TestSimpleReply:
                 if message.get("tool_calls"):
                     assert "_expected_content" not in json.dumps(message["tool_calls"])
 
+@pytest.mark.asyncio
+async def test_exact_tool_loading_preserves_round_boundaries_and_session_carry(
+    mock_llm_factory, monkeypatch,
+):
+    import mochi.ai_client as ai_client
+    import mochi.config as config
+    from mochi.db import _connect, save_memory_item
+    from mochi.tool_availability import ToolAvailability
+
+    monkeypatch.setattr(config, "TOOL_ESCALATION_ENABLED", True)
+    monkeypatch.setattr(ai_client, "_retrieve_memories_for_turn", lambda *_args: [])
+    monkeypatch.setattr(ai_client, "_schedule_continuous_memory", lambda _user: None)
+    memory_id = save_memory_item(1, "Keep this memory", source="admin")
+    mock = mock_llm_factory([
+        make_response(tool_calls=[
+            make_tool_call("request_tools", {"skills": ["view_core_memory"]}),
+            make_tool_call("view_core_memory", {}),
+        ]),
+        make_response(tool_calls=[
+            make_tool_call("view_core_memory", {}),
+            make_tool_call("delete_memory", {"memory_id": memory_id}),
+        ]),
+        make_response("Done"),
+        make_response(tool_calls=[make_tool_call("view_core_memory", {})]),
+        make_response("Done"),
+    ])
+
+    first = await chat(_msg("Read your Core"))
+    executions = get_recent_tool_executions(
+        1, state_changes_only=False, include_failures=True,
+    )
+    assert [row["tool_name"] for row in executions] == ["view_core_memory"]
+    assert executions[0]["status"] == "success"
+    with _connect() as conn:
+        assert conn.execute(
+            "SELECT id FROM memory_items WHERE id = ?", (memory_id,),
+        ).fetchone() is not None
+
+    first.confirm_delivered()
+    await chat(_msg("Read it again"))
+    carried = ToolAvailability.from_definitions(mock.call_log[3]["tools"], source="test")
+    assert "view_core_memory" in carried.names
+    assert not {"delete_memory", "memory_stats", "list_memories"} & carried.names
+    assert len(get_recent_tool_executions(
+        1, state_changes_only=False, include_failures=True,
+    )) == 2
+
+
 class TestToolCallReminder:
     """LLM calls manage_reminder tool."""
 

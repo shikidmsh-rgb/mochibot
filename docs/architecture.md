@@ -277,7 +277,10 @@ the turn directly; the Lite pre-router sees only routed skills; and
 on-demand tools for a later provider round, including newly activated personal
 resident tools that were absent at turn startup. It never authorizes another call in
 the same provider response and never mutates the global registry. The system
-prompt lists unloaded requestable skills by name only; a skill's capability
+prompt lists unloaded requestable tool names grouped by skill. An exact tool
+request loads only that tool; skill names and query matches load the skill's
+requestable tools. Mixed requests deduplicate tools and distinguish new additions
+from tools already available. A skill's shared capability
 context arrives with the `request_tools` result that loads it. `locked`
 controls only whether the owner may disable a skill. Concrete deny rules, rate
 limits, state-change facts, recoverability, and receipts remain execution

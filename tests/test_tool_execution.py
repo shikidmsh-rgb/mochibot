@@ -330,6 +330,92 @@ def test_budget_configuration_has_no_silent_upper_clamp(monkeypatch, total, per_
     ) == expected
 
 
+def test_exact_tool_requests_load_only_requested_tools_and_report_existing_ones():
+    from mochi.request_tools import resolve_request
+    from mochi.tool_availability import ToolAvailability
+
+    initial = ToolAvailability()
+    result, additions = resolve_request(
+        {"skills": ["browse_workspace", "edit_workspace", "browse_workspace"]},
+        initial,
+    )
+    loaded = initial.with_definitions(additions, source="requested")
+    assert initial.names == frozenset()
+    assert loaded.names == {"browse_workspace", "edit_workspace"}
+    assert len(result["loaded"]) == 1
+    assert set(result["loaded"][0]["tools"]) == loaded.names
+    assert "capability_context" in result["loaded"][0]
+
+    repeated, additions = resolve_request({"skills": ["browse_workspace"]}, loaded)
+    assert additions == []
+    assert repeated["loaded"] == []
+    assert repeated["already_loaded"] == [
+        {"skill": "personal_workspace", "tools": ["browse_workspace"]},
+    ]
+
+    mixed, additions = resolve_request(
+        {"skills": ["browse_workspace", "run_extension"]}, loaded,
+    )
+    assert ToolAvailability.from_definitions(additions, source="requested").names == {"run_extension"}
+    assert mixed["already_loaded"] == repeated["already_loaded"]
+    assert len(mixed["loaded"]) == 1
+    assert "capability_context" not in mixed["loaded"][0]
+
+
+@pytest.mark.parametrize("arguments", [
+    {"skills": ["browse_workspace", "personal_workspace"]},
+    {"skills": ["personal_workspace", "browse_workspace"]},
+    {"skills": ["browse_workspace"], "query": "personal_workspace"},
+])
+def test_skill_and_query_requests_still_load_the_whole_group(arguments):
+    from mochi.request_tools import build_catalog, resolve_request
+    from mochi.tool_availability import ToolAvailability
+
+    expected = set(build_catalog().eligible["personal_workspace"].tool_names)
+    result, additions = resolve_request(arguments, ToolAvailability())
+
+    assert len(additions) == len(expected)
+    assert ToolAvailability.from_definitions(additions, source="requested").names == expected
+    assert len(result["loaded"]) == 1
+    assert set(result["loaded"][0]["tools"]) == expected
+    assert "capability_context" in result["loaded"][0]
+    assert result["already_loaded"] == []
+    assert not result["no_match"]
+
+
+def test_exact_tool_requests_keep_policy_denials_without_loading_siblings(monkeypatch):
+    from mochi import tool_policy
+    from mochi.request_tools import resolve_request
+    from mochi.tool_availability import ToolAvailability
+
+    monkeypatch.setattr(tool_policy, "_deny_set", {"edit_workspace"})
+    result, additions = resolve_request(
+        {"skills": ["edit_workspace", "browse_workspace"]}, ToolAvailability(),
+    )
+    assert ToolAvailability.from_definitions(additions, source="requested").names == {"browse_workspace"}
+    assert result["unavailable"] == [
+        {"request": "edit_workspace", "reason": "policy_denied"},
+    ]
+
+
+def test_resident_tool_and_skill_requests_do_not_duplicate_existing_tools():
+    from mochi import skills
+    from mochi.request_tools import resolve_request
+    from mochi.tool_availability import ToolAvailability
+
+    availability = ToolAvailability.from_definitions(
+        skills.get_tools_by_tool_names(["manage_settings"]), source="resident",
+    )
+    result, additions = resolve_request(
+        {"skills": ["skill_management", "manage_settings", "skill_management"]},
+        availability,
+    )
+    assert additions == []
+    assert result["already_loaded"] == [
+        {"skill": "skill_management", "tools": ["manage_settings"]},
+    ]
+
+
 def test_tool_budget_counts_identical_arguments_not_distinct_operations():
     from mochi.request_tools import ToolLoopBudget
 

@@ -30,9 +30,11 @@ REQUEST_TOOLS_DEF = {
     "function": {
         "name": "request_tools",
         "description": (
-            "Load additional tool namespaces for later rounds of this turn. "
-            "Use skills for exact skill/tool names, query for a short natural-language "
-            "search, or both. Requested tools are not usable in the same response."
+            "Load additional tools for later rounds of this turn. "
+            "Use skills for exact names: a tool name loads only that tool, "
+            "and a skill name loads its requestable tools. Use query for a "
+            "short natural-language skill search, or both. "
+            "Requested tools are not usable in the same response."
         ),
         "parameters": {
             "type": "object",
@@ -279,9 +281,9 @@ def resolve_request(
     requested = args.get("skills", [])
     query = args.get("query", "").strip()
 
-    selected: list[str] = []
+    selected: dict[str, set[str]] = {}
     seen_namespaces: set[str] = set()
-    seen_resident_tools: set[str] = set()
+    reported_loaded_tools: set[str] = set()
     seen_unavailable: set[tuple[str, str]] = set()
     unavailable_items: list[dict] = []
     already_loaded: list[dict] = []
@@ -321,23 +323,29 @@ def resolve_request(
             and catalog.tool_loads[exact] == "resident"
             and exact in availability.names
         ):
-            if exact not in seen_resident_tools:
+            if exact not in reported_loaded_tools:
                 already_loaded.append({
                     "skill": namespace,
                     "tools": [exact],
                 })
-                seen_resident_tools.add(exact)
+                reported_loaded_tools.add(exact)
         elif namespace not in catalog.eligible:
             resident_names = [
                 name
                 for name in catalog.resident_tools.get(namespace, ())
                 if name in availability.names
+                and (exact == namespace or name == exact)
             ]
             if resident_names and namespace not in seen_namespaces:
-                already_loaded.append({
-                    "skill": namespace,
-                    "tools": resident_names,
-                })
+                unreported_names = [
+                    name for name in resident_names if name not in reported_loaded_tools
+                ]
+                if unreported_names:
+                    already_loaded.append({
+                        "skill": namespace,
+                        "tools": unreported_names,
+                    })
+                    reported_loaded_tools.update(unreported_names)
                 seen_namespaces.add(namespace)
             elif not resident_names:
                 unavailable_items.append({
@@ -347,8 +355,15 @@ def resolve_request(
         elif namespace in seen_namespaces:
             continue
         else:
-            seen_namespaces.add(namespace)
-            selected.append(namespace)
+            tool_names = catalog.eligible[namespace].tool_names
+            if exact == namespace:
+                seen_namespaces.add(namespace)
+            elif exact in tool_names:
+                tool_names = (exact,)
+            else:
+                unavailable_items.append({"request": exact, "reason": "not_found"})
+                continue
+            selected.setdefault(namespace, set()).update(tool_names)
 
     matches: list[dict] = []
     query_matched_catalog = False
@@ -363,7 +378,9 @@ def resolve_request(
             excluded=seen_namespaces,
         ):
             seen_namespaces.add(namespace)
-            selected.append(namespace)
+            selected.setdefault(namespace, set()).update(
+                catalog.eligible[namespace].tool_names,
+            )
             matches.append({"skill": namespace, "match_reason": match_reason})
 
     loaded: list[dict] = []
@@ -373,11 +390,23 @@ def resolve_request(
     present_namespaces = {
         catalog.tool_to_namespace.get(name) for name in availability.names
     }
-    for namespace in selected:
+    for namespace, selected_names in selected.items():
         item = catalog.eligible[namespace]
+        definitions = [
+            definition for definition in item.definitions
+            if _tool_name(definition) in selected_names
+        ]
+        existing_names = [
+            _tool_name(definition) for definition in definitions
+            if _tool_name(definition) in availability.names
+            and _tool_name(definition) not in reported_loaded_tools
+        ]
+        if existing_names:
+            already_loaded.append({"skill": namespace, "tools": existing_names})
+            reported_loaded_tools.update(existing_names)
         new_definitions = [
             definition
-            for definition in item.definitions
+            for definition in definitions
             if _tool_name(definition) not in known_names
         ]
         if new_definitions:
@@ -388,11 +417,6 @@ def resolve_request(
             loaded.append(entry)
             additions.extend(new_definitions)
             known_names.update(tool_names)
-        else:
-            already_loaded.append({
-                "skill": namespace,
-                "tools": list(item.tool_names),
-            })
 
     return {
         "ok": True,

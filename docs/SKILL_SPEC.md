@@ -113,6 +113,9 @@ sense:
 `request_tools` 只会加载已启用、配置完整、平台兼容且未被策略拒绝的工具，
 并从下一次 provider round 才生效。工具 schema 与 dispatch 始终共享同一份
 不可变轮次快照。
+`skills` 中的具体工具名只加载该工具；Skill 名加载该技能的可请求工具，
+`query` 仍按技能匹配和加载。混合请求按工具去重，已加载工具单独回报，
+不会因点名一个工具而顺带加载同组工具。共享 Capability Context 按技能提供一次。
 
 `### my_tool (on_demand, adaptive)` 或 `### my_tool (routed, adaptive)` 显式允许框架
 根据成功使用记录在 `on_demand` 与 `routed` 之间调整；首次使用声明的层级。
