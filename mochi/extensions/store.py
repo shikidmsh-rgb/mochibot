@@ -354,9 +354,15 @@ def scaffold(
                 copy_package(current, stage)
             else:
                 stage.mkdir(parents=True)
+            from .loader import manifest_metadata
             from .template import files as template_files
 
-            for path, content in template_files(extension_id).items():
+            manifest = supplied.get("SKILL.md")
+            if manifest is None and (stage / "SKILL.md").exists():
+                manifest = _read_bytes(stage / "SKILL.md").decode("utf-8")
+            document = manifest is not None and manifest_metadata(manifest).get("kind") == "document"
+            defaults = {} if document else template_files(extension_id)
+            for path, content in defaults.items():
                 if not _file_path(stage, path).exists():
                     if supplied.get(path) is None:
                         generated[path] = content
@@ -371,7 +377,8 @@ def scaffold(
                 _remove_package(stage)
         return {
             **_status(extension_id), "created_paths": created, "generated": generated,
-            "entrypoint": "smoke.py", "copied_current": current.exists(), "state_changed": True,
+            "entrypoint": None if document else "smoke.py",
+            "copied_current": current.exists(), "state_changed": True,
         }
 
 

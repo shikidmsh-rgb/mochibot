@@ -127,14 +127,15 @@ def _load_external(name: str, *, activate: bool = False) -> Skill:
             package = root / ("draft" if activate else "current")
             metadata = _ExtensionMetadata()
             metadata.external = True
-            metadata._populate_from_md(loader.read_metadata(name, package))
+            metadata._skill_md = loader.read_metadata(name, package)
+            metadata._populate_from_md(metadata._skill_md)
             config = resolve_skill_config(name, metadata._config_schema_typed)
             metadata.config = config
             missing = get_missing_config(metadata)
             if activate and missing:
                 raise store.ExtensionError("missing_config", f"Configure these keys before activation: {', '.join(missing)}")
             loader.validate_package(name, package)
-            entered_code = True
+            entered_code = metadata.skill_md.get("meta", {}).get("kind") != "document"
             skill = loader.load_snapshot(name, package, data_dir=root / "data", config=config)
             _validate_registration(skill, replace=True)
             if activate:

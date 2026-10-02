@@ -1,5 +1,7 @@
 # Personal extensions and workspace
 
+Personal extensions can be document skills that hold reusable guidance or Python tools that execute code.
+
 `personal_workspace` is Main's single entry for persistent documents and personal
 tool source. **Personal extensions** are reusable tools authored independently
 of official source, by Main or the user. Users can describe what they need
@@ -52,8 +54,46 @@ setting; explicit disables persist. `development` and `mochi_files` are no longe
 separate skill entries. Exact legacy discovery requests point to the new entry,
 but retired tool names are not executable.
 
-Personal extensions are trusted local Python, not a sandbox. No Admin visit or
+Python extensions are trusted local Python, not a sandbox. No Admin visit or
 restart is required to author and activate them.
+
+## Document skills
+
+A document skill is a guide you can reuse and improve, such as your approach to
+outfit advice. Write the methods, examples and lessons you want to keep; you
+decide how to apply them in conversation. No Python, MCP or external API is needed.
+Ordinary notes can stay as documents without becoming skills.
+
+A document skill needs only SKILL.md. Its front matter contains name, mod_api: 1,
+kind: document, description and type: tool. Use description to explain when the
+guide is useful. Organize the body however you like; no special headings or tool
+definitions are required. Document packages contain Markdown files only and have
+no configuration fields.
+
+browse_workspace(action="guide") returns document_template as a starting point.
+For a skill named local_outfit, create extensions/local_outfit/draft with
+edit_workspace(action="create", path="extensions/local_outfit/draft", files=[...]).
+Each files entry has path and content; supply SKILL.md with your complete text.
+activate_extension(path="extensions/local_outfit/draft") makes the guide available.
+A script run is not needed.
+
+The skill's local_outfit_read tool reads its activated body. Routing makes the
+read tool available, not the whole guide. If it is not loaded, request_tools can
+find and load it. The read result includes version and pagination fields;
+next_offset continues a long guide. Additional Markdown files are readable with
+browse_workspace. Reading a guide does not itself complete the user's task.
+
+To revise a skill, read and edit its draft, then activate it when ready. Draft
+edits alone do not change the active guide. current holds the installed version;
+previous holds its predecessor. A read already in progress keeps its version.
+Creation, editing and activation use the existing development switch; installed
+skills remain usable when development is turned off.
+
+New document skills start as routing candidates. Infrequent use can move them
+to on_demand; repeated use brings them back to routed. This tracks successful
+reads in ordinary chats, not advice quality. Revisions and restarts do not reset
+that history. manage_settings can inspect loading state, pin on_demand or routed,
+or reset to automatic loading. Skills are not automatically made resident.
 
 ## Personal extension API v1
 
@@ -64,7 +104,7 @@ A personal ID looks like `local_reading`. Its tool names begin with that ID
 and an underscore, such as `local_reading_add`. Names must not collide with
 another skill or framework tool.
 
-Each draft contains `__init__.py`, `SKILL.md`, `handler.py`, and usually
+Each Python draft contains `__init__.py`, `SKILL.md`, `handler.py`, and usually
 `smoke.py`. `browse_workspace(action="guide",
 path="extensions/local_reading/draft")` returns this guide and a complete
 runnable template for that path. `edit_workspace(action="create",

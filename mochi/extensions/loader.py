@@ -176,10 +176,14 @@ def validate_package(extension_id: str, package_dir: Path) -> dict:
     package_dir = store._safe_path(package_dir)
     files = store.inspect_package(package_dir)
     names = {item["path"] for item in files}
+    parsed = read_metadata(extension_id, package_dir)
+    if parsed["meta"].get("kind") == "document":
+        if any(not name.endswith(".md") for name in names):
+            raise ExtensionError("invalid_document_package", "Document packages contain Markdown files only.")
+        return parsed
     missing = {"__init__.py", "handler.py", "SKILL.md"} - names
     if missing:
         raise ExtensionError("incomplete_package", f"Missing required files: {', '.join(sorted(missing))}")
-    parsed = read_metadata(extension_id, package_dir)
     for item in files:
         if item["path"].endswith(".py"):
             try:
@@ -190,6 +194,21 @@ def validate_package(extension_id: str, package_dir: Path) -> dict:
             except (SyntaxError, ValueError) as exc:
                 raise ExtensionError("invalid_python", f"Invalid Python in {item['path']}: {exc}") from exc
     return parsed
+
+
+def manifest_metadata(content: str) -> dict[str, str]:
+    front = re.match(r"^---\s*\n(.*?)\n---", content, re.S)
+    if not front:
+        raise ExtensionError("invalid_metadata", "SKILL.md requires Markdown front matter with the extension name.")
+    metadata = {}
+    for key, value in re.findall(r"^([a-z_]+):\s*([^\n]*)", front.group(1), re.M):
+        if key in metadata:
+            raise ExtensionError("invalid_metadata", f"Duplicate metadata key: {key}")
+        metadata[key] = value.strip().strip("\"'")
+    kind = metadata.get("kind", "python")
+    if kind not in {"python", "document"}:
+        raise ExtensionError("invalid_metadata", f"Unsupported extension kind: {kind}.")
+    return metadata
 
 
 def read_metadata(extension_id: str, package_dir: Path) -> dict:
@@ -204,26 +223,35 @@ def read_metadata(extension_id: str, package_dir: Path) -> dict:
     store.validate_id(extension_id)
     package_dir = store._safe_path(package_dir)
     content = store._read_bytes(package_dir / "SKILL.md").decode("utf-8")
-    front = re.match(r"^---\s*\n(.*?)\n---", content, re.S)
-    if not front:
-        raise ExtensionError("invalid_metadata", "SKILL.md requires Markdown front matter with the extension name.")
+    metadata = manifest_metadata(content)
     _require_mod_api(content)
-    metadata = {}
-    for key, value in re.findall(r"^([a-z_]+):\s*([^\n]*)", front.group(1), re.M):
-        if key in metadata:
-            raise ExtensionError("invalid_metadata", f"Duplicate metadata key: {key}")
-        metadata[key] = value.strip()
     if metadata.get("name") != extension_id:
         raise ExtensionError("invalid_metadata", f"SKILL.md name must equal {extension_id}.")
     if metadata.get("type", "tool") != "tool":
         raise ExtensionError("unsupported_hooks", "Personal extensions support type: tool only.")
     if any(key in metadata for key in ("sense", "observer", "prompt_section", "init_schema", "diary_status", "diary_status_order")):
         raise ExtensionError("unsupported_hooks", "Observers, shared schema, prompt and diary hooks are not supported.")
-    _validate_parameter_rows(content)
+    document = metadata.get("kind") == "document"
+    if not document:
+        _validate_parameter_rows(content)
     try:
         parsed = _parse_skill_md(str(package_dir / "SKILL.md"))
     except ValueError as exc:
         raise ExtensionError("invalid_metadata", str(exc)) from exc
+    if document:
+        from .document import tool_definition
+
+        if (
+            not metadata.get("description", "").strip()
+            or not parsed["document_body"].strip()
+            or any(key in metadata for key in ("config", "requires", "requires_config"))
+        ):
+            raise ExtensionError(
+                "invalid_document",
+                "Document skills need a nonempty description and body, with no configuration fields.",
+            )
+        parsed["meta"].update(kind="document", description=metadata["description"])
+        parsed["tools"] = [tool_definition(extension_id, metadata["description"])]
     if (
         parsed["meta"].get("name") != extension_id or parsed["type"] != "tool"
         or parsed["triggers"] != ["tool_call"] or parsed["locked"]
@@ -288,7 +316,8 @@ def load_snapshot(
         snapshot = store._safe_path(Path(workspace.name)) / "package"
         store.copy_package(package_dir, snapshot)
         skill = load_from_path(extension_id, snapshot, data_dir=data_dir, config=config)
-        namespace = type(skill).__module__.rpartition(".")[0]
+        if skill.skill_md["meta"].get("kind") != "document":
+            namespace = type(skill).__module__.rpartition(".")[0]
         weakref.finalize(skill, _release_snapshot, workspace, namespace)
         return skill
     except BaseException:
@@ -308,6 +337,12 @@ def load_from_path(
     """
     package_dir = store._safe_path(package_dir)
     parsed = validate_package(extension_id, package_dir)
+    if parsed["meta"].get("kind") == "document":
+        from .document import DocumentSkill
+
+        skill = DocumentSkill(package_dir, parsed)
+        skill._mod_api = inspect_mod_api(package_dir)
+        return skill
     data_dir = store._safe_path(data_dir)
     if data_dir.exists() and not data_dir.is_dir():
         raise ExtensionError("invalid_path", "Extension data_dir must be a directory.")

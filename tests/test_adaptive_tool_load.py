@@ -81,6 +81,48 @@ def test_pin_reset_recalculates_from_default_without_sticking_to_pin():
     assert reset["effective_load"] == "routed" and reset["pinned_load"] is None
 
 
+def test_routed_default_has_persisted_tenure_then_uses_existing_usage_and_pin_rules():
+    definition = _definition()
+    definition["_load"] = "routed"
+    assert resolve_definition(definition)["_load"] == "routed"
+    initial = recalculate([definition], user_id=1, now=NOW)["search_personal_history"]
+    assert initial["declared_load"] == initial["effective_load"] == "routed"
+    held = recalculate([definition], user_id=1, now=NOW + timedelta(days=6))
+    assert held["search_personal_history"]["effective_load"] == "routed"
+    assert held["search_personal_history"]["changed_at"] == initial["changed_at"]
+    reverted = recalculate([definition], user_id=1, now=NOW + timedelta(days=7))
+    assert reverted["search_personal_history"]["effective_load"] == "on_demand"
+    for turn in ("one", "two"):
+        _used(turn, days_ago=-7)
+    assert recalculate(
+        [definition], user_id=1, now=NOW + timedelta(days=7),
+    )["search_personal_history"]["effective_load"] == "on_demand"
+    _used("three", days_ago=-7)
+    assert recalculate(
+        [definition], user_id=1, now=NOW + timedelta(days=7),
+    )["search_personal_history"]["effective_load"] == "routed"
+    pin_definition(definition, "on_demand", user_id=1, now=NOW + timedelta(days=8))
+    assert resolve_definition(definition)["_load"] == "on_demand"
+    reset = pin_definition(definition, None, user_id=1, now=NOW + timedelta(days=8))
+    assert reset["effective_load"] == "routed" and reset["pinned_load"] is None
+    pin_definition(definition, "routed", user_id=1, now=NOW + timedelta(days=8))
+    reset = pin_definition(definition, None, user_id=1, now=NOW + timedelta(days=40))
+    assert reset["effective_load"] == "on_demand" and reset["pinned_load"] is None
+
+
+def test_only_routed_and_on_demand_contracts_accept_adaptation(tmp_path):
+    from mochi.skills.base import _parse_skill_md
+
+    path = tmp_path / "SKILL.md"
+    path.write_text("## Tools\n\n### custom (routed, adaptive)\nRead data.\n", encoding="utf-8")
+    parsed = _parse_skill_md(str(path))
+    assert parsed["tools"][0]["_adaptive_load"]
+    assert resolve_definition(parsed["tools"][0])["_load"] == "routed"
+    path.write_text("## Tools\n\n### custom (resident, adaptive)\nRead data.\n", encoding="utf-8")
+    with pytest.raises(ValueError):
+        _parse_skill_md(str(path))
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("source", ["chat", "runtime:free_time"])
 async def test_main_can_manage_visibility_without_owner_chat_gate(source):

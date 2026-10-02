@@ -1,6 +1,6 @@
 ---
 name: personal_workspace
-description: "Personal workspace: save documents or develop, debug and enable reusable personal extensions without changing official source; development availability is shown in workspace state."
+description: "Save and revise personal documents, create reusable document skills, or build Python tools."
 type: tool
 locked: true
 ---
@@ -8,7 +8,7 @@ locked: true
 ## Tools
 
 ### browse_workspace (on_demand)
-List, search, or read Main-authored documents and personal source. Omit path for a root list showing areas, packages, and development availability. guide returns the full authoring guide and complete template together; report reopens a draft's last run.
+Browse your saved documents and personal skills. Omit path to see the workspace and available operations. Use list, search or read for files; guide returns the authoring guide with document and Python templates; report reads a draft's last script-run report.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -20,7 +20,7 @@ List, search, or read Main-authored documents and personal source. Omit path for
 | limit | integer | no | List maximum/default 100; search maximum/default 20; shared read character maximum/default 12000 |
 
 ### edit_workspace (on_demand)
-Create without overwrite, append, or exactly edit one document/source file. Draft-only replace/remove are also available. Create a complete package in one call using a draft-root path and files; omitted standard files use the neutral template. Source receipts return draft_path. Text writes do not execute or activate code.
+Create or revise personal documents and skill drafts. A draft-root create accepts files; kind: document in SKILL.md makes a document skill without Python. Other new packages fill omitted standard files from the Python template. Editing a draft does not change the active skill.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -41,7 +41,7 @@ Run a draft script in the existing bounded disposable execution mechanism and re
 | arguments | array | no | Explicit list of string script arguments; default empty |
 
 ### activate_extension (on_demand)
-Load and persist a draft as an installed live tool without restart or approval. Requires enabled development; installed tools retain their own enable state. New tool names need request_tools in a subsequent provider round, including within the same turn. Failure keeps the old registry but trusted candidate code may have side effects.
+Activate a skill draft and keep the previous version. Document skills load text; Python extensions run trusted local code. You can request newly added tools with request_tools and then use them in this conversation. Failed activation leaves the currently loaded tools unchanged; Python code may already have caused effects.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|

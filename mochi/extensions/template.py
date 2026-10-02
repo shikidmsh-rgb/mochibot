@@ -3,6 +3,25 @@
 from textwrap import dedent
 
 
+def document_files(extension_id: str) -> dict[str, str]:
+    from mochi.extensions.store import validate_id
+
+    validate_id(extension_id)
+    return {"SKILL.md": dedent(f"""\
+        ---
+        name: {extension_id}
+        mod_api: 1
+        kind: document
+        description: "Document skill template; no topic-specific guidance yet."
+        type: tool
+        ---
+
+        # Personal guide
+
+        No topic-specific guidance has been written yet.
+        """)}
+
+
 def files(extension_id: str) -> dict[str, str]:
     from mochi.extensions.store import extension_root
 

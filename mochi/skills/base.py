@@ -346,6 +346,10 @@ def _parse_skill_md(md_path: str) -> dict:
         # Track sense: block presence
         result["has_sense"] = _has_sense
 
+    if result["meta"].get("kind", "").strip("\"'") == "document":
+        result["document_body"] = content[fm_match.end():].lstrip("\r\n") if fm_match else ""
+        return result
+
     # Only capability facts enter Main. Legacy directive sections such as
     # Usage Rules and Behavior Rules are deliberately not prompt contracts.
     result["capability_context"] = _extract_capability_context(content)
@@ -442,8 +446,8 @@ def _extract_tool_load(heading: str) -> tuple[str, str | None, bool]:
             f"Invalid tool annotation(s) {', '.join(flags)} for '{tool_name}'"
         )
     adaptive = flags == ["adaptive"]
-    if adaptive and load != "on_demand":
-        raise ValueError(f"Adaptive tool '{tool_name}' must default to on_demand")
+    if adaptive and load not in {"on_demand", "routed"}:
+        raise ValueError(f"Adaptive tool '{tool_name}' must default to on_demand or routed")
     return tool_name, load, adaptive
 
 

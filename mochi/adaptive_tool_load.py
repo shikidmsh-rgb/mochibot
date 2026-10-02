@@ -35,7 +35,7 @@ def resolve_definition(definition: dict, *, states: dict | None = None) -> dict:
     resolved = deepcopy(definition)
     declared = str(definition.get("_declared_load") or definition.get("_load") or "on_demand")
     name = str(definition.get("function", {}).get("name") or "")
-    adaptive = bool(definition.get("_adaptive_load")) and declared == "on_demand"
+    adaptive = bool(definition.get("_adaptive_load")) and declared in _LOADS
     if adaptive and states is None:
         states = get_adaptive_tool_load_states()
     state = (states or {}).get(name, {}) if adaptive else {}
@@ -56,9 +56,9 @@ def resolve_definition(definition: dict, *, states: dict | None = None) -> dict:
 
 
 def _next_state(
-    name: str, previous: dict, *, used_turns: int, current: datetime,
+    name: str, previous: dict, *, declared: str, used_turns: int, current: datetime,
 ) -> dict:
-    effective = previous.get("effective_load") or "on_demand"
+    effective = previous.get("effective_load") or declared
     pinned = previous.get("pinned_load")
     changed_at = _time(previous.get("changed_at"), current)
     if pinned in _LOADS:
@@ -81,7 +81,7 @@ def _next_state(
         changed_at = current
     return {
         "tool_name": name,
-        "declared_load": "on_demand",
+        "declared_load": declared,
         "effective_load": desired,
         "pinned_load": pinned,
         "changed_at": changed_at.isoformat(),
@@ -120,11 +120,11 @@ def recalculate(
     for definition in definitions:
         declared = definition.get("_declared_load") or definition.get("_load")
         name = definition.get("function", {}).get("name")
-        if not name or not definition.get("_adaptive_load") or declared != "on_demand":
+        if not name or not definition.get("_adaptive_load") or declared not in _LOADS:
             continue
         state = _next_state(
             name, states.get(name, {}),
-            used_turns=counts.get(name, 0), current=current,
+            declared=declared, used_turns=counts.get(name, 0), current=current,
         )
         _save(state)
         results[name] = state
@@ -146,7 +146,7 @@ def pin_definition(
         raise AdaptiveLoadError("fixed_tool_load")
     name = definition.get("function", {}).get("name")
     declared = definition.get("_declared_load") or definition.get("_load")
-    if not name or declared != "on_demand":
+    if not name or declared not in _LOADS:
         raise AdaptiveLoadError("invalid_adaptive_contract")
     if pinned_load is not None and pinned_load not in _LOADS:
         raise AdaptiveLoadError("invalid_arguments")
@@ -161,7 +161,7 @@ def pin_definition(
         since=(current - timedelta(days=PROMOTION_WINDOW_DAYS)).isoformat(),
     )
     state = _next_state(
-        name, candidate, used_turns=counts.get(name, 0), current=current,
+        name, candidate, declared=declared, used_turns=counts.get(name, 0), current=current,
     )
     old_load = previous.get("effective_load") or declared
     if state["effective_load"] != old_load:

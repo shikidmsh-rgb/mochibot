@@ -131,6 +131,7 @@ class PersonalWorkspaceSkill(Skill):
             return {
                 "action": "guide", "guide": _GUIDE.read_text(encoding="utf-8"),
                 "draft_path": target.draft_path, "template": template.files(target.name),
+                "document_template": template.document_files(target.name),
                 "run_script": "smoke.py", "development_enabled": workspace.development_enabled(),
                 "supported_mod_apis": list(loader.SUPPORTED_MOD_APIS),
             }

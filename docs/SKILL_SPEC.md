@@ -3,8 +3,10 @@
 Skill 是自包含的功能模块。本文档涵盖创建一个 skill 所需的全部内容。
 
 本文主要描述随官方源码发布的内置 Skill。Main 自己开发、独立保存的个人扩展请使用
-[个人扩展规范](extensions.md)：同样使用 `SKILL.md` 和 `handler.py`，但放在
-`data/extensions/` 下，使用注入的配置与独立数据目录，不使用共享数据库或 Observer 等内部接口。
+[个人扩展规范](extensions.md)：放在 `data/extensions/` 下，不使用共享数据库或 Observer 等内部接口。
+文档型技能仅需声明 `kind: document` 的 `SKILL.md`，正文自由组织，由共享读取器提供
+`<name>_read` 工具；路由只加载入口，调用才返回当前激活版本的正文，支持分页。
+Python 工具使用 `SKILL.md` 和 `handler.py`，使用注入的配置与独立数据目录。
 新个人扩展使用 `mochi.mod_api.v1` 公开接口并声明 `mod_api: 1`；这些技术名称保持不变，旧格式与旧导入无需迁移。
 个人开发默认开启，Main 从启动起就能发现此能力，无需单独授权；普通技能开关仍可关闭它。
 Main 通过 `personal_workspace` 自主使用 `browse_workspace`、`edit_workspace`、`run_extension` 和
@@ -112,10 +114,14 @@ sense:
 并从下一次 provider round 才生效。工具 schema 与 dispatch 始终共享同一份
 不可变轮次快照。
 
-`### my_tool (on_demand, adaptive)` 显式允许框架根据成功使用记录调整为
-`routed`；没有此标注的工具不参加自适应，不能自动成为 `resident`。
+`### my_tool (on_demand, adaptive)` 或 `### my_tool (routed, adaptive)` 显式允许框架
+根据成功使用记录在 `on_demand` 与 `routed` 之间调整；首次使用声明的层级。
+文档型技能的读取工具默认 `routed, adaptive`。没有此标注的工具不参加自适应，
+任何自适应工具都不能自动成为 `resident`。
 Nightly 统计最近 30 天不同普通聊天轮次的成功调用，达到 3 轮才提升；
-提升至少保持 7 天，30 天无成功使用才降回。Main 可主动 pin/reset eligible
+路由层级至少保持 7 天，最近 30 天窗口内无成功使用才降回；新技能也适用此规则，
+无需先存在满 30 天。已有的层级和统计不会因更新文档、重新激活或重启而重置。
+Main 可主动 pin/reset eligible
 工具的加载层级，但不能借此绕过配置、平台、开发开关或本轮授权。
 注册表区分声明合同、当前资格与有效加载层级；统计和管理不能导入未激活的扩展代码。
 

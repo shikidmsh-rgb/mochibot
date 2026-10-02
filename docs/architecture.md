@@ -25,7 +25,7 @@ setup, not broad provider or multi-user infrastructure.
   rather than exposing the host filesystem. Editing, execution and live
   activation are separate operations chosen by Main.
   The existing `workspace` skill continues to own Diary only.
-- **Personal extensions** (`mochi/extensions/`) own code under the Git-ignored
+- **Personal extensions** (`mochi/extensions/`) own reusable guides and code under the Git-ignored
   `data/extensions/` directory, outside official source. The Agent document
   points Main to the default-enabled workspace; tools and the on-demand guide
   supply details. Disabling development blocks source mutation, execution and
@@ -44,7 +44,13 @@ setup, not broad provider or multi-user infrastructure.
 Dependency direction is transport/heartbeat -> Main -> skills and persistence.
 Skills do not import transports or orchestration.
 
-Personal extensions are trusted in-process Python tools, not a sandbox.
+Document extensions contain Markdown only. Their manifest supplies discovery
+metadata; a shared read-only Skill exposes the activated body through a distinct
+tool per guide, without injecting it into capability context or interpreting its
+headings as tool schemas. They share authoring, activation, immutable snapshots,
+eligibility and usage accounting with Python extensions.
+
+Python extensions are trusted in-process tools, not a sandbox.
 `mochi.mod_api.v1` exposes the existing Skill context/result, injected
 configuration, extension-owned persistent data and the candidate helper.
 Development scripts use bounded subprocesses and disposable copies, not another
@@ -305,8 +311,9 @@ Heartbeat resolves sleep/wake values at each decision boundary. Message wake
 eligibility and scheduled fallback wake are separate preferences. Core may
 remember a preference but is never runtime configuration authority.
 
-Only explicitly adaptive tools may move between declared `on_demand` and
-effective `routed` loading. Nightly derives that projection from successful,
+Only explicitly adaptive tools may move between `on_demand` and `routed`
+loading, starting at their declared tier. Document readers default to `routed`.
+Nightly derives that projection from successful,
 distinct ordinary chat turns; autonomous work does not count. Main can pin or
 reset eligible tool visibility. This never grants resident loading, bypasses
 eligibility, or expands an in-flight round's allowlist. Definitions remain the
