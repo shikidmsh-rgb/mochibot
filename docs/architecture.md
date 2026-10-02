@@ -152,9 +152,12 @@ counted only after a subsequent successful Main call has received the results.
 
 The existing execution ledger supplies bounded receipts for the completed turns
 visible in Main's conversation context, independent of message wording or routing,
-plus the last 24 hours of autonomous runtime work, including bedtime. Silent
-operations remain visible without inventing an assistant message or implying
-delivery. These receipts share one count/text budget and respect context resets.
+plus the last 24 hours of autonomous runtime work, including bedtime, and owner-chat
+operations without a confirmed assistant reply. Undelivered chat receipts require
+an original user message in the same reset epoch; a model or delivery failure does
+not erase completed actions. Silent operations remain visible without inventing
+an assistant message, implying delivery, or automatically retrying execution.
+These receipts share one count/text budget and respect context resets.
 Receipts include read-only, failed and unfinished calls as well as successful
 writes; non-success records do not assert the absence of side effects.
 They stay inside the same user and reset epoch; Weekly keeps its separate

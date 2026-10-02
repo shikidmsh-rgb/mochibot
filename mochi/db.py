@@ -1070,8 +1070,9 @@ def get_recent_tool_executions(user_id: int, *, hours: int = 24,
                                state_changes_only: bool = True,
                                turn_ids: list[str] | None = None,
                                include_failures: bool = False,
-                               include_autonomous: bool = False) -> list[dict]:
-    """Read visible-turn receipts, optionally including recent autonomous work."""
+                               include_autonomous: bool = False,
+                               include_undelivered_chat: bool = False) -> list[dict]:
+    """Read visible-turn receipts and opted-in recent work without delivered speech."""
     conditions = ["user_id = ?"]
     params: list = [user_id]
     cutoff = (datetime.now(TZ) - timedelta(hours=max(1, hours))).isoformat()
@@ -1087,6 +1088,23 @@ def get_recent_tool_executions(user_id: int, *, hours: int = 24,
                 "(source IN ('runtime:free_time', 'runtime:attention', "
                 "'runtime:self_reminder', 'runtime:bedtime') "
                 "AND julianday(started_at) >= julianday(?))"
+            )
+            params.append(cutoff)
+        if include_undelivered_chat:
+            scopes.append(
+                "(source = 'chat' AND julianday(started_at) >= julianday(?) "
+                "AND EXISTS (SELECT 1 FROM messages AS owner_input "
+                "LEFT JOIN conversation_reset AS reset "
+                "ON reset.user_id = owner_input.user_id "
+                "WHERE owner_input.user_id = tool_executions.user_id "
+                "AND owner_input.turn_id = tool_executions.turn_id "
+                "AND owner_input.role = 'user' "
+                "AND (reset.reset_at IS NULL OR "
+                "julianday(owner_input.created_at) > julianday(reset.reset_at))) "
+                "AND NOT EXISTS (SELECT 1 FROM messages AS reply "
+                "WHERE reply.user_id = tool_executions.user_id "
+                "AND reply.turn_id = tool_executions.turn_id "
+                "AND reply.role = 'assistant'))"
             )
             params.append(cutoff)
         if not scopes:
@@ -1106,7 +1124,7 @@ def get_recent_tool_executions(user_id: int, *, hours: int = 24,
             conditions.append(f"skill_name IN ({placeholders})")
             params.extend(normalized)
     conn = _connect()
-    if include_autonomous:
+    if include_autonomous or include_undelivered_chat:
         reset_at = _current_context_reset(conn, user_id)
         if reset_at:
             conditions.append("julianday(started_at) > julianday(?)")

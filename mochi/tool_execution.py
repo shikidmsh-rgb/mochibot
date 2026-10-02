@@ -139,19 +139,18 @@ def model_result_for(result: SkillResult) -> str:
 def recent_operations_context(user_id: int, history: list[dict],
                               *, max_chars: int = 2400,
                               include_autonomous: bool = False) -> str:
-    """Carry bounded receipts, including silent autonomous work when requested."""
+    """Carry bounded receipts, including undelivered chat and optional autonomous work."""
     from mochi.db import get_recent_tool_executions
 
     turn_ids = list(dict.fromkeys(
         message["turn_id"] for message in history
         if message.get("role") == "assistant" and message.get("turn_id")
     ))[-10:]
-    if not turn_ids and not include_autonomous:
-        return ""
     rows = get_recent_tool_executions(
         user_id, limit=12, turn_ids=turn_ids,
         state_changes_only=False, include_failures=True,
         include_autonomous=include_autonomous,
+        include_undelivered_chat=True,
     )
     if not rows:
         return ""

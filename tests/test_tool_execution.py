@@ -47,7 +47,7 @@ def _turn(turn_id, user_id=1):
 
 def _execution(turn_id, tool="run_extension", *, user_id=1, status="success",
                changed=False, summary="script completed; not activated", args=None,
-               source="runtime:chat"):
+               source="chat"):
     execution_id = db.start_tool_execution(
         turn_id=turn_id, tool_call_id=f"{turn_id}-{tool}", user_id=user_id,
         source=source, skill_name="personal_workspace", tool_name=tool,
@@ -106,6 +106,67 @@ def test_receipts_never_fall_back_to_unseen_or_other_user_turns():
     assert db.get_recent_tool_executions(
         1, turn_ids=[], state_changes_only=False, include_failures=True,
     ) == []
+
+
+def test_undelivered_chat_receipts_survive_without_assistant_history():
+    db.save_message(1, "user", "Save the draft", turn_id="unfinished")
+    _execution("unfinished", "edit_workspace", changed=True, summary="Draft saved")
+    _execution("unfinished", "browse_workspace", summary="Draft inspected")
+    _execution("unfinished", "run_extension", status="failed", summary="Script failed")
+    _execution("unfinished", "activate_extension", status="running")
+    db.save_message(2, "user", "Other request", turn_id="unfinished")
+    _execution("unfinished", user_id=2, summary="OTHER_USER")
+    _execution("no-input", summary="NO_OWNER_INPUT")
+    db.save_message(2, "user", "Not this owner", turn_id="wrong-input")
+    _execution("wrong-input", summary="WRONG_OWNER_INPUT")
+    _turn("delivered-but-not-visible")
+    _execution("delivered-but-not-visible", summary="UNSEEN_DELIVERED")
+    db.save_message(1, "user", "Continue", turn_id="next")
+
+    context = recent_operations_context(1, [])
+    facts = [
+        json.loads(line.split("] ", 1)[1])
+        for line in context.splitlines() if line.startswith("- [")
+    ]
+    assert {fact["tool"]: fact["status"] for fact in facts} == {
+        "edit_workspace": "success", "browse_workspace": "success",
+        "run_extension": "failed", "activate_extension": "running",
+    }
+    assert next(fact for fact in facts if fact["tool"] == "edit_workspace")["changed"] is True
+    assert all("changed" not in fact for fact in facts if fact["status"] != "success")
+    assert "Draft saved" in context and "Script failed" in context
+    assert not any(value in context for value in (
+        "OTHER_USER", "NO_OWNER_INPUT", "WRONG_OWNER_INPUT", "UNSEEN_DELIVERED",
+    ))
+    assert all(
+        message["role"] == "user"
+        for message in db.get_recent_messages(1) if message["turn_id"] == "unfinished"
+    )
+
+
+def test_undelivered_chat_receipts_respect_reset_and_expiry():
+    db.save_message(1, "user", "Expired request", turn_id="expired")
+    expired_id = _execution("expired", summary="EXPIRED_RECEIPT")
+    with db._connect() as conn:
+        conn.execute(
+            "UPDATE tool_executions SET started_at = '2020-01-01T00:00:00+00:00' "
+            "WHERE id = ?", (expired_id,),
+        )
+    assert recent_operations_context(1, []) == ""
+
+    db.save_message(1, "user", "Old request", turn_id="before-reset")
+    _execution("before-reset", summary="OLD_RECEIPT")
+    db.set_context_reset(1)
+    _execution("before-reset", "edit_workspace", summary="LATE_OLD_RECEIPT")
+    db.save_message(1, "user", "New request", turn_id="after-reset")
+    _execution("after-reset", summary="CURRENT_RECEIPT")
+
+    context = recent_operations_context(1, [])
+
+    assert "CURRENT_RECEIPT" in context
+    assert "OLD_RECEIPT" not in context
+    assert "EXPIRED_RECEIPT" not in context
+    assert len(db.get_tool_executions_for_turn("before-reset")) == 2
 
 
 def test_non_success_receipts_do_not_claim_no_side_effects():
@@ -227,9 +288,11 @@ def test_visible_turns_keep_receipts_older_than_a_day():
 
 def test_receipt_count_and_text_are_bounded_without_losing_latest_facts():
     _turn("many-attempts")
+    db.save_message(1, "user", "Continue working", turn_id="undelivered")
     for number in range(20):
         _execution(
-            "many-attempts", summary=f"RECEIPT_{number:02}_END " + "x" * 1000,
+            "many-attempts" if number % 2 == 0 else "undelivered",
+            summary=f"RECEIPT_{number:02}_END " + "x" * 1000,
         )
     history = _history()
     roomy = recent_operations_context(1, history, max_chars=10000)

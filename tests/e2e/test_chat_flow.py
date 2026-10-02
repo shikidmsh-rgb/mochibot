@@ -725,12 +725,9 @@ class TestToolCallReminder:
         assert executions[0]["state_changed"] is True
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("followup", [
-        "把刚才那个改成后天",
-        "Continue finishing the original task.",
-    ])
+    @pytest.mark.parametrize("outcome", ["delivered", "undelivered", "model_failed"])
     async def test_followup_gets_real_receipt_without_replayed_tool_protocol(
-        self, mock_llm_factory, monkeypatch, followup,
+        self, mock_llm_factory, monkeypatch, outcome,
     ):
         import mochi.ai_client as ai_client
         import mochi.config as config
@@ -747,18 +744,31 @@ class TestToolCallReminder:
                     "remind_at": "2099-01-01T12:00:00",
                 }),
             ]),
-            make_response("Reminder set!"),
+            *(
+                [RuntimeError("Follow-up failed"), RuntimeError("Follow-up failed")]
+                if outcome == "model_failed"
+                else [make_response("Reminder set!")]
+            ),
             make_response("Okay, I'll change it."),
         ])
 
         first = await chat(_msg("Remind me to submit the report"))
-        first.confirm_delivered()
-        await chat(_msg(followup))
+        if outcome == "delivered":
+            first.confirm_delivered()
+        await chat(_msg("把刚才那个改成后天"))
 
-        followup_messages = mock.call_log[3]["messages"]
+        followup_messages = mock.call_log[-1]["messages"]
         system_prompt = main_context(followup_messages)
-        assert "Reminder #" in system_prompt
-        assert "Submit report" in system_prompt
+        executions = get_recent_tool_executions(1)
+        assert len(executions) == 1
+        assert executions[0]["result_summary"] in system_prompt
+        assert system_prompt.count('"tool":"manage_reminder"') == 1
+        from mochi.db import get_recent_messages
+        stored_assistants = [
+            message for message in get_recent_messages(1)
+            if message["role"] == "assistant"
+        ]
+        assert len(stored_assistants) == (1 if outcome == "delivered" else 0)
         assert all(message["role"] != "tool" for message in followup_messages)
         assert all(
             "tool_calls" not in message for message in followup_messages
