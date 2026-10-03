@@ -45,6 +45,17 @@ class InternalSearchSkill(Skill):
         return definitions
 
     async def execute(self, context: SkillContext) -> SkillResult:
+        if context.tool_name == "read_tool_result":
+            if context.actor != "main":
+                return SkillResult(
+                    output="当前入口不能读取工具回执。",
+                    success=False, error_code="tool_outside_actor_scope", retryable=False,
+                )
+            from mochi.tool_execution import read_tool_result
+            return await asyncio.to_thread(
+                read_tool_result, context.user_id, context.args.get("receipt_id"),
+                context.args.get("offset", 0),
+            )
         if context.tool_name != "search_personal_history":
             return SkillResult(
                 output=f"Unknown tool: {context.tool_name}",

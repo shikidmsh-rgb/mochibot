@@ -1781,7 +1781,7 @@ async def _chat(
                     continue
 
             from mochi.tool_execution import (
-                action_for, outcome_for, serialized_arguments,
+                action_for, outcome_for, retained_result_for, serialized_arguments,
             )
             skill_name = (
                 "memory"
@@ -1893,6 +1893,10 @@ async def _chat(
                     result_summary=outcome["result_summary"],
                     entity_refs=outcome["entity_refs"],
                     state_changed=outcome["state_changed"],
+                    result_json=(
+                        retained_result_for(tc["name"], result)
+                        if not is_weekly_tool else None
+                    ),
                 )
                 runtime_trace.finish_tool(trace_tool, result)
             except Exception as e:

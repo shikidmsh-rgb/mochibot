@@ -5,12 +5,15 @@ from __future__ import annotations
 import json
 import logging
 import re
+import sqlite3
 from datetime import datetime
 from typing import Any
 
 from mochi.skills.base import SkillResult
 
 log = logging.getLogger(__name__)
+RESULT_RETAINED_CHARS = 16_000
+RESULT_PAGE_CHARS = 4_000
 
 _SENSITIVE_KEY_RE = re.compile(
     r"(?:api[_-]?key|token|secret|password|credential|authorization|cookie)",
@@ -136,6 +139,67 @@ def model_result_for(result: SkillResult) -> str:
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
+def retained_result_for(tool_name: str, result: SkillResult) -> str | None:
+    """Retain the text Main received, not arguments, media or diagnostic evidence."""
+    if tool_name == "read_tool_result":
+        return None
+    from mochi.runtime_trace import sanitize_evidence
+
+    original = json.loads(model_result_for(result))
+    safe = sanitize_evidence(original)
+    redacted = safe != original
+    content = safe.pop("result" if result.success else "message", "")
+    snapshot = {
+        "execution": safe,
+        "source_completeness": "full" if len(content) <= RESULT_RETAINED_CHARS else "reduced",
+        "redacted": redacted,
+        "content": content[:RESULT_RETAINED_CHARS],
+    }
+    return json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"))
+
+
+def read_tool_result(user_id: int, receipt_id: object, offset: object = 0) -> SkillResult:
+    from mochi.db import get_tool_execution_result
+
+    def failed(message: str, code: str, *, retryable: bool = False) -> SkillResult:
+        return SkillResult(output=message, success=False, error_code=code, retryable=retryable)
+
+    if type(receipt_id) is not int or not 0 < receipt_id <= 2**63 - 1:
+        return failed("回执编号需要是正整数。", "invalid_arguments", retryable=True)
+    if type(offset) is not int or offset < 0:
+        return failed("续读位置需要是非负整数。", "invalid_arguments", retryable=True)
+    try:
+        row = get_tool_execution_result(user_id, receipt_id)
+        if row is None:
+            return failed("这张回执没有可读取的详情。", "receipt_unavailable")
+        snapshot = json.loads(row["result_json"])
+        content = snapshot["content"]
+        execution = snapshot["execution"]
+        if offset > len(content) or (offset == len(content) and offset != 0):
+            return failed("续读位置超出了已保留的内容。", "invalid_arguments", retryable=True)
+        end = min(len(content), offset + RESULT_PAGE_CHARS)
+        payload = {
+            "receipt_id": receipt_id,
+            "tool": row["tool_name"],
+            "recorded_at": row["finished_at"],
+            "execution": execution,
+            "source_completeness": snapshot["source_completeness"],
+            "redacted": snapshot["redacted"],
+            "content": content[offset:end],
+            "total_chars": len(content),
+            "truncated": end < len(content),
+            "next_offset": end if end < len(content) else None,
+        }
+    except (sqlite3.Error, ValueError, KeyError, TypeError):
+        log.exception("Tool receipt read failed")
+        return failed("没能读到回执详情；原操作没有重新执行。", "receipt_read_failed", retryable=True)
+    return SkillResult(
+        output=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+        summary=f"读取回执 #{receipt_id}。",
+        content_source=execution.get("source", ""),
+    )
+
+
 def recent_operations_context(user_id: int, history: list[dict],
                               *, max_chars: int = 2400,
                               include_autonomous: bool = False) -> str:
@@ -173,6 +237,8 @@ def recent_operations_context(user_id: int, history: list[dict],
             "status": row["status"],
             "source": row["source"],
         }
+        if row.get("has_result"):
+            fact["receipt_id"] = row["id"]
         if row["status"] == "success":
             fact["changed"] = row["state_changed"]
         if row.get("action"):

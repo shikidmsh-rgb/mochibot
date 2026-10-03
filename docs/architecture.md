@@ -166,6 +166,17 @@ user's overall task is complete. Only compact summaries and operation identifier
 are carried, rather than replaying full outputs or arguments. Main retains
 judgment about what to do next.
 
+Completed dispatches also retain up to 16,000 characters of their redacted
+model-visible text in the same execution ledger, with original execution facts
+and explicit retention completeness. The existing short-receipt budget is
+unchanged; a receipt ID allows Main to request `read_tool_result` through the
+internal-search Skill. Reads return at most 4,000 characters per page, preserve
+the original content provenance, and recheck owner and reset boundaries each
+time. Reading never re-executes an operation or creates another result snapshot.
+An absent snapshot is unavailable, not reconstructed from the summary. These
+snapshots share the ledger's lifetime and are independent of Admin evidence;
+only the existing credential/media sanitizer is reused, not diagnostic records.
+
 ## Human-only runtime evidence
 
 `runtime_trace` records request-time evidence in SQLite for seven days. Each

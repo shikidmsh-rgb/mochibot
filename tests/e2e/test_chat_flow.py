@@ -221,6 +221,19 @@ class TestSimpleReply:
         ).fetchone()[0]
         conn.close()
         assert references == (0 if provider_fails else 1)
+        from mochi.db import (
+            get_recent_messages, get_tool_executions_for_turn, get_tool_execution_result,
+        )
+        turn_id = next(
+            message["turn_id"] for message in get_recent_messages(1)
+            if message.get("turn_id") and message["role"] == "user"
+        )
+        execution = next(
+            row for row in get_tool_executions_for_turn(turn_id)
+            if row["tool_name"] == "search_personal_history"
+        )
+        retained = get_tool_execution_result(1, execution["id"])
+        assert "Likes jasmine tea" in json.loads(retained["result_json"])["content"]
 
     @pytest.mark.asyncio
     async def test_habit_progress_context_appears_once_after_loading(

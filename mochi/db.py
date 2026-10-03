@@ -193,6 +193,7 @@ def init_db() -> None:
             arguments_json   TEXT    NOT NULL DEFAULT '{}',
             status           TEXT    NOT NULL DEFAULT 'running',
             result_summary   TEXT    NOT NULL DEFAULT '',
+            result_json      TEXT    DEFAULT NULL,
             entity_refs_json TEXT    NOT NULL DEFAULT '[]',
             state_changed    INTEGER NOT NULL DEFAULT 0,
             started_at       TEXT    NOT NULL,
@@ -370,6 +371,7 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
     _add_col("messages", "reasoning_content", "TEXT DEFAULT NULL")
     _add_col("messages", "reasoning_source", "TEXT NOT NULL DEFAULT ''")
     _add_col("runtime_traces", "facts_json", "TEXT DEFAULT NULL")
+    _add_col("tool_executions", "result_json", "TEXT DEFAULT NULL")
 
     # memory_items
     _add_col("memory_items", "access_count", "INTEGER NOT NULL DEFAULT 0")
@@ -1050,15 +1052,16 @@ def start_tool_execution(*, turn_id: str, tool_call_id: str, user_id: int,
 def finish_tool_execution(execution_id: int, *, status: str,
                           result_summary: str = "",
                           entity_refs: list[str] | None = None,
-                          state_changed: bool = False) -> None:
+                          state_changed: bool = False,
+                          result_json: str | None = None) -> None:
     """Finalize a tool execution with its real outcome."""
     now = datetime.now(TZ).isoformat()
     refs_json = json.dumps(entity_refs or [], ensure_ascii=False)
     conn = _connect()
     conn.execute(
         "UPDATE tool_executions SET status = ?, result_summary = ?, "
-        "entity_refs_json = ?, state_changed = ?, finished_at = ? WHERE id = ?",
-        (status, result_summary, refs_json, int(state_changed), now, execution_id),
+        "entity_refs_json = ?, state_changed = ?, finished_at = ?, result_json = ? WHERE id = ?",
+        (status, result_summary, refs_json, int(state_changed), now, result_json, execution_id),
     )
     conn.commit()
     conn.close()
@@ -1133,7 +1136,8 @@ def get_recent_tool_executions(user_id: int, *, hours: int = 24,
     rows = conn.execute(
         "SELECT id, turn_id, tool_call_id, user_id, source, skill_name, "
         "tool_name, action, arguments_json, status, result_summary, "
-        "entity_refs_json, state_changed, started_at, finished_at "
+        "entity_refs_json, state_changed, started_at, finished_at, "
+        "result_json IS NOT NULL AS has_result "
         "FROM tool_executions WHERE " + " AND ".join(conditions) +
         " ORDER BY id DESC LIMIT ?",
         params,
@@ -1155,6 +1159,30 @@ def get_recent_tool_executions(user_id: int, *, hours: int = 24,
         item["state_changed"] = bool(item["state_changed"])
         result.append(item)
     return result
+
+
+def get_tool_execution_result(user_id: int, execution_id: int) -> dict | None:
+    """Read one retained result within the owner's current context epoch."""
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT e.id, e.tool_name, e.finished_at, e.result_json "
+            "FROM tool_executions AS e "
+            "LEFT JOIN conversation_reset AS reset ON reset.user_id = e.user_id "
+            "WHERE e.id = ? AND e.user_id = ? AND e.result_json IS NOT NULL "
+            "AND e.source IN ('chat', 'runtime:free_time', 'runtime:attention', "
+            "'runtime:self_reminder', 'runtime:bedtime') "
+            "AND (reset.reset_at IS NULL OR julianday(e.started_at) > julianday(reset.reset_at)) "
+            "AND (e.source != 'chat' OR EXISTS ("
+            "SELECT 1 FROM messages AS owner_input "
+            "WHERE owner_input.user_id = e.user_id AND owner_input.turn_id = e.turn_id "
+            "AND owner_input.role = 'user' AND (reset.reset_at IS NULL OR "
+            "julianday(owner_input.created_at) > julianday(reset.reset_at))))",
+            (execution_id, user_id),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
 
 
 def get_tool_executions_for_turn(turn_id: str) -> list[dict]:

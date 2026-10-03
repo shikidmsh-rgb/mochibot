@@ -8,7 +8,10 @@ import pytest
 
 import mochi.db as db
 from mochi.skills.base import SkillResult
-from mochi.tool_execution import outcome_for, recent_operations_context, serialized_arguments
+from mochi.tool_execution import (
+    RESULT_PAGE_CHARS, RESULT_RETAINED_CHARS, model_result_for, outcome_for,
+    read_tool_result, recent_operations_context, retained_result_for, serialized_arguments,
+)
 
 
 def test_skill_schema_preserves_name_and_validates_nested_food_items():
@@ -47,7 +50,7 @@ def _turn(turn_id, user_id=1):
 
 def _execution(turn_id, tool="run_extension", *, user_id=1, status="success",
                changed=False, summary="script completed; not activated", args=None,
-               source="chat"):
+               source="chat", result=None):
     execution_id = db.start_tool_execution(
         turn_id=turn_id, tool_call_id=f"{turn_id}-{tool}", user_id=user_id,
         source=source, skill_name="personal_workspace", tool_name=tool,
@@ -58,6 +61,7 @@ def _execution(turn_id, tool="run_extension", *, user_id=1, status="success",
         db.finish_tool_execution(
             execution_id, status=status, result_summary=summary,
             entity_refs=["extension:local_example"], state_changed=changed,
+            result_json=retained_result_for(tool, result) if result is not None else None,
         )
     return execution_id
 
@@ -293,6 +297,7 @@ def test_receipt_count_and_text_are_bounded_without_losing_latest_facts():
         _execution(
             "many-attempts" if number % 2 == 0 else "undelivered",
             summary=f"RECEIPT_{number:02}_END " + "x" * 1000,
+            result=SkillResult(output="DETAILS_NOT_IN_DEFAULT_CONTEXT" * 500),
         )
     history = _history()
     roomy = recent_operations_context(1, history, max_chars=10000)
@@ -304,10 +309,123 @@ def test_receipt_count_and_text_are_bounded_without_losing_latest_facts():
     assert len(bounded) <= 2400
     assert "RECEIPT_19_END" in bounded
     assert "[Older execution details omitted.]" in bounded
+    assert "DETAILS_NOT_IN_DEFAULT_CONTEXT" not in bounded
     assert recent_operations_context(1, history, max_chars=10) == ""
     for line in bounded.splitlines():
         if line.startswith("- ["):
             assert isinstance(json.loads(line.split("] ", 1)[1]), dict)
+
+
+def test_retained_results_are_redacted_without_changing_the_immediate_result(monkeypatch):
+    import mochi.runtime_trace as trace
+
+    monkeypatch.setattr(trace, "_secrets", {"known-test-credential"})
+    output = json.dumps({
+        "url": "https://example.test/second",
+        "token": "nested-secret",
+        "text": "known-test-credential",
+        "media": "data:image/png;base64,QUJD",
+    })
+    result = SkillResult(output=output, content_source="external_web")
+    before = model_result_for(result)
+    _turn("search")
+    receipt_id = _execution("search", "web_search", result=result)
+    assert model_result_for(result) == before
+    row = db.get_tool_execution_result(1, receipt_id)
+    assert not any(secret in row["result_json"] for secret in (
+        "nested-secret", "known-test-credential", "QUJD",
+    ))
+
+    context = recent_operations_context(1, _history())
+    fact = json.loads(next(line.split("] ", 1)[1] for line in context.splitlines() if line.startswith("- [")))
+    assert fact["receipt_id"] == receipt_id
+    assert "https://example.test/second" not in context
+    expanded = read_tool_result(1, receipt_id)
+    page = json.loads(expanded.output)
+    assert json.loads(page["content"])["url"] == "https://example.test/second"
+    assert page["redacted"] and page["source_completeness"] == "full"
+    assert page["execution"]["ok"] and not expanded.state_changed
+    assert json.loads(model_result_for(expanded))["authority"] == "untrusted_data"
+    assert retained_result_for("read_tool_result", expanded) is None
+
+
+def test_retained_result_pages_distinguish_storage_loss_from_unread_content():
+    _turn("long-result")
+    output = "".join(f"line {index:05d}\n" for index in range(2000))
+    receipt_id = _execution("long-result", result=SkillResult(output=output))
+    pages, offset = [], 0
+    while True:
+        result = read_tool_result(1, receipt_id, offset)
+        assert result.success
+        page = json.loads(result.output)
+        assert len(page["content"]) <= RESULT_PAGE_CHARS
+        assert page["source_completeness"] == "reduced"
+        assert page["total_chars"] == RESULT_RETAINED_CHARS
+        pages.append(page["content"])
+        if not page["truncated"]:
+            assert page["next_offset"] is None
+            break
+        assert page["next_offset"] == offset + len(page["content"])
+        offset = page["next_offset"]
+    assert "".join(pages) == output[:RESULT_RETAINED_CHARS]
+    assert not read_tool_result(1, receipt_id, RESULT_RETAINED_CHARS).success
+    assert not read_tool_result(1, receipt_id, -1).success
+    assert not read_tool_result(1, True).success
+
+
+def test_receipt_reads_recheck_owner_and_reset_even_for_unfinished_chat():
+    db.save_message(1, "user", "Search", turn_id="unfinished")
+    result = SkillResult(output="retained observation\n" * 300)
+    receipt_id = _execution("unfinished", result=result)
+    first = json.loads(read_tool_result(1, receipt_id).output)
+    assert first["next_offset"] == RESULT_PAGE_CHARS
+    assert not read_tool_result(2, receipt_id).success
+    legacy_id = _execution("unfinished", "browse_workspace")
+    running_id = _execution("unfinished", "activate_extension", status="running")
+    orphan_id = _execution("orphan", result=result)
+    weekly_id = _execution("weekly", source="weekly", result=result)
+    for inaccessible in (legacy_id, running_id, orphan_id, weekly_id):
+        assert not read_tool_result(1, inaccessible).success
+    assert "receipt_id" not in json.loads(next(
+        line.split("] ", 1)[1] for line in recent_operations_context(1, []).splitlines()
+        if '"tool":"browse_workspace"' in line
+    ))
+    db.set_context_reset(1)
+    assert not read_tool_result(1, receipt_id, first["next_offset"]).success
+    late_id = _execution("unfinished", "edit_workspace", result=result)
+    assert not read_tool_result(1, late_id).success
+    autonomous_id = _execution("new-epoch", source="runtime:free_time", result=result)
+    assert read_tool_result(1, autonomous_id).success
+    assert db.get_tool_executions_for_turn("unfinished")
+
+
+@pytest.mark.asyncio
+async def test_read_tool_loads_on_demand_and_preserves_uncertain_execution():
+    import mochi.skills as registry
+    from mochi.request_tools import resolve_request
+    from mochi.tool_availability import ToolAvailability
+
+    _, definitions = resolve_request({"skills": ["read_tool_result"]}, ToolAvailability())
+    availability = ToolAvailability.from_definitions(definitions, source="requested")
+    assert availability.names == {"read_tool_result"}
+    _turn("uncertain-result")
+    receipt_id = _execution("uncertain-result", status="failed", result=SkillResult(
+        success=False, output="Write outcome is unknown.",
+        execution_started=True, state_change_unknown=True, retryable=False,
+    ))
+    denied = await registry.dispatch(
+        "read_tool_result", {"receipt_id": receipt_id}, user_id=1,
+    )
+    assert not denied.success
+    read = await registry.dispatch(
+        "read_tool_result", {"receipt_id": receipt_id}, user_id=1, actor="main",
+        bound_skill=availability.binding_for("read_tool_result"),
+    )
+    assert read.success and not read.state_changed
+    page = json.loads(read.output)
+    assert not page["execution"]["ok"] and page["execution"]["started"]
+    assert "changed" not in page["execution"]
+    assert len(db.get_tool_executions_for_turn("uncertain-result")) == 1
 
 
 @pytest.mark.parametrize("total,per_tool,expected", [
