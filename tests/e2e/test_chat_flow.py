@@ -20,6 +20,33 @@ def _msg(text: str, user_id: int = 1, channel_id: int = 100) -> IncomingMessage:
     )
 
 
+@pytest.mark.asyncio
+async def test_chat_persists_source_counts_for_repeated_history_and_current_input(
+    mock_llm_factory, monkeypatch,
+):
+    from mochi import runtime_trace as trace
+
+    shared = "hello again"
+    save_message(1, "user", shared, turn_id="previous")
+    save_message(1, "assistant", "previous reply", turn_id="previous")
+    mock = mock_llm_factory([make_response("done")])
+    original_chat = mock.chat
+
+    def recorded_chat(**kwargs):
+        return trace.sdk_call(original_chat, protocol="test", provider="test", **kwargs)
+
+    monkeypatch.setattr(mock, "chat", recorded_chat)
+    result = await chat(_msg(shared))
+    page = trace.query_token_distribution(1, trace_id=result._trace_id)
+    sources = page["summary"]["by_source"]
+    assert sources["history.user"]["chars"] == len(shared)
+    assert sources["input.current"]["chars"] == len(shared)
+    assert sources["history.assistant"]["chars"] == len("previous reply")
+    assert sources["agent"]["reference_tokens"] > 0
+    assert page["summary"]["recorded_calls"] == 1
+    assert "token_distribution" not in json.dumps(mock.call_log)
+
+
 def test_history_dates_both_speakers_without_changing_stored_content(monkeypatch):
     from datetime import timezone
     import mochi.config as config

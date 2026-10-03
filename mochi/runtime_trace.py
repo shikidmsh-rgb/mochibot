@@ -13,10 +13,12 @@ import time
 import uuid
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache, wraps
 from pathlib import Path
+
+from mochi.token_distribution import TextSource
 
 log = logging.getLogger(__name__)
 RETENTION_DAYS = 7
@@ -48,6 +50,7 @@ class Run:
     turn_id: str
     user_id: int | None
     kind: str
+    token_sources: list[TextSource] = field(default_factory=list)
 
 
 _current: ContextVar[Run | None] = ContextVar("runtime_trace", default=None)
@@ -371,6 +374,42 @@ def prepare_sync(name: str, function, *args, **kwargs):
         return function(*args, **kwargs)
 
 
+def register_token_source(role: str, text: str, parts: list[tuple[str, str]]) -> None:
+    active = _current.get()
+    if active is None:
+        return
+    if "".join(body for _, body in parts) != text:
+        log.error("Token source layout does not match the request text")
+        return
+    active.token_sources.append(TextSource(role, text, tuple(parts)))
+
+
+def joined_system_token_source(messages: list[dict], text: str) -> None:
+    """Preserve source ranges when the Anthropic adapter joins system messages."""
+    active = _current.get()
+    if active is None:
+        return
+    parts = []
+    for message in messages:
+        if message["role"] != "system":
+            continue
+        body = message["content"]
+        original = next(
+            (item.parts for item in active.token_sources if item.role == "system" and item.text == body),
+            (("system", body),),
+        )
+        parts.extend(original)
+        parts.append(("separator", "\n"))
+    while parts and not parts[0][1].strip():
+        parts.pop(0)
+    while parts and not parts[-1][1].strip():
+        parts.pop()
+    if parts:
+        parts[0] = (parts[0][0], parts[0][1].lstrip())
+        parts[-1] = (parts[-1][0], parts[-1][1].rstrip())
+    register_token_source("system", text, parts)
+
+
 def sdk_call(
     fn, *, protocol: str, provider: str, endpoint: str = "",
     client_timeout=None, **kwargs,
@@ -390,9 +429,13 @@ def sdk_call(
     )
     phase = _stage.get()
     operation_id = phase.operation_id if phase else uuid.uuid4().hex
+    from mochi.token_distribution import record_request, record_usage
+    distribution = record_request(kwargs, _current.get().token_sources)
     with span("model", protocol, {
         "provider": provider, "endpoint": endpoint, "client_timeout": timeout, **kwargs,
-    }, facts={"kind": "model", "operation_id": operation_id}) as item:
+    }, facts={
+        "kind": "model", "operation_id": operation_id, "token_distribution": distribution,
+    }) as item:
         try:
             response = fn(**kwargs)
         except Exception as exc:
@@ -404,16 +447,17 @@ def sdk_call(
                 }
             raise
         if item:
+            record_usage(distribution, response)
             request_id = getattr(response, "_request_id", None)
             item.response = (
                 {"body": response, "request_id": request_id} if request_id else response
             )
             try:
                 from mochi.execution_diagnostics import model_facts
-                item.facts = model_facts(
+                item.facts.update(model_facts(
                     protocol=protocol, endpoint=endpoint, request=kwargs,
                     response=response, operation_id=operation_id,
-                )
+                ))
             except Exception:
                 log.exception("Could not summarize model terminal evidence")
         return response
@@ -670,4 +714,51 @@ def get_run(user_id: int, trace_id: str) -> dict | None:
         "spans": spans, "tools": _sanitize([dict(row) for row in tools]),
         "retention_days": RETENTION_DAYS,
         "diagnostics": diagnostics,
+    }
+
+
+def query_token_distribution(
+    user_id: int, *, trace_id: str | None = None, since: str | None = None,
+    until: str | None = None, kind: str | None = None,
+    before: int | None = None, limit: int = 30,
+) -> dict:
+    """Read original per-attempt counts; never reconstruct old/redacted payloads."""
+    from mochi.token_distribution import summarize
+
+    if not 1 <= limit <= 100 or (before is not None and before <= 0):
+        raise ValueError("Invalid token distribution page")
+    bounds = []
+    for value in (since, until):
+        instant = datetime.fromisoformat(value) if value is not None else None
+        if instant is not None and instant.utcoffset() is None:
+            raise ValueError("Token distribution timestamps require a timezone")
+        bounds.append(instant)
+    if all(value is not None for value in bounds) and bounds[0] > bounds[1]:
+        raise ValueError("Token distribution since must not be after until")
+    conn = read_connection()
+    try:
+        rows = conn.execute(
+            "SELECT id,trace_id,span_id,run_kind,name,status,started_at,facts_json "
+            "FROM runtime_traces WHERE span_kind='model' AND user_id=? "
+            "AND (? IS NULL OR trace_id=?) AND (? IS NULL OR id<?) "
+            "AND (? IS NULL OR julianday(started_at)>=julianday(?)) "
+            "AND (? IS NULL OR julianday(started_at)<=julianday(?)) "
+            "AND (? IS NULL OR run_kind=?) ORDER BY id DESC LIMIT ?",
+            (user_id, trace_id, trace_id, before, before, since, since, until, until, kind, kind, limit + 1),
+        ).fetchall()
+    finally:
+        conn.close()
+    calls = []
+    for row in rows[:limit]:
+        call = dict(row)
+        facts = json.loads(call.pop("facts_json") or "{}")
+        call["operation_id"] = facts.get("operation_id")
+        call["distribution"] = facts.get("token_distribution") or {
+            "status": "unavailable", "reason": "not_recorded",
+        }
+        calls.append(call)
+    return {
+        "calls": calls, "summary": summarize(calls),
+        "next_before": calls[-1]["id"] if len(rows) > limit else None,
+        "retention_days": RETENTION_DAYS,
     }

@@ -636,6 +636,8 @@ class AnthropicProvider(LLMProvider):
         if temperature is not None:
             kwargs["temperature"] = temperature
         if system_msg:
+            from mochi.runtime_trace import joined_system_token_source
+            joined_system_token_source(messages, system_msg.strip())
             # System as a list-of-blocks with cache_control: ephemeral.
             # Mochi's system prompt (Core + Agent + runtime) is 4-8KB and
             # 100% stable across a conversation — perfect cache target.

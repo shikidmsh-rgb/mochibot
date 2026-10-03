@@ -482,9 +482,20 @@ def _render_runtime_context(template: str, diary_status: str = "",
     return result.strip()
 
 
-def _fill_agent_section(agent: str, name: str, value: str) -> str:
+def _fill_agent_section(
+    agent: str, name: str, value: str,
+    token_parts: list[tuple[str, str]] | None = None,
+) -> str:
     """Fill an agent.md placeholder, dropping its heading when empty."""
     placeholder = "{{" + name + "}}"
+    pattern = re.escape(placeholder) if value else r"\n*#+ [^\n]*\n+" + re.escape(placeholder)
+    if token_parts is not None:
+        from mochi.token_distribution import replace_range
+        for match in reversed(list(re.finditer(pattern, agent))):
+            replace_range(
+                token_parts, match.start(), match.end(),
+                [(f"agent.{name}", value)] if value else [],
+            )
     if value:
         return agent.replace(placeholder, value)
     return re.sub(
@@ -515,7 +526,9 @@ def _build_prompt_zones(user_id: int, capability_context: str = "",
                         habit_progress_context: str = "",
                         history_timestamps: str = "",
                         day_start_context: str = "",
-                        bedtime_review: str = "") -> tuple[str, str]:
+                        bedtime_review: str = "",
+                        token_parts: dict[str, list[tuple[str, str]]] | None = None,
+                        ) -> tuple[str, str]:
     """Return the cross-turn stable prompt and this turn's live context."""
 
     modules = get_system_chat_modules()
@@ -531,31 +544,34 @@ def _build_prompt_zones(user_id: int, capability_context: str = "",
     )
 
     stable_identity = []
+    detailed_parts: dict[str, list[tuple[str, str]]] = {}
     if core_memory:
-        stable_identity.append(core_memory)
+        stable_identity.append(("core", core_memory))
     if "agent" in modules:
         agent = modules["agent"].replace(
             "{{deployment_environment}}", _deployment_environment(),
         )
-        agent = _fill_agent_section(agent, "capability_context", capability_context)
-        agent = _fill_agent_section(agent, "requestable_tools", requestable_tools)
-        stable_identity.append(agent)
+        agent_parts = [("agent", agent)]
+        agent = _fill_agent_section(agent, "capability_context", capability_context, agent_parts)
+        agent = _fill_agent_section(agent, "requestable_tools", requestable_tools, agent_parts)
+        detailed_parts["agent"] = agent_parts
+        stable_identity.append(("agent", agent))
     early_runtime_situation = []
     if policy.early_runtime_situation and runtime_entry:
         situation = get_prompt("free_time_entry")
         if not situation:
             raise RuntimeError(f"{runtime_entry.kind} entry prompt is missing")
-        early_runtime_situation.append(situation)
+        early_runtime_situation.append(("runtime.situation", situation))
         protocol = get_prompt("runtime_silence_protocol")
         if not protocol:
             raise RuntimeError("Runtime silence protocol prompt is missing")
-        early_runtime_situation.append(protocol)
+        early_runtime_situation.append(("runtime.silence_protocol", protocol))
 
     capability_parts = []
     dynamic_live_context = []
     if habit_progress_context and not is_autonomous:
         dynamic_live_context.append(
-            f"## 本轮习惯进度快照（只读事实）\n{habit_progress_context}"
+            ("habits.progress", f"## 本轮习惯进度快照（只读事实）\n{habit_progress_context}")
         )
     elif tool_names and habits:
         from mochi.skills.habit.logic import describe_frequency
@@ -566,51 +582,53 @@ def _build_prompt_zones(user_id: int, capability_context: str = "",
                 for h in habits
             )
             if habit_lines:
-                capability_parts.append(f"## 习惯列表 (打卡用)\n{habit_lines}")
+                capability_parts.append(("habits.list", f"## 习惯列表 (打卡用)\n{habit_lines}"))
 
     if policy.prompt_sections and not is_weekly:
-        for section in skill_registry.get_prompt_sections(compact=True):
-            capability_parts.append(section)
+        for index, section in enumerate(skill_registry.get_prompt_sections(compact=True)):
+            capability_parts.append((f"skill_prompt.{index}", section))
 
     from mochi.config import BUBBLE_ENABLED
     if BUBBLE_ENABLED and not is_weekly and not is_autonomous:
         bubble_inst = get_prompt("system_chat/_bubble")
         if bubble_inst:
-            capability_parts.append(bubble_inst)
+            capability_parts.append(("bubble", bubble_inst))
 
     if history_timestamps and not is_weekly and policy.recent_history:
         hist_ts_inst = get_prompt("system_chat/_history_timestamp")
         if hist_ts_inst:
             dynamic_live_context.append(
-                hist_ts_inst.replace("{{history_timestamps}}", history_timestamps)
+                ("history.timestamps", hist_ts_inst.replace("{{history_timestamps}}", history_timestamps))
             )
     if is_autonomous:
-        today_parts = ["## 今天"]
+        today_parts = [("today.heading", "## 今天")]
         if habit_progress_context:
-            today_parts.append(f"### 习惯\n{habit_progress_context}")
+            today_parts.append(("habits.progress", f"### 习惯\n{habit_progress_context}"))
         if policy.diary_journal:
-            today_parts.append(f"### 日记\n{diary_journal or EMPTY_DIARY}")
-        dynamic_live_context.append("\n\n".join(today_parts))
+            today_parts.append(("diary.journal", f"### 日记\n{diary_journal or EMPTY_DIARY}"))
+        from mochi.token_distribution import joined_parts
+        detailed_parts["today"] = joined_parts(today_parts)
+        dynamic_live_context.append(("today", "\n\n".join(body for _, body in today_parts)))
     elif "runtime_context" in modules:
         rendered_rc = _render_runtime_context(
             modules["runtime_context"], diary_status,
             diary_journal if policy.diary_journal and not bedtime_review else None,
         )
         if rendered_rc:
-            dynamic_live_context.append(rendered_rc)
+            dynamic_live_context.append(("diary.context", rendered_rc))
 
     if day_start_context:
-        dynamic_live_context.append(day_start_context)
+        dynamic_live_context.append(("day_start.diaries", day_start_context))
 
     if conv_summary:
-        dynamic_live_context.append(f"## 本次对话早期内容（摘要）\n{conv_summary}")
+        dynamic_live_context.append(("history.summary", f"## 本次对话早期内容（摘要）\n{conv_summary}"))
 
     if recent_operations:
-        dynamic_live_context.append(recent_operations)
+        dynamic_live_context.append(("operations", recent_operations))
 
     if recalled_memories:
         dynamic_live_context.append(
-            _format_recalled_memories(recalled_memories)
+            ("memory.recall", _format_recalled_memories(recalled_memories))
         )
 
     if runtime_entry and runtime_entry.kind == "bedtime":
@@ -622,25 +640,26 @@ def _build_prompt_zones(user_id: int, capability_context: str = "",
             "resleep": "用户夜里短暂醒来后再次安静下来",
         }
         dynamic_live_context.extend([
-            trigger_labels[runtime_entry.trigger], bedtime_review,
+            ("bedtime.trigger", trigger_labels[runtime_entry.trigger]),
+            ("bedtime.review", bedtime_review),
         ])
     elif runtime_entry and runtime_entry.kind == "self_reminder":
         reminder_context = get_prompt("self_reminder_entry")
         if not reminder_context:
             raise RuntimeError("Self reminder entry prompt is missing")
         dynamic_live_context.append(
-            reminder_context.replace(
+            ("self_reminder", reminder_context.replace(
                 "{{intent}}", runtime_entry.intent or "",
             ).replace(
                 "{{scheduled_for}}", runtime_entry.scheduled_for or "",
-            )
+            ))
         )
     elif is_weekly:
         weekly_prompt = get_prompt("weekly_maintenance_entry")
         if not weekly_prompt:
             raise RuntimeError("Weekly maintenance entry prompt is missing")
         dynamic_live_context.append(
-            weekly_prompt.replace("{{weekly_context}}", weekly_context)
+            ("weekly.context", weekly_prompt.replace("{{weekly_context}}", weekly_context))
         )
 
     from mochi.db import get_last_user_message_time
@@ -665,7 +684,7 @@ def _build_prompt_zones(user_id: int, capability_context: str = "",
                     silence_label = f"{silence_hours}小时前"
                 else:
                     silence_label = f"{silence_hours // 24}天前"
-            dynamic_live_context.append(f"用户上次发消息：{silence_label}")
+            dynamic_live_context.append(("time.silence", f"用户上次发消息：{silence_label}"))
         except (ValueError, TypeError):
             pass
 
@@ -675,8 +694,19 @@ def _build_prompt_zones(user_id: int, capability_context: str = "",
     horizon = calendar_horizon(now)
     if horizon:
         time_line += f"\n近期日历：{horizon}"
-    turn_context = dynamic_live_context + [time_line]
-    return "\n\n".join(stable), "\n\n".join(turn_context)
+    turn_context = dynamic_live_context + [("time.current", time_line)]
+    if token_parts is not None:
+        from mochi.token_distribution import joined_parts
+        for zone, sections in (("system", stable), ("turn_context", turn_context)):
+            token_parts[zone] = [
+                part
+                for source, body in joined_parts(sections)
+                for part in detailed_parts.get(source, [(source, body)])
+            ]
+    return (
+        "\n\n".join(body for _, body in stable),
+        "\n\n".join(body for _, body in turn_context),
+    )
 
 
 async def chat(
@@ -1206,6 +1236,7 @@ async def _chat(
                 lambda: day_start.mark_done(day_start_day)
             )
 
+    token_parts: dict[str, list[tuple[str, str]]] = {}
     system_prompt, turn_context = runtime_trace.prepare_sync(
         "prompt", _build_prompt_zones,
         user_id, capability_context=capability_context,
@@ -1226,12 +1257,17 @@ async def _chat(
         ),
         day_start_context=day_start_context,
         bedtime_review=bedtime_review,
+        token_parts=token_parts,
     )
     # User turns keep the system prompt stable so providers can reuse the
     # system + history prefix; runtime entries keep everything in system.
     split_turn_context = message is not None and runtime_entry is None
     if not split_turn_context:
         system_prompt = f"{system_prompt}\n\n{turn_context}"
+        token_parts["system"].extend([
+            ("separator", "\n\n"), *token_parts["turn_context"],
+        ])
+    runtime_trace.register_token_source("system", system_prompt, token_parts["system"])
 
     # Build messages array
     messages = [{"role": "system", "content": system_prompt}]
@@ -1251,6 +1287,7 @@ async def _chat(
             messages, stored_text,
             await runtime_trace.prepare("attachment", _file_content, text, attachment),
         )
+    current_input_index = None
     if split_turn_context:
         current_index = (
             len(messages) - 1 if messages[-1].get("role") == "user"
@@ -1264,6 +1301,30 @@ async def _chat(
                 "</turn_context>"
             ),
         })
+        if current_index + 1 < len(messages):
+            current_input_index = current_index + 1
+
+    for index, context_message in enumerate(messages[1:], start=1):
+        if split_turn_context and index == current_index:
+            runtime_trace.register_token_source("user", context_message["content"], [
+                ("turn_context.wrapper", '<turn_context source="runtime" role="read_only_context">\n'),
+                *token_parts["turn_context"],
+                ("turn_context.wrapper", "\n</turn_context>"),
+            ])
+            continue
+        role = context_message["role"]
+        source = (
+            "runtime.activation_history" if is_autonomous
+            else "input.current" if index == current_input_index
+            else f"history.{role}"
+        )
+        body = context_message["content"]
+        texts = (
+            [body] if isinstance(body, str)
+            else [block["text"] for block in body if block.get("type") == "text"]
+        )
+        for body in texts:
+            runtime_trace.register_token_source(role, body, [(source, body)])
 
     runtime_trace.event("context_ready", {
         "preparation_ms": (time.monotonic() - preparation_started) * 1000,
@@ -1430,6 +1491,9 @@ async def _chat(
                         else f"## 本轮习惯进度快照（只读事实）\n{habit_progress_context}"
                     ),
                 })
+                runtime_trace.register_token_source("system", messages[-1]["content"], [
+                    ("habits.progress", messages[-1]["content"]),
+                ])
                 habit_context_loaded = True
         document_updates: dict[str, str] = {}
         availability = availability.refresh_extensions(transport)

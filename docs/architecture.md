@@ -207,6 +207,14 @@ export the recorded evidence and an explicitly selected systemd journal window;
 missing logs are reported, and the export never overwrites an existing file.
 This developer path does not reconstruct prompts or replay user actions.
 
+SDK attempts also retain human-only [token distribution](token-distribution.md)
+facts: original input sizes, explicit local reference-token counts and the
+provider's separate actual usage. Prompt assembly supplies source ranges without
+changing model-visible text. Counts are captured before redaction, while media,
+encrypted reasoning and provider-internal overhead remain unallocated.
+Read-only queries use the existing evidence store and retention; these facts
+never enter Main's context or influence its decisions.
+
 ## Model and provider boundary
 
 The product has exactly two model roles. **Main** owns every personality-bearing
