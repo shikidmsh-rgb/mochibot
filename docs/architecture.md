@@ -448,6 +448,9 @@ same-user messages in that exact batch, optionally embeds candidates before the
 transaction, then commits Memory Items and its cursor atomically.
 Only a complete, validated model result may enter that transaction; output
 truncation leaves the batch pending rather than accepting a partial extraction.
+The official DeepSeek adapter supports a per-request thinking override; this
+coordinator disables thinking for its extraction request without changing the
+shared client's defaults, Main, or other Lite tasks.
 FTS/LIKE is always the text recall path; vectors only add candidates when an
 embedding is available, and recent-only rows are never semantic recall filler.
 

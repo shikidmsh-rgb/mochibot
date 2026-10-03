@@ -76,6 +76,8 @@ def _extract_pair(monkeypatch, old, new, location):
         candidates = candidates[1:]
 
     class Client:
+        supports_thinking_control = False
+
         def chat(self, **kwargs):
             return LLMResponse(
                 content=json.dumps(candidates), model="lite-test",

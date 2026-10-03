@@ -88,6 +88,10 @@ class LLMProvider(ABC):
     """Abstract base class for LLM providers."""
 
     @property
+    def supports_thinking_control(self) -> bool:
+        return False
+
+    @property
     def reasoning_source(self) -> str:
         """Identity of the provider/model allowed to replay stored reasoning."""
         return ""
@@ -95,13 +99,15 @@ class LLMProvider(ABC):
     @abstractmethod
     def chat(self, messages: list[dict], tools: list[dict] | None = None,
              temperature: float | None = None, max_tokens: int = 2048,
-             json_mode: bool = False) -> LLMResponse:
+             json_mode: bool = False, *, thinking: bool | None = None) -> LLMResponse:
         """Send a chat completion request.
 
         json_mode=True asks the provider to return strict JSON. Each provider
         maps this to its native capability (response_format / response_mime_type).
         Anthropic has no native JSON mode — caller must rely on prompting plus
         the framework-layer markdown fence strip.
+        thinking is a per-request override only for providers advertising
+        supports_thinking_control. None preserves the provider's default.
         """
         ...
 
@@ -439,7 +445,8 @@ class _OpenAICompatChat:
 
     def _do_chat(self, client, model: str, messages: list[dict],
                  tools: list[dict] | None, temperature: float | None,
-                 max_tokens: int, json_mode: bool = False) -> Any:
+                 max_tokens: int, json_mode: bool = False,
+                 *, thinking: bool | None = None) -> Any:
         """Call chat.completions.create with auto-negotiation."""
         from openai import BadRequestError
 
@@ -467,6 +474,8 @@ class _OpenAICompatChat:
 
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
+        if thinking is not None:
+            kwargs["extra_body"] = {"thinking": {"type": "enabled" if thinking else "disabled"}}
 
         for attempt in range(3):
             try:
@@ -549,6 +558,10 @@ class OpenAIProvider(_OpenAICompatChat, LLMProvider):
         return "openai"
 
     @property
+    def supports_thinking_control(self) -> bool:
+        return urlsplit(self._base_url).hostname == "api.deepseek.com"
+
+    @property
     def reasoning_source(self) -> str:
         return (
             f"{self._caps_cache_key}::responses"
@@ -558,7 +571,9 @@ class OpenAIProvider(_OpenAICompatChat, LLMProvider):
 
     def chat(self, messages: list[dict], tools: list[dict] | None = None,
              temperature: float | None = None, max_tokens: int = 2048,
-             json_mode: bool = False) -> LLMResponse:
+             json_mode: bool = False, *, thinking: bool | None = None) -> LLMResponse:
+        if thinking is not None and not self.supports_thinking_control:
+            raise ValueError("This provider does not support per-request thinking control")
         if _uses_responses_api(self._model):
             kwargs: dict = {
                 "model": self._model,
@@ -588,7 +603,8 @@ class OpenAIProvider(_OpenAICompatChat, LLMProvider):
                 result.content = extract_json(result.content)
             return result
         resp = self._do_chat(self._client, self._model, messages, tools,
-                             temperature, max_tokens, json_mode=json_mode)
+                             temperature, max_tokens, json_mode=json_mode,
+                             thinking=thinking)
         choice = resp.choices[0]
         response = _openai_response(choice, resp.usage, self._model,
                                     _parse_openai_tool_calls(choice))
@@ -613,7 +629,9 @@ class AnthropicProvider(LLMProvider):
 
     def chat(self, messages: list[dict], tools: list[dict] | None = None,
              temperature: float | None = None, max_tokens: int = 2048,
-             json_mode: bool = False) -> LLMResponse:
+             json_mode: bool = False, *, thinking: bool | None = None) -> LLMResponse:
+        if thinking is not None:
+            raise ValueError("This provider does not support per-request thinking control")
         # Anthropic has no native JSON mode. Caller must rely on prompting.
         # Framework-layer strip below is the safety net (gated on json_mode).
         # Separate system message from conversation

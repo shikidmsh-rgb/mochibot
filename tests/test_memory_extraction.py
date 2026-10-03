@@ -13,6 +13,8 @@ from mochi.llm import LLMResponse
 
 
 class Client:
+    supports_thinking_control = False
+
     def __init__(self, outputs):
         self.outputs = list(outputs)
         self.calls = []

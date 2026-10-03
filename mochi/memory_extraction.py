@@ -198,7 +198,8 @@ def _run_batch(user_id: int, cursor: int, batch: list[dict]) -> list[int]:
             "memory_items": get_memory_extraction_references(user_id),
         },
     }
-    response = get_client_for_tier("lite").chat(
+    client = get_client_for_tier("lite")
+    response = client.chat(
         messages=[
             {"role": "system", "content": prompt},
             {
@@ -209,6 +210,7 @@ def _run_batch(user_id: int, cursor: int, batch: list[dict]) -> list[int]:
         tools=None,
         temperature=0.1,
         max_tokens=EXTRACTION_OUTPUT_TOKENS,
+        **({"thinking": False} if client.supports_thinking_control else {}),
     )
     if response.total_tokens:
         log_usage(
