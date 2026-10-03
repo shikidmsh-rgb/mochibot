@@ -78,7 +78,9 @@ only for the current run. Count failures are logged and marked unavailable;
 they do not prevent the actual model call. `capture_ms` measures accounting
 overhead.
 
-`tiktoken` downloads its public vocabulary on first use and caches it locally.
-Preload `tiktoken.get_encoding("o200k_base")` under the service account during
-deployment so a chat need not wait for this download. Subsequent counting is
-local; query-only access does not require loading the vocabulary.
+`tiktoken` downloads its public vocabulary on first use. By default its cache
+is `tokenizer-cache/` alongside the database, rather than an isolated or
+restart-cleared system temporary directory. An existing `TIKTOKEN_CACHE_DIR`
+is respected. Preload `mochi.token_distribution._encoding()` under the service
+account during deployment so a chat need not wait for this download. Subsequent
+counting is local; query-only access does not require loading the vocabulary.

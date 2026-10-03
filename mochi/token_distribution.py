@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from functools import lru_cache
 import json
 import logging
+import os
+from pathlib import Path
 import time
 
 log = logging.getLogger(__name__)
@@ -48,7 +50,9 @@ def replace_range(
 @lru_cache(maxsize=1)
 def _encoding():
     import tiktoken
+    from mochi.db import DB_PATH
 
+    os.environ.setdefault("TIKTOKEN_CACHE_DIR", str(Path(DB_PATH).parent / "tokenizer-cache"))
     return tiktoken.get_encoding(ENCODING)
 
 

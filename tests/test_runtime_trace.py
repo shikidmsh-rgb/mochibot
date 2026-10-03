@@ -431,6 +431,19 @@ def test_counter_failure_is_explicit_and_does_not_prevent_execution(monkeypatch,
     assert "Could not record token distribution" in caplog.text
 
 
+def test_tokenizer_cache_survives_isolated_service_tmp(fresh_db, monkeypatch):
+    import os
+    from mochi import token_distribution
+
+    monkeypatch.delenv("TIKTOKEN_CACHE_DIR", raising=False)
+    token_distribution._encoding.cache_clear()
+    try:
+        token_distribution._encoding()
+        assert os.environ["TIKTOKEN_CACHE_DIR"] == str(fresh_db.parent / "tokenizer-cache")
+    finally:
+        token_distribution._encoding.cache_clear()
+
+
 @pytest.mark.asyncio
 async def test_preparation_failure_and_cancelled_wait_remain_visible():
     def broken_read():
