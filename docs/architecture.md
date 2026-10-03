@@ -446,6 +446,8 @@ Memory extraction is another independent Lite coordinator. It consumes fixed
 batches of complete eligible normal-chat turns, requires evidence IDs from
 same-user messages in that exact batch, optionally embeds candidates before the
 transaction, then commits Memory Items and its cursor atomically.
+Only a complete, validated model result may enter that transaction; output
+truncation leaves the batch pending rather than accepting a partial extraction.
 FTS/LIKE is always the text recall path; vectors only add candidates when an
 embedding is available, and recent-only rows are never semantic recall filler.
 

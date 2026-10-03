@@ -22,6 +22,8 @@ class Client:
         output = self.outputs.pop(0)
         if isinstance(output, Exception):
             raise output
+        if isinstance(output, LLMResponse):
+            return output
         return LLMResponse(content=output, model="lite-test")
 
 
@@ -97,3 +99,31 @@ def test_failure_retries_same_batch(monkeypatch):
     assert recovered.calls[0]["messages"][1]["content"] == (
         failed.calls[0]["messages"][1]["content"]
     )
+
+
+def test_truncated_response_cannot_commit_even_when_its_json_is_valid(monkeypatch):
+    turns = _save_turns(2)
+    candidate = json.dumps([{
+        "content": "Enjoys hiking",
+        "importance": 2,
+        "evidence_message_ids": [turns[0][0]],
+    }])
+    client = Client([
+        LLMResponse(content=candidate, finish_reason="length", reasoning_tokens=1200),
+        LLMResponse(content=candidate, finish_reason="stop"),
+    ])
+    monkeypatch.setattr(extraction, "get_client_for_tier", lambda _tier: client)
+
+    assert extraction.drain_memory_extraction(1) == 0
+    status = get_memory_extraction_status(1, 2)
+    assert status["last_processed_message_id"] == 0
+    assert status["pending_turns"] == 2
+    assert "truncated" in status["last_error"]
+    with _connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM memory_items").fetchone()[0] == 0
+
+    assert extraction.drain_memory_extraction(1) == 1
+    recovered = get_memory_extraction_status(1, 2)
+    assert recovered["last_processed_message_id"] == turns[-1][1]
+    assert recovered["pending_turns"] == 0
+    assert not recovered["last_error"]

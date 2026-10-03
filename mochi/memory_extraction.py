@@ -33,6 +33,8 @@ from mochi.prompt_loader import get_prompt
 log = logging.getLogger(__name__)
 
 EXTRACTION_BATCH_SIZE = MEMORY_EXTRACTION_BATCH_TURNS
+# Reasoning and the final JSON share the provider's output allowance.
+EXTRACTION_OUTPUT_TOKENS = 4096
 _RUNNING_TASKS: dict[int, asyncio.Task] = {}
 _PENDING_WAKEUPS: set[int] = set()
 _TASKS_LOCK = threading.Lock()
@@ -206,7 +208,7 @@ def _run_batch(user_id: int, cursor: int, batch: list[dict]) -> list[int]:
         ],
         tools=None,
         temperature=0.1,
-        max_tokens=1200,
+        max_tokens=EXTRACTION_OUTPUT_TOKENS,
     )
     if response.total_tokens:
         log_usage(
@@ -223,6 +225,14 @@ def _run_batch(user_id: int, cursor: int, batch: list[dict]) -> list[int]:
             cache_write_tokens=response.cache_write_tokens,
         )
 
+    if response.finish_reason in {"length", "max_tokens", "max_output_tokens"}:
+        raise MemoryExtractionContractError(
+            "Lite output was truncated "
+            f"(finish_reason={response.finish_reason}, "
+            f"completion_tokens={response.completion_tokens}, "
+            f"reasoning_tokens={response.reasoning_tokens}); "
+            "extraction cursor was not advanced"
+        )
     candidates = validate_extraction_response(response.content, batch)
     candidates = _filter_batch_duplicates(candidates)
     candidates = _filter_core_duplicates(candidates, core)
