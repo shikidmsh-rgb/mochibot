@@ -98,7 +98,7 @@ def _sanitize(value, *, key: str = ""):
     if hasattr(value, "model_dump"):
         value = value.model_dump(mode="json")
     if isinstance(value, dict):
-        if value.get("type") in {"base64", "input_audio"}:
+        if isinstance(value.get("type"), str) and value["type"] in {"base64", "input_audio"}:
             return {
                 "omitted": "media",
                 "type": value.get("type"),

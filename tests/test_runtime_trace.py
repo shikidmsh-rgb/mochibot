@@ -31,6 +31,7 @@ def test_request_is_durable_before_work_and_media_secrets_are_not_stored():
         },
         "extra_headers": {"Authorization": "Bearer arbitrary-token"},
         "note": "api_key='unregistered-key-value'",
+        "catalog": {"type": {"value": "plain", "api_key": "nested-secret"}},
     }
     original = json.dumps(arguments)
     with trace.run_scope("turn-before-call", "free_time", 0, {"setting": 128}) as run:
@@ -53,6 +54,9 @@ def test_request_is_durable_before_work_and_media_secrets_are_not_stored():
     assert "aGVsbG8=" not in encoded
     assert "[REDACTED]" in encoded and "MEDIA OMITTED" in encoded
     assert persisted["spans"][1]["status"] == "completed"
+    assert persisted["spans"][1]["request"]["catalog"] == {
+        "type": {"value": "plain", "api_key": "[REDACTED]"},
+    }
     assert persisted["spans"][1]["duration_ms"] >= 0
     assert json.dumps(arguments) == original
     assert trace.get_run(1, run.trace_id) is None
