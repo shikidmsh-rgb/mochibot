@@ -158,7 +158,8 @@ MAINTENANCE_ENABLED = _env_bool("MAINTENANCE_ENABLED", True)
 # Existing persisted keys now control the single Dream path.
 WEEKLY_MAINTENANCE_ENABLED = _env_bool("WEEKLY_MAINTENANCE_ENABLED", True)
 WEEKLY_MAINTENANCE_MINUTE = _env_int("WEEKLY_MAINTENANCE_MINUTE", 15)
-DREAM_MAX_COMPLETION_TOKENS = 8192
+DREAM_MAX_COMPLETION_TOKENS = 16384
+DREAM_TIMEOUT_SECONDS = 240
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Bedtime Main entry

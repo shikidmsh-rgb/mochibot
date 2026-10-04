@@ -474,6 +474,7 @@ async def _run_dream_if_due(
     if has_active_chat() or _state == TRANSITIONING:
         return False
     from mochi.dream_store import claim_attempt, complete_batch, inspect_pressure, prepare_batch
+    from mochi.config import DREAM_TIMEOUT_SECONDS
 
     pressure = await asyncio.to_thread(inspect_pressure, user_id, now)
     if not pressure["eligible"] or pressure["last_attempt_day"] == logical_date:
@@ -491,7 +492,7 @@ async def _run_dream_if_due(
     try:
         result = await asyncio.wait_for(
             _dream_callback(user_id, logical_date, batch_id, generation),
-            timeout=_effective("LLM_HEARTBEAT_TIMEOUT_SECONDS"),
+            timeout=DREAM_TIMEOUT_SECONDS,
         )
         if result.disposition not in {"handled", "skip"}:
             raise RuntimeError("Dream did not reach a complete terminal state")
