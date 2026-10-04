@@ -425,6 +425,9 @@ Context supplies bounded new and related memory, source-message excerpts,
 Diary, relationships, self reminders and prior operation receipts. It does not
 duplicate ordinary conversation history, route with Lite or automatically recall.
 Counts and truncation flags are explicit; unseen rows are never in scope.
+Core capacity is reported against Main's exact visible document, and Memory
+distinguishes stored source IDs from currently readable evidence. The writing
+model owns semantic atomicity; punctuation is not a fact classifier.
 Memory edits compare content, update time and evidence versions, and
 Memory/Trash/FTS/vector/KG invalidation commits as one SQLite transaction.
 Main submits the intended changes and visible IDs; the framework retains the

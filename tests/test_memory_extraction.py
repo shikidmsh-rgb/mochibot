@@ -70,7 +70,7 @@ def extraction_state(monkeypatch):
 def test_complete_turn_batches_create_evidence_backed_memory(monkeypatch):
     turns = _save_turns(2)
     candidate = json.dumps([{
-        "content": "\u559c\u6b22\u5468\u672b\u722c\u5c71",
+        "content": "\u559c\u6b22\u5468\u672b\u722c\u5c71\uff1b\u53ea\u8d70\u7f13\u5761",
         "importance": 2,
         "evidence_message_ids": [turns[0][0]],
     }], ensure_ascii=False)
@@ -82,7 +82,7 @@ def test_complete_turn_batches_create_evidence_backed_memory(monkeypatch):
         "SELECT category, content, evidence_message_ids FROM memory_items"
     ).fetchone()
     assert row["category"] == ""
-    assert row["content"] == "\u559c\u6b22\u5468\u672b\u722c\u5c71"
+    assert row["content"] == "\u559c\u6b22\u5468\u672b\u722c\u5c71\uff1b\u53ea\u8d70\u7f13\u5761"
     assert json.loads(row["evidence_message_ids"]) == [turns[0][0]]
     status = get_memory_extraction_status(1, 2)
     assert status["pending_turns"] == 0

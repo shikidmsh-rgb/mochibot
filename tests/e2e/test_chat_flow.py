@@ -596,10 +596,10 @@ class TestSimpleReply:
         from mochi.db import get_recent_messages
         from mochi.core_store import read_core, replace_core
         replace_core("Core anchor")
+        revision = "Core anchor\n\n\u559c\u6b22\"\u8309\u8389\u82b1\u8336\"\uff0c\u8bb0\u5728 C:\\notes"
+        arguments = {"content": revision}
         tool_response = make_response(tool_calls=[
-                make_tool_call("update_core", {
-                    "content": "Core anchor\n\nUser likes jasmine tea",
-                }),
+                make_tool_call("update_core", arguments),
             ])
         tool_response.reasoning_content = "I should preserve this exact thought."
         mock = mock_llm_factory([
@@ -610,7 +610,7 @@ class TestSimpleReply:
 
         reply = await chat(_msg("I really like jasmine tea"))
 
-        assert "jasmine tea" in read_core()
+        assert read_core() == revision
         first_round_assistant = next(
             message for message in mock.call_log[1]["messages"]
             if message["role"] == "assistant" and "tool_calls" in message
@@ -618,6 +618,9 @@ class TestSimpleReply:
         assert first_round_assistant["reasoning_content"] == (
             "I should preserve this exact thought."
         )
+        replay = first_round_assistant["tool_calls"][0]["function"]["arguments"]
+        assert json.loads(replay) == arguments
+        assert len(replay.encode("utf-8")) < len(json.dumps(arguments).encode("utf-8"))
         reply.confirm_delivered()
         persisted = get_recent_messages(1, limit=10)
         assert all(

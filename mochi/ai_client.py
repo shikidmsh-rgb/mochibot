@@ -970,18 +970,19 @@ async def _chat(
     dream_session = None
     if is_dream:
         from mochi.dream import create_dream_session
+        core_memory, conversation_context = await asyncio.gather(
+            runtime_trace.prepare("core", read_core),
+            _safe_conversation_context(),
+        )
         dream_session = create_dream_session(
             user_id=user_id,
             logical_date=runtime_entry.logical_date or "",
             period_key=runtime_entry.period_key or "",
             channel_id=channel_id,
             transport=transport,
+            core_content=core_memory,
         )
         tools = dream_session.definitions()
-        core_memory, conversation_context = await asyncio.gather(
-            runtime_trace.prepare("core", read_core),
-            _safe_conversation_context(),
-        )
         recalled_memories = []
         habits = []
 
@@ -1617,7 +1618,9 @@ async def _chat(
                         "arguments": json.dumps(
                             tc["arguments"]
                             if isinstance(tc["arguments"], dict)
-                            else {}
+                            else {},
+                            ensure_ascii=False,
+                            separators=(",", ":"),
                         ),
                     },
                 }

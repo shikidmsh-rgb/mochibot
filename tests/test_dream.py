@@ -1,6 +1,7 @@
 """Incremental maintenance boundaries, without model calls or runtime data."""
 
 from datetime import datetime, timedelta, timezone
+import json
 import pytest
 
 from mochi.db import _connect, insert_memory_item, update_memory_item
@@ -21,6 +22,42 @@ def memory(content, when=NOW):
     conn.commit()
     conn.close()
     return item_id
+
+
+def test_context_capacity_matches_visible_core_and_evidence_visibility(monkeypatch):
+    from mochi import config
+    from mochi.core_store import replace_core
+    from mochi.dream import create_dream_session
+
+    visible = "\u7532\u4e59\u4e19\u4e01"
+    replace_core("new")
+    monkeypatch.setattr(config, "CORE_MAX_TOKENS", 4)
+    item_id = memory("A past experience")
+    conn = _connect()
+    evidence_ids = [
+        conn.execute(
+            "INSERT INTO messages(user_id,role,content,created_at) VALUES (1,'user',?,?)",
+            (f"Source {number}", (NOW - timedelta(days=9)).isoformat()),
+        ).lastrowid
+        for number in range(3)
+    ]
+    conn.execute(
+        "UPDATE memory_items SET evidence_message_ids=? WHERE id=?",
+        (json.dumps(evidence_ids), item_id),
+    )
+    conn.commit()
+    conn.close()
+    session = create_dream_session(
+        user_id=1, logical_date=NOW.date().isoformat(),
+        period_key=prepare_batch(1, NOW), core_content=visible,
+    )
+    payload = json.loads(session.context.rendered.split("\n", 2)[1])
+    assert payload["core_budget"] == {"estimated_tokens": 4, "max_tokens": 4}
+    assert session.expected_core == visible
+    item = payload["memory"]["items"][0]
+    assert item["stored_evidence_ids"] == evidence_ids
+    assert item["visible_evidence_ids"] == evidence_ids[:2]
+    assert session.context.allowed_evidence_message_ids == frozenset(evidence_ids[:2])
 
 
 def test_material_units_threshold_age_and_initial_lookback():

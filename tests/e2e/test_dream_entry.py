@@ -409,3 +409,39 @@ async def test_evidence_only_change_rejects_stale_memory_curation():
     ).fetchone()
     conn.close()
     assert tuple(row) == (1, json.dumps([evidence_id]))
+
+
+@pytest.mark.asyncio
+async def test_memory_punctuation_keeps_evidence_and_atomic_length_checks():
+    from mochi.db import save_message
+    from mochi.memory_contract import MAX_MEMORY_CONTENT_CHARS
+
+    content = "Prefers mild tea; no sugar"
+    evidence = save_message(1, "user", content)
+    foreign = save_message(2, "user", "Private other account")
+    entry = _new_entry()
+    session = create_dream_session(
+        user_id=1, logical_date=entry.logical_date, period_key=entry.period_key,
+    )
+    valid = {
+        "op": "create", "content": content, "importance": 1,
+        "evidence_message_ids": [evidence],
+    }
+    for invalid in (
+        {**valid, "evidence_message_ids": [foreign]},
+        {**valid, "content": "x" * (MAX_MEMORY_CONTENT_CHARS + 1)},
+    ):
+        result = await session.execute("curate_dream_memory", {"operations": [valid, invalid]})
+        assert not result.success
+        conn = _connect()
+        assert conn.execute("SELECT COUNT(*) FROM memory_items WHERE content=?", (content,)).fetchone()[0] == 0
+        conn.close()
+    result = await session.execute("curate_dream_memory", {"operations": [valid]})
+    assert result.success
+    conn = _connect()
+    row = conn.execute(
+        "SELECT content,evidence_message_ids FROM memory_items WHERE content=?", (content,),
+    ).fetchone()
+    conn.close()
+    assert row["content"] == content
+    assert json.loads(row["evidence_message_ids"]) == [evidence]

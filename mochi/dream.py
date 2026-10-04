@@ -12,6 +12,7 @@ from mochi.db import (
 )
 from mochi.core_store import (
     CoreError,
+    get_core_stats,
     has_dream_core_update,
     read_core,
     replace_dream_core_exact,
@@ -47,7 +48,8 @@ _CORE_DEFINITION = {
     "function": {
         "name": CORE_TOOL,
         "description": (
-            "提交当前 Core 的完整修订。写入检查可见版本并保留快照；"
+            "提交当前 Core 的完整修订。当前估算用量与上限见 core_budget；超限不写入。"
+            "写入检查可见版本并保留快照；"
             "每个 Dream 批次最多成功一次，重试不重复写入。"
         ),
         "parameters": {
@@ -69,7 +71,11 @@ _CURATE_DEFINITION = {
     "function": {
         "name": CURATE_TOOL,
         "description": (
-            "整理当前可见的 Memory Items。修改会核对可见版本和来源证据，并原子提交。"
+            "整理当前可见的 Memory Items。create 需要可见的 user 消息证据；"
+            "改写原文的 edit、重新措辞的 merge，以及 archive，都需要至少一个原条目未用过的可见来源 ID。"
+            "merge 沿用任一原条目全文时可合并既有来源；archive 的新来源需支持原记忆不再有效。"
+            "stored_evidence_ids 是原有来源，visible_evidence_ids 是本次提供了原文的来源。"
+            "整批核对版本和证据后提交，有一项不符合则整批不写入。"
         ),
         "parameters": {
             "type": "object",
@@ -102,7 +108,7 @@ _CURATE_DEFINITION = {
                                 "type": "string",
                                 "minLength": 1,
                                 "maxLength": MAX_MEMORY_CONTENT_CHARS,
-                                "description": "create、edit 或 merge 后的记忆内容。",
+                                "description": "create、edit 或 merge 后的记忆内容，表达一个独立信息。",
                             },
                             "importance": {"type": "integer", "enum": [1, 2, 3]},
                             "evidence_message_ids": {
@@ -280,15 +286,18 @@ class DreamContext:
     rendered: str
 
 
-def _candidate(item: DreamMemoryCandidate) -> dict:
+def _candidate(item: DreamMemoryCandidate, evidence: dict[int, dict]) -> dict:
     return {
         "item_id": item.id, "content": item.content, "importance": item.importance,
         "source": item.source, "created_at": item.created_at, "updated_at": item.updated_at,
-        "visible_evidence_ids": [excerpt.message_id for excerpt in item.evidence_excerpts],
+        "stored_evidence_ids": list(item.evidence_message_ids),
+        "visible_evidence_ids": [message_id for message_id in item.evidence_message_ids if message_id in evidence],
     }
 
 
-def build_dream_context(*, user_id: int, logical_date: str, period_key: str) -> DreamContext:
+def build_dream_context(
+    *, user_id: int, logical_date: str, period_key: str, core_content: str,
+) -> DreamContext:
     from mochi.skills.reminder.queries import dream_self_reminders
 
     batch = load_batch(user_id, period_key)
@@ -330,15 +339,19 @@ def build_dream_context(*, user_id: int, logical_date: str, period_key: str) -> 
             "tool": CORE_TOOL, "status": "committed",
             "result": "Dream Core revision already committed for this batch.", "recorded_at": None,
         })
+    core_stats = get_core_stats(core_content)
     payload = {
         "batch_id": period_key, "logical_date": logical_date, "prepared_at": batch["created_at"],
+        "core_budget": {
+            "estimated_tokens": core_stats["tokens"], "max_tokens": core_stats["max_tokens"],
+        },
         "memory": {
             "pending_total": package.window_total, "rendered_count": len(package.window_items),
-            "truncated": package.window_truncated, "items": [_candidate(item) for item in package.window_items],
+            "truncated": package.window_truncated, "items": [_candidate(item, evidence) for item in package.window_items],
         },
         "related_memory": {
             "eligible_total": package.related_eligible_total, "rendered_count": len(package.related_items),
-            "truncated": package.related_truncated, "items": [_candidate(item) for item in package.related_items],
+            "truncated": package.related_truncated, "items": [_candidate(item, evidence) for item in package.related_items],
         },
         "diary": {
             "pending_days": material["diary_days"], "total_chars": material["diary_total_chars"],
@@ -737,7 +750,9 @@ def create_dream_session(
     period_key: str,
     channel_id: int = 0,
     transport: str = "",
+    core_content: str | None = None,
 ) -> DreamSession:
+    core_content = read_core() if core_content is None else core_content
     conn = _connect()
     try:
         curation_done = conn.execute(
@@ -750,10 +765,12 @@ def create_dream_session(
         user_id=user_id,
         channel_id=channel_id,
         transport=transport,
+        expected_core=core_content,
         context=build_dream_context(
             user_id=user_id,
             logical_date=logical_date,
             period_key=period_key,
+            core_content=core_content,
         ),
         core_succeeded=has_dream_core_update(user_id, period_key),
         curation_succeeded=curation_done,

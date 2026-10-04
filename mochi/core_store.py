@@ -100,8 +100,8 @@ def _stats(content: str) -> dict:
     }
 
 
-def get_core_stats() -> dict:
-    return _stats(read_core())
+def get_core_stats(content: str | None = None) -> dict:
+    return _stats(read_core() if content is None else content)
 
 
 def get_core_hygiene_status() -> dict:
