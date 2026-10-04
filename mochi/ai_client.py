@@ -791,7 +791,7 @@ async def _chat(
         TOOL_LOOP_MAX_ROUNDS, AI_CHAT_MAX_COMPLETION_TOKENS,
         TOOL_ROUTER_ENABLED, TOOL_ESCALATION_ENABLED,
         TOOL_ESCALATION_MAX_PER_TURN, TOOL_LOOP_TOTAL_TOOL_LIMIT,
-        TOOL_LOOP_PER_TOOL_LIMIT,
+        TOOL_LOOP_PER_TOOL_LIMIT, DREAM_MAX_COMPLETION_TOKENS,
     )
 
     runtime_entry = runtime_entry or (
@@ -802,7 +802,7 @@ async def _chat(
     if (
         message is not None
         and runtime_entry is not None
-        and runtime_entry.kind in {"self_reminder", "free_time"}
+        and runtime_entry.kind in {"self_reminder", "free_time", "dream"}
     ):
         raise ValueError(f"{runtime_entry.kind} runtime entries are system-only")
 
@@ -1538,7 +1538,7 @@ async def _chat(
                             if round_availability.entries
                             else None
                         ),
-                        max_tokens=AI_CHAT_MAX_COMPLETION_TOKENS,
+                        max_tokens=DREAM_MAX_COMPLETION_TOKENS if is_dream else AI_CHAT_MAX_COMPLETION_TOKENS,
                     )
                 break
             except asyncio.CancelledError:
