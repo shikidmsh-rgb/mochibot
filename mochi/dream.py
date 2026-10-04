@@ -696,7 +696,7 @@ class DreamSession:
                 "active_relationships": active_relationships,
             },
         }
-        receipt = json.dumps(receipt_payload, ensure_ascii=False)
+        receipt = json.dumps(receipt_payload, ensure_ascii=False, separators=(",", ":"))
         return SkillResult(
             output=receipt,
             summary=(

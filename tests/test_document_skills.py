@@ -58,6 +58,7 @@ async def test_author_route_read_and_discover_document_without_body_injection():
 
     first = await skills.dispatch(TOOL, {}, actor="main")
     page = json.loads(first.output)
+    assert first.output == json.dumps(page, ensure_ascii=False, separators=(",", ":"))
     assert first.success and not first.state_changed
     assert page["content"] == body[:store.MAX_READ_CHARS]
     assert page["truncated"] and not page["complete"]

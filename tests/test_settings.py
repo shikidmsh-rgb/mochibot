@@ -92,6 +92,13 @@ async def test_city_change_invalidates_observer_without_collection(monkeypatch):
     await pending
     assert observer._last_data == {}
     assert (await observer.safe_observe())["city"] == "Kyoto"
+    from mochi.skills.weather.handler import WeatherSkill
+
+    weather = await WeatherSkill().execute(SkillContext(trigger="tool_call"))
+    assert weather.success
+    assert weather.output == json.dumps(
+        json.loads(weather.output), ensure_ascii=False, separators=(",", ":"),
+    )
 
 
 @pytest.mark.asyncio
@@ -122,6 +129,9 @@ async def test_credentials_are_encrypted_and_not_in_receipts_or_arguments(monkey
 async def test_authorization_applies_to_writes_not_autonomous_inspection():
     listed = await _call({"action": "list", "group": "runtime"}, authorized=False, source="runtime:free_time")
     assert listed.success
+    assert listed.output == json.dumps(
+        json.loads(listed.output), ensure_ascii=False, separators=(",", ":"),
+    )
     args = {"action": "set", "id": "runtime.fallback_wake_hour", "value": "8"}
     denied = await _call(args, authorized=False)
     assert not denied.success and denied.error_code == "user_authorization_required"

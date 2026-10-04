@@ -53,7 +53,9 @@ class SkillManagementSkill(Skill):
                     else f"已修改设置 {setting_id}。"
                 )
             return SkillResult(
-                output=json.dumps(data, ensure_ascii=False, allow_nan=False),
+                output=json.dumps(
+                    data, ensure_ascii=False, allow_nan=False, separators=(",", ":"),
+                ),
                 summary=summary,
                 entity_refs=[setting_id] if setting_id else [],
                 state_changed=bool(data.get("changed", False)),

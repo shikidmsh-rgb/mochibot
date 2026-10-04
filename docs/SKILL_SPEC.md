@@ -116,6 +116,11 @@ sense:
 `skills` 中的具体工具名只加载该工具；Skill 名加载该技能的可请求工具，
 `query` 仍按技能匹配和加载。混合请求按工具去重，已加载工具单独回报，
 不会因点名一个工具而顺带加载同组工具。共享 Capability Context 按技能提供一次。
+请求参数只有 `skills` 和 `query`。成功解析的回执省略空的
+`loaded`、`already_loaded`、`matches`、`unavailable`、`renamed`；
+`no_match` 只在查询确实无匹配时返回 `true`。非空结果与不可用原因仍保留，
+失败回执仍完整报告错误和执行状态。结构化工具结果使用紧凑 JSON，
+只省略字符串之外的空格，不改正文或参数值。
 
 `### my_tool (on_demand, adaptive)` 或 `### my_tool (routed, adaptive)` 显式允许框架
 根据成功使用记录在 `on_demand` 与 `routed` 之间调整；首次使用声明的层级。

@@ -14,7 +14,6 @@ from mochi import tool_policy
 
 MAX_EXACT_REQUESTS = 3
 MAX_QUERY_LENGTH = 200
-MAX_REASON_LENGTH = 120
 MAX_SEARCH_MATCHES = 2
 _WORKSPACE_ALIASES = frozenset({
     "mochi_files", "development", "browse_mochi_files", "save_mochi_file",
@@ -57,11 +56,6 @@ REQUEST_TOOLS_DEF = {
                     "maxLength": MAX_QUERY_LENGTH,
                     "pattern": r".*\S.*",
                     "description": "Natural-language description of the needed capability.",
-                },
-                "reason": {
-                    "type": "string",
-                    "maxLength": MAX_REASON_LENGTH,
-                    "description": "Brief reason the capability is needed.",
                 },
             },
             "additionalProperties": False,
@@ -418,28 +412,30 @@ def resolve_request(
             additions.extend(new_definitions)
             known_names.update(tool_names)
 
-    return {
-        "ok": True,
-        "loaded": loaded,
-        "already_loaded": already_loaded,
-        "matches": matches,
-        "unavailable": unavailable_items,
-        "no_match": bool(query and not query_matched_catalog),
-        **({"renamed": renamed} if renamed else {}),
-    }, additions
+    result: dict[str, object] = {"ok": True}
+    for key, value in (
+        ("loaded", loaded),
+        ("already_loaded", already_loaded),
+        ("matches", matches),
+        ("unavailable", unavailable_items),
+        ("no_match", bool(query and not query_matched_catalog)),
+        ("renamed", renamed),
+    ):
+        if value:
+            result[key] = value
+    return result, additions
 
 
 def _validate_arguments(arguments: object) -> str | None:
     if not isinstance(arguments, dict):
         return "arguments must be an object"
 
-    extra = set(arguments) - {"skills", "query", "reason"}
+    extra = set(arguments) - {"skills", "query"}
     if extra:
         return f"unsupported properties: {', '.join(sorted(extra))}"
 
     skills = arguments.get("skills")
     query = arguments.get("query")
-    reason = arguments.get("reason")
 
     if "skills" in arguments:
         if not isinstance(skills, list):
@@ -460,12 +456,6 @@ def _validate_arguments(arguments: object) -> str | None:
             return "query must be non-empty"
         if len(query) > MAX_QUERY_LENGTH:
             return f"query may contain at most {MAX_QUERY_LENGTH} characters"
-
-    if "reason" in arguments:
-        if not isinstance(reason, str):
-            return "reason must be a string"
-        if len(reason) > MAX_REASON_LENGTH:
-            return f"reason may contain at most {MAX_REASON_LENGTH} characters"
 
     has_skills = isinstance(skills, list) and any(item.strip() for item in skills)
     has_query = isinstance(query, str) and bool(query.strip())

@@ -210,10 +210,14 @@ class TestSimpleReply:
             ),
         ])
         await chat(_msg("Search my saved history."))
-        outputs = [
-            json.loads(message["content"])
+        tool_outputs = [
+            message["content"]
             for message in mock.call_log[-1]["messages"] if message["role"] == "tool"
         ]
+        outputs = [json.loads(output) for output in tool_outputs]
+        assert tool_outputs[0] == json.dumps(
+            outputs[0], ensure_ascii=False, separators=(",", ":"),
+        )
         assert outputs[-1]["ok"], outputs
         conn = _connect()
         references = conn.execute(

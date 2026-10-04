@@ -190,6 +190,9 @@ async def test_dream_memory_refreshes_relationship_scope():
     )
 
     assert memory_result.success is True
+    assert memory_result.output == json.dumps(
+        json.loads(memory_result.output), ensure_ascii=False, separators=(",", ":"),
+    )
     refreshed = json.loads(memory_result.output)["relationship_context"]
     assert refreshed["active_relationships"] == []
     assert len(refreshed["memory_items"]) == 1

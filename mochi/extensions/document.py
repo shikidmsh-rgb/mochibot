@@ -78,7 +78,7 @@ class DocumentSkill(Skill):
                 "content": self._body[start:end], "characters": len(self._body),
                 "offset": start, "next_offset": None if complete else end,
                 "complete": complete, "truncated": not complete,
-            }, ensure_ascii=False),
+            }, ensure_ascii=False, separators=(",", ":")),
             summary=f"Read document skill {self.name}: characters {start}-{end} of {len(self._body)}.",
             entity_refs=[f"extension:{self.name}"],
             content_source="agent_authored_document",

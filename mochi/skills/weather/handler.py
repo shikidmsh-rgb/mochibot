@@ -25,4 +25,4 @@ class WeatherSkill(Skill):
         if not data:
             return SkillResult(output="Weather data unavailable.", success=False)
 
-        return SkillResult(output=json.dumps(data, ensure_ascii=False))
+        return SkillResult(output=json.dumps(data, ensure_ascii=False, separators=(",", ":")))

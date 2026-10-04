@@ -466,10 +466,12 @@ def test_exact_tool_requests_load_only_requested_tools_and_report_existing_ones(
 
     repeated, additions = resolve_request({"skills": ["browse_workspace"]}, loaded)
     assert additions == []
-    assert repeated["loaded"] == []
-    assert repeated["already_loaded"] == [
-        {"skill": "personal_workspace", "tools": ["browse_workspace"]},
-    ]
+    assert repeated == {
+        "ok": True,
+        "already_loaded": [
+            {"skill": "personal_workspace", "tools": ["browse_workspace"]},
+        ],
+    }
 
     mixed, additions = resolve_request(
         {"skills": ["browse_workspace", "run_extension"]}, loaded,
@@ -497,8 +499,31 @@ def test_skill_and_query_requests_still_load_the_whole_group(arguments):
     assert len(result["loaded"]) == 1
     assert set(result["loaded"][0]["tools"]) == expected
     assert "capability_context" in result["loaded"][0]
-    assert result["already_loaded"] == []
-    assert not result["no_match"]
+    assert not result.get("already_loaded")
+    assert not result.get("no_match")
+
+
+def test_sparse_tool_receipts_preserve_loaded_missing_and_invalid_outcomes():
+    from mochi.request_tools import resolve_request
+    from mochi.tool_availability import ToolAvailability
+
+    loaded, definitions = resolve_request(
+        {"skills": ["view_core_memory"]}, ToolAvailability(),
+    )
+    assert loaded == {
+        "ok": True, "loaded": [{"skill": "memory", "tools": ["view_core_memory"]}],
+    }
+    assert ToolAvailability.from_definitions(definitions, source="requested").names == {"view_core_memory"}
+    missing, definitions = resolve_request(
+        {"query": "no_such_capability_xyz"}, ToolAvailability(),
+    )
+    assert missing == {"ok": True, "no_match": True}
+    assert definitions == []
+    invalid, definitions = resolve_request({"skills": []}, ToolAvailability())
+    assert definitions == []
+    assert not invalid["ok"] and not invalid["started"] and not invalid["changed"]
+    assert invalid["code"] == "invalid_request" and invalid["retryable"]
+    assert invalid["message"]
 
 
 def test_exact_tool_requests_keep_policy_denials_without_loading_siblings(monkeypatch):

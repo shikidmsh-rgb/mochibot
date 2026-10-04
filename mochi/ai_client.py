@@ -1701,7 +1701,9 @@ async def _chat(
                 )
                 if tracks_tool_session:
                     extend_session_tools(user_id, additions)
-                result_text = json.dumps(request_result, ensure_ascii=False)
+                result_text = json.dumps(
+                    request_result, ensure_ascii=False, separators=(",", ":"),
+                )
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc["id"],
