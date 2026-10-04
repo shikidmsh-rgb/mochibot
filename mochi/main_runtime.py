@@ -13,7 +13,7 @@ BEDTIME_ROUTED_SKILLS = ("todo", "reminder")
 RuntimeEntryKind = Literal[
     "bedtime",
     "self_reminder",
-    "weekly_maintenance",
+    "dream",
     "free_time",
 ]
 
@@ -56,10 +56,12 @@ def context_policy(entry: "MainRuntimeEntry | None") -> ContextPolicy:
             prompt_sections=False,
             temporal_context=True,
         )
-    if entry.kind == "weekly_maintenance":
+    if entry.kind == "dream":
         return ContextPolicy(
             diary_journal=False,
-            conversation_summary=True,
+            conversation_summary=False,
+            recent_history=False,
+            trailing_history=False,
             standalone_history=False,
             auto_recall=False,
             recent_operations=False,
@@ -160,7 +162,7 @@ class MainRuntimeEntry:
         )
 
     @classmethod
-    def weekly_maintenance(
+    def dream(
         cls,
         *,
         logical_date: str,
@@ -168,22 +170,20 @@ class MainRuntimeEntry:
         user_id: int,
         channel_id: int,
         transport: str,
+        chat_generation: int | None = None,
     ) -> "MainRuntimeEntry":
-        logical_day = date.fromisoformat(logical_date)
-        if logical_day.weekday() != 0:
-            raise ValueError("weekly logical date must be Monday")
-        iso = logical_day.isocalendar()
-        expected_period = f"{iso.year}-W{iso.week:02d}"
-        if period_key != expected_period:
-            raise ValueError("weekly period key does not match logical date")
+        date.fromisoformat(logical_date)
+        if not period_key:
+            raise ValueError("Dream batch id is required")
         return cls(
-            kind="weekly_maintenance",
+            kind="dream",
             user_id=user_id,
             channel_id=channel_id,
             transport=transport,
             logical_date=logical_date,
             period_key=period_key,
-            idempotency_key=f"weekly-maintenance:{user_id}:{period_key}",
+            idempotency_key=f"dream:{user_id}:{period_key}",
+            chat_generation=chat_generation,
         )
 
     @classmethod

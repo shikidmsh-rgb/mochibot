@@ -376,12 +376,14 @@ if HAS_FASTAPI:
             in ("1", "true", "yes")
             and bool((read_env_value("WEIXIN_BOT_TOKEN") or "").strip())
         )
+        from mochi.dream_store import status as dream_status
 
         return {
             "first_run": not has_required_models,
             "setup_mode": not has_required_models and has_transport,
             "config_status": config_status,
             "heartbeat_state": hb.get("state", "UNKNOWN"),
+            "dream": dream_status(OWNER_USER_ID) if OWNER_USER_ID is not None else None,
             "db_path": str(DB_PATH),
             "db_size_bytes": db_size,
             "db_writable": db_writable,
@@ -767,7 +769,9 @@ if HAS_FASTAPI:
     # User preferences
     # ═══════════════════════════════════════════════════════════════════════
 
-    _PREFERENCE_KEYS = ("TIMEZONE_OFFSET_HOURS", "MAX_DAILY_PROACTIVE")
+    _PREFERENCE_KEYS = (
+        "TIMEZONE_OFFSET_HOURS", "MAX_DAILY_PROACTIVE", "WEEKLY_MAINTENANCE_ENABLED",
+    )
 
     @app.get("/api/preferences", dependencies=[Depends(_verify_token)])
     async def api_get_preferences():
@@ -801,7 +805,12 @@ if HAS_FASTAPI:
             raise HTTPException(400, f"Unknown preference: {', '.join(unknown)}")
 
         values = {}
+        dream_enabled = body.get("WEEKLY_MAINTENANCE_ENABLED")
         for key, raw_value in body.items():
+            if key == "WEEKLY_MAINTENANCE_ENABLED":
+                if not isinstance(raw_value, bool):
+                    raise HTTPException(400, "Dream enabled must be a boolean")
+                continue
             if isinstance(raw_value, bool):
                 raise HTTPException(400, f"{key} must be a number")
             if isinstance(raw_value, float) and raw_value.is_integer():
@@ -813,7 +822,11 @@ if HAS_FASTAPI:
             raise HTTPException(400, str(exc)) from exc
         for key, value in normalized.items():
             set_system_override(key.upper(), str(value))
-        return {"ok": True, "updated": [key.upper() for key in normalized]}
+        updated = [key.upper() for key in normalized]
+        if dream_enabled is not None:
+            set_system_override("WEEKLY_MAINTENANCE_ENABLED", str(dream_enabled).lower())
+            updated.append("WEEKLY_MAINTENANCE_ENABLED")
+        return {"ok": True, "updated": updated}
 
     @app.get("/api/skills", dependencies=[Depends(_verify_token)])
     async def api_get_skills():

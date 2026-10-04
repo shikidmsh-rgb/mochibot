@@ -197,9 +197,11 @@ def create_self_reminder(
     remind_at: str,
     transport: str,
     recurrence: str | None = None,
+    *,
+    _conn=None,
 ) -> int:
     """Persist a private intent for future Main."""
-    conn = _connect()
+    conn = _conn if _conn is not None else _connect()
     try:
         cursor = conn.execute(
             "INSERT INTO reminders "
@@ -208,10 +210,12 @@ def create_self_reminder(
             "VALUES (?, ?, '', ?, ?, 'self', ?, 'main', ?, 'pending', 0)",
             (user_id, channel_id, remind_at, recurrence, intent, transport or None),
         )
-        conn.commit()
+        if _conn is None:
+            conn.commit()
         return int(cursor.lastrowid)
     finally:
-        conn.close()
+        if _conn is None:
+            conn.close()
 
 
 def get_active_reminders(user_id: int) -> list[dict]:
@@ -231,13 +235,14 @@ def get_active_reminders(user_id: int) -> list[dict]:
 
 
 def update_active_reminder(
-    reminder_id: int, user_id: int, **fields,
+    reminder_id: int, user_id: int, *, _conn=None, **fields,
 ) -> tuple[str, dict | None]:
     allowed = {"remind_at", "message", "context", "recurrence"}
     updates = {key: value for key, value in fields.items() if key in allowed}
-    conn = _connect()
+    conn = _conn if _conn is not None else _connect()
     try:
-        conn.execute("BEGIN IMMEDIATE")
+        if _conn is None:
+            conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             "SELECT * FROM reminders WHERE id = ? AND user_id = ? "
             "AND kind IN ('notify', 'self')",
@@ -265,9 +270,120 @@ def update_active_reminder(
             f"UPDATE reminders SET {assignments} WHERE id = ? AND user_id = ?",
             (*updates.values(), reminder_id, user_id),
         )
-        conn.commit()
+        if _conn is None:
+            conn.commit()
         reminder.update(updates)
         return "updated", reminder
+    finally:
+        if _conn is None:
+            conn.close()
+
+
+_DREAM_REMINDER_COLUMNS = (
+    "id, remind_at, context, recurrence, status, source, outcome, handled_at, "
+    "claimed_at, attempt_count, prepared_text IS NOT NULL AS prepared, "
+    "result_json IS NOT NULL AS has_result, delivery_cursor"
+)
+
+
+def dream_self_reminders(user_id: int) -> dict:
+    conn = _connect()
+    try:
+        active = [dict(row) for row in conn.execute(
+            f"SELECT {_DREAM_REMINDER_COLUMNS} FROM reminders "
+            "WHERE user_id = ? AND kind = 'self' AND status IN ('pending','running','ready') "
+            "ORDER BY remind_at, id", (user_id,),
+        )]
+        recent = [dict(row) for row in conn.execute(
+            f"SELECT {_DREAM_REMINDER_COLUMNS} FROM reminders "
+            "WHERE user_id = ? AND kind = 'self' AND handled_at IS NOT NULL "
+            "ORDER BY handled_at DESC, id DESC LIMIT 10", (user_id,),
+        )]
+        count = conn.execute(
+            "SELECT COUNT(*) FROM reminders WHERE user_id = ? AND kind = 'self' "
+            "AND handled_at IS NOT NULL", (user_id,),
+        ).fetchone()[0]
+        return {
+            "available": True, "active_total": len(active),
+            "active_truncated": len(active) > 20, "active": active[:20],
+            "recent_total": count, "recent_truncated": count > 10, "recent": recent,
+        }
+    finally:
+        conn.close()
+
+
+def manage_dream_self_reminder(
+    user_id: int, channel_id: int, transport: str, batch_id: str,
+    action: str, fields: dict, expected: dict | None,
+    *,
+    operation_key: str,
+) -> dict:
+    from mochi.dream_store import read_operation, write_operation
+
+    key = operation_key
+    conn = _connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        receipt = read_operation(conn, user_id, batch_id, "manage_dream_self_reminder", key)
+        if receipt is not None:
+            row = conn.execute(
+                f"SELECT {_DREAM_REMINDER_COLUMNS} FROM reminders WHERE id = ? "
+                "AND user_id = ? AND kind = 'self'", (receipt["reminder_id"], user_id),
+            ).fetchone()
+            return {**receipt, "status": "replayed", "current_reminder": dict(row) if row else None}
+        if action == "create":
+            remind_at = fields["remind_at"]
+            if reminder_deadline(remind_at) <= _now():
+                raise ValueError("Self reminder has already started or expired.")
+            rid = create_self_reminder(
+                user_id, channel_id, fields["intent"], remind_at, transport,
+                fields.get("recurrence"), _conn=conn,
+            )
+            status = "committed"
+        else:
+            rid = fields["reminder_id"]
+            row = conn.execute(
+                f"SELECT {_DREAM_REMINDER_COLUMNS} FROM reminders WHERE id = ? "
+                "AND user_id = ? AND kind = 'self'", (rid, user_id),
+            ).fetchone()
+            if not expected or not row:
+                raise ValueError("Self reminder is outside the visible Dream scope.")
+            if dict(row) != expected:
+                raise ValueError("Self reminder changed after it was shown.")
+            updates = {
+                "context" if key == "intent" else key: value
+                for key, value in fields.items() if key != "reminder_id"
+            }
+            status, _ = update_active_reminder(rid, user_id, _conn=conn, **updates)
+            if status not in {"unchanged", "updated"}:
+                raise ValueError("Self reminder has already started or expired.")
+            if action == "delete":
+                conn.execute(
+                    "UPDATE reminders SET status = 'cancelled', cancelled_at = ? "
+                    "WHERE id = ? AND user_id = ?", (_iso(_now()), rid, user_id),
+                )
+                status = "committed"
+            elif status == "updated":
+                status = "committed"
+        current = dict(conn.execute(
+            f"SELECT {_DREAM_REMINDER_COLUMNS} FROM reminders WHERE id = ? AND user_id = ?",
+            (rid, user_id),
+        ).fetchone())
+        result = {
+            "status": status, "action": action, "reminder_id": rid,
+            "result": {
+                "remind_at": current["remind_at"], "intent": current["context"],
+                "recurrence": current["recurrence"],
+                "expires_at": reminder_deadline(current["remind_at"]).isoformat(),
+            },
+            "current_reminder": current,
+        }
+        write_operation(conn, user_id, batch_id, "manage_dream_self_reminder", key, result)
+        conn.commit()
+        return result
+    except BaseException:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 

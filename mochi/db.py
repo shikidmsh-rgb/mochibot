@@ -178,6 +178,46 @@ def init_db() -> None:
             PRIMARY KEY(user_id, period_key)
         );
 
+        CREATE TABLE IF NOT EXISTS dream_state (
+            user_id INTEGER PRIMARY KEY,
+            initial_date TEXT NOT NULL,
+            last_success_day TEXT,
+            waiting_since TEXT,
+            backlog INTEGER NOT NULL DEFAULT 0,
+            last_attempt_day TEXT,
+            status_json TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE TABLE IF NOT EXISTS dream_memory_versions (
+            user_id INTEGER NOT NULL,
+            item_id INTEGER NOT NULL,
+            version TEXT NOT NULL,
+            PRIMARY KEY(user_id, item_id)
+        );
+        CREATE TABLE IF NOT EXISTS dream_diary_progress (
+            user_id INTEGER NOT NULL,
+            date TEXT NOT NULL,
+            version TEXT NOT NULL,
+            offset INTEGER NOT NULL,
+            PRIMARY KEY(user_id, date)
+        );
+        CREATE TABLE IF NOT EXISTS dream_batches (
+            id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            material_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            completed_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS dream_operations (
+            user_id INTEGER NOT NULL,
+            batch_id TEXT NOT NULL,
+            tool TEXT NOT NULL,
+            operation_key TEXT NOT NULL,
+            result_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(user_id, batch_id, tool, operation_key)
+        );
+
         -- Durable truth for tool executions.  Conversation history may show a
         -- compact projection of these facts, but never reconstructs fake
         -- provider-native tool messages from them.

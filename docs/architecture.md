@@ -12,7 +12,7 @@ setup, not broad provider or multi-user infrastructure.
 - **Main runtime** (`mochi/ai_client.py`) owns user-visible reasoning,
   personality, conversation context, model calls, and tool orchestration.
 - **Runtime entries** (`mochi/main_runtime.py`) describe system-owned
-  situations, such as bedtime and Weekly curation, that need Main's semantic
+  situations, such as bedtime and Dream curation, that need Main's semantic
   judgment without inventing a user message.
 - **Heartbeat** (`mochi/heartbeat.py`) owns sleep gates and the durable daily
   Free Time plan. It creates runtime entries but does not interpret observer
@@ -87,7 +87,7 @@ output contracts.
 Core has one source, `data/core.md`. A missing file starts with a short,
 open-ended seed; an existing file is preserved. Startup never imports identity
 templates or a database Core. Ordinary document edits retain their snapshots.
-Main and Weekly submit complete Core revisions. The runtime retains the exact
+Main and Dream submit complete Core revisions. The runtime retains the exact
 visible document for concurrency checks rather than asking Main to reproduce
 patch anchors or old content. Diary uses the same visible-snapshot boundary for
 complete journal bodies; deterministic status updates preserve the journal's
@@ -160,7 +160,7 @@ an assistant message, implying delivery, or automatically retrying execution.
 These receipts share one count/text budget and respect context resets.
 Receipts include read-only, failed and unfinished calls as well as successful
 writes; non-success records do not assert the absence of side effects.
-They stay inside the same user and reset epoch; Weekly keeps its separate
+They stay inside the same user and reset epoch; Dream keeps its separate
 curation context. Tool-provided summaries are data, not instructions or proof that the
 user's overall task is complete. Only compact summaries and operation identifiers
 are carried, rather than replaying full outputs or arguments. Main retains
@@ -393,44 +393,63 @@ Tool outcomes survive a silent finish, independently of transport delivery.
 `[SKIP]` suppresses speech, not already completed internal work, and does not
 trigger another model call to manufacture a farewell.
 
-## Nightly and Weekly memory flow
+## Nightly and Dream memory flow
 
 Nightly is deterministic housekeeping. After the configured maintenance hour,
 heartbeat claims the logical date in `scheduled_runs`; Diary rollover, Core
 size audit, trash retention, and log cleanup run without a
 model. A failed claim can retry, while a successful date cannot run twice.
 
-After Monday Nightly succeeds, heartbeat claims the ISO week and creates
-`MainRuntimeEntry(kind="weekly_maintenance")`. Weekly runs silently through the
-same Main prompt and tool loop, but receives an entry-scoped surface rather than
-ordinary chat tools:
+After Nightly succeeds, heartbeat checks accumulated unreviewed material locally.
+Enough material, elapsed time with pending material, or a pending continuation
+can create `MainRuntimeEntry(kind="dream")`, at most once per logical day.
+Dream replaces Weekly; it uses the same Main prompt and tool loop silently,
+with an entry-scoped surface rather than ordinary chat tools:
 
 - a receipt-backed complete revision of the visible free-text Core, with snapshots;
 - one atomic curation batch over only the rendered Memory Items and same-user
   evidence messages;
 - one atomic relationship curation batch over the active user-life graph.
+- management of visible, unstarted self reminders through the existing reminder
+  store and scheduler, never ordinary notify reminders.
 
-Weekly context contains the previous seven logical days of archived Diary,
-recent conversation context, at most 40 new Memory Items, and at most 40
-text-related older items. Counts and truncation flags are explicit; unseen rows
-are never in scope. Memory edits compare both content and update time, and
+Dream progresses through Memory content/evidence versions and archived personal
+Diary fragments rather than a moving weekly window. Separate durable progress
+keeps budget-truncated tails pending. Its own Memory writes acknowledge their
+versions in the same transaction and do not become new trigger material; later
+external edits or evidence additions do. Older records are initially baselined,
+not claimed to have been reviewed. Original messages, memory, Diary and Core
+remain authoritative; batch snapshots and progress are processing state.
+
+Context supplies bounded new and related memory, source-message excerpts,
+Diary, relationships, self reminders and prior operation receipts. It does not
+duplicate ordinary conversation history, route with Lite or automatically recall.
+Counts and truncation flags are explicit; unseen rows are never in scope.
+Memory edits compare content, update time and evidence versions, and
 Memory/Trash/FTS/vector/KG invalidation commits as one SQLite transaction.
 Main submits the intended changes and visible IDs; the framework retains the
 exact Memory and relationship snapshots instead of asking Main to transcribe
 content, timestamps, or whole triples. Successful Memory curation refreshes the
-visible relationship evidence before relationship changes are accepted.
+visible relationship evidence for subsequent model rounds. Relationship curation
+does not require a no-op Memory call first.
 The relationship graph is intentionally limited to people, pets, places, and a
 small vocabulary of concrete life relationships. Main may upsert a relationship
 only from an exact visible Memory Item snapshot backed by user-message evidence;
 Core is useful context but is not evidence. Archives use exact active-triple
 snapshots, and the whole relationship batch commits or rolls back together.
-Weekly's final model text is discarded and no synthetic chat history is stored.
-Successful Core revisions record a content-hash ISO-week receipt in the canonical
-Core store, so a later failure can retry curation without offering the Core
-mutation again or retaining an extra copy of Core.
+Dream's final model text is discarded and no synthetic chat history is stored.
+Successful operations retain batch-scoped receipts, with SQLite mutations and
+their receipts committed together. Core retains its existing file/snapshot and
+content-hash receipt boundary. Later attempts see current state and prior results
+without repeating committed operations. No cross-store global transaction is
+claimed. Only normal, complete model termination without unresolved execution
+failure advances material progress; a no-change decision can complete normally.
+Active owner chat takes priority between calls, preserving already committed
+effects and leaving unfinished work for a later daily opportunity.
+The [Dream contract](dream.md) defines counting, limits and user-visible controls.
 
 Memory Items are authoritative facts with bounded user-message provenance.
-Lite never projects them into the relationship graph. Instead, Weekly Main
+Lite never projects them into the relationship graph. Instead, Dream Main
 reviews the bounded Memory Item package and active graph, using semantic
 judgment to keep only durable user-life relationships. Deterministic code
 enforces type, predicate, evidence, snapshot, and transaction boundaries.

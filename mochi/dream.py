@@ -1,29 +1,29 @@
-"""Bounded context and entry-scoped tools for silent Weekly Main."""
+"""Bounded context and entry-scoped tools for silent Dream Main."""
 
 from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass, field
-from datetime import date, datetime, time, timedelta
+from dataclasses import asdict, dataclass, field
 
-from mochi import config
 from mochi.db import (
+    _connect,
     get_memory_items_by_ids,
-    get_recent_user_messages_in_window,
 )
 from mochi.core_store import (
     CoreError,
-    has_weekly_core_update,
+    has_dream_core_update,
     read_core,
-    replace_weekly_core_exact,
+    replace_dream_core_exact,
 )
-from mochi.diary import DiaryArchiveWindow, read_diary_archive_window
+from mochi.dream_store import (
+    digest, encode, load_batch, previous_operations, read_operation,
+)
 from mochi.memory_curation import (
     MemoryCurationError,
-    WeeklyMemoryCandidate,
-    WeeklyMemoryCandidatePackage,
-    build_weekly_memory_candidate_package,
+    DreamMemoryCandidate,
+    DreamMemoryCandidatePackage,
+    build_dream_memory_candidate_package,
     curate_memory_items,
 )
 from mochi.knowledge_graph import (
@@ -37,17 +37,18 @@ from mochi.skills.base import SkillResult
 from mochi.memory_contract import MAX_EVIDENCE_MESSAGE_IDS, MAX_MEMORY_CONTENT_CHARS
 
 
-CORE_TOOL = "update_weekly_core"
-CURATE_TOOL = "curate_weekly_memory"
+CORE_TOOL = "update_dream_core"
+CURATE_TOOL = "curate_dream_memory"
 RELATIONSHIP_TOOL = "curate_relationships"
+REMINDER_TOOL = "manage_dream_self_reminder"
 
 _CORE_DEFINITION = {
     "type": "function",
     "function": {
         "name": CORE_TOOL,
         "description": (
-            "根据当前看到的完整 Core，提交整理后的完整文档。保留仍然重要的"
-            "认识，合并重复或过时表达；每周最多成功一次。"
+            "提交当前 Core 的完整修订。写入检查可见版本并保留快照；"
+            "每个 Dream 批次最多成功一次，重试不重复写入。"
         ),
         "parameters": {
             "type": "object",
@@ -68,9 +69,7 @@ _CURATE_DEFINITION = {
     "function": {
         "name": CURATE_TOOL,
         "description": (
-            "整理眼前这一周的 Memory Items。你只需提交想做的改变、相关 item "
-            "ID 和支持判断的 message ID；框架会核对你看到的版本并原子提交。"
-            "没有需要改变的内容时，operations 可以为空。"
+            "整理当前可见的 Memory Items。修改会核对可见版本和来源证据，并原子提交。"
         ),
         "parameters": {
             "type": "object",
@@ -150,11 +149,8 @@ _RELATIONSHIP_DEFINITION = {
     "function": {
         "name": RELATIONSHIP_TOOL,
         "description": (
-            "整理用户与人物、宠物、地点之间值得长期保留的关系。每次新增或"
-            "更新只需引用支持它的可见 Memory Item ID；归档只需引用可见关系 "
-            "ID。框架会核对当时可见的版本、证据和范围并原子提交。没有变化时 "
-            "operations 可以为空。如果本轮也有 Memory 整理能力，先调用 "
-            "curate_weekly_memory（即使 operations 为空），再整理关系。"
+            "用可见 Memory Item 作为证据整理关系；归档引用可见关系 ID。"
+            "变动会核对版本并原子提交。"
         ),
         "parameters": {
             "type": "object",
@@ -228,143 +224,151 @@ _RELATIONSHIP_DEFINITION = {
 }
 
 
+_REMINDER_DEFINITION = {
+    "type": "function",
+    "function": {
+        "name": REMINDER_TOOL,
+        "description": (
+            "管理留给未来自己的回望意图，到时由你结合当时情况重新判断。"
+            "只能修改或取消可见且尚未开始处理的 self 提醒；同一批次的相同操作不重复执行。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string", "enum": ["list", "create", "update", "delete"],
+                    "description": "操作类型。list 刷新当前可见的 self 提醒与近期处理结果。",
+                },
+                "reminder_id": {"type": "integer", "description": "当前可见的 self 提醒 ID。"},
+                "intent": {
+                    "type": "string",
+                    "description": "留给未来自己的回望方向，不是预写给 user 的通知。",
+                },
+                "remind_at": {"type": "string", "description": "ISO 8601 格式的首次回望时间。"},
+                "recurrence": {
+                    "type": "string", "enum": ["one_time", "daily", "weekdays", "weekly"],
+                    "description": "create 默认 one_time；update 省略保持不变，one_time 取消周期。",
+                },
+            },
+            "required": ["action"],
+            "additionalProperties": False,
+            "anyOf": [
+                {"properties": {"action": {"enum": ["list"]}}},
+                {"properties": {"action": {"enum": ["create"]}}, "required": ["intent", "remind_at"]},
+                {"properties": {"action": {"enum": ["update", "delete"]}}, "required": ["reminder_id"]},
+            ],
+        },
+    },
+}
+
+
+def _reminders_available() -> bool:
+    from mochi.skills import get_tools_by_tool_names
+    from mochi.tool_policy import filter_tools
+    return bool(filter_tools(get_tools_by_tool_names(["schedule_self_reminder"])))
+
+
 @dataclass(frozen=True)
-class WeeklyMaintenanceContext:
+class DreamContext:
     logical_date: str
     period_key: str
-    window_start: datetime
-    window_end: datetime
-    diary: DiaryArchiveWindow
-    package: WeeklyMemoryCandidatePackage
-    recent_user_messages: tuple[dict, ...]
+    package: DreamMemoryCandidatePackage
     active_relationships: tuple[dict, ...]
     allowed_item_ids: frozenset[int]
     allowed_evidence_message_ids: frozenset[int]
+    reminders: dict
     rendered: str
 
 
-def _render_candidate(item: WeeklyMemoryCandidate) -> str:
-    lines = [
-        (
-            f"- item_id={item.id} importance={item.importance} source={item.source} "
-            f"created_at={item.created_at} updated_at={item.updated_at}"
-        ),
-        f"  content: {item.content}",
-    ]
-    if item.evidence_excerpts:
-        lines.append("  visible evidence:")
-        lines.extend(
-            (
-                f"    - message_id={excerpt.message_id} "
-                f"created_at={excerpt.created_at}: {excerpt.content}"
-            )
-            for excerpt in item.evidence_excerpts
-        )
-    else:
-        lines.append("  visible evidence: none")
-    return "\n".join(lines)
+def _candidate(item: DreamMemoryCandidate) -> dict:
+    return {
+        "item_id": item.id, "content": item.content, "importance": item.importance,
+        "source": item.source, "created_at": item.created_at, "updated_at": item.updated_at,
+        "visible_evidence_ids": [excerpt.message_id for excerpt in item.evidence_excerpts],
+    }
 
 
-def _render_context(
-    logical_date: str,
-    diary: DiaryArchiveWindow,
-    package: WeeklyMemoryCandidatePackage,
-    recent_messages: list[dict],
-    active_relationships: list[dict],
-) -> str:
-    window_items = (
-        "\n".join(_render_candidate(item) for item in package.window_items)
-        or "(none)"
-    )
-    related_items = (
-        "\n".join(_render_candidate(item) for item in package.related_items)
-        or "(none)"
-    )
-    recent = "\n".join(
-        (
-            f"- message_id={message['id']} created_at={message['created_at']}: "
-            f"{message['content']}"
-        )
-        for message in recent_messages
-    ) or "(none)"
-    return (
-        "## Weekly bounded context\n"
-        f"logical_monday: {logical_date}\n"
-        f"window: [{package.window_start}, {package.window_end})\n\n"
-        "### Archived Diary (read-only)\n"
-        f"available_dates: {', '.join(diary.dates) if diary.dates else 'none'}\n"
-        f"total_chars: {diary.total_chars}\n"
-        f"truncated: {str(diary.truncated).lower()}\n"
-        f"{diary.content or '(none)'}\n\n"
-        "### Window Memory candidates\n"
-        f"window_total: {package.window_total}\n"
-        f"rendered_count: {len(package.window_items)}\n"
-        f"truncated: {str(package.window_truncated).lower()}\n"
-        f"{window_items}\n\n"
-        "### Related older Memory candidates\n"
-        f"related_eligible_total: {package.related_eligible_total}\n"
-        f"rendered_count: {len(package.related_items)}\n"
-        f"truncated: {str(package.related_truncated).lower()}\n"
-        f"{related_items}\n\n"
-        "### Recent user messages available as additional evidence\n"
-        f"{recent}\n\n"
-        "### Active user-life relationships\n"
-        f"{json.dumps(active_relationships, ensure_ascii=False)}\n\n"
-        "Only rendered item and evidence IDs are in curation scope. "
-        "Truncated or missing content was not reviewed. Core can inform judgment "
-        "but cannot support a relationship upsert."
-    )
+def build_dream_context(*, user_id: int, logical_date: str, period_key: str) -> DreamContext:
+    from mochi.skills.reminder.queries import dream_self_reminders
 
-
-def build_weekly_maintenance_context(
-    *,
-    user_id: int,
-    logical_date: str,
-    period_key: str,
-) -> WeeklyMaintenanceContext:
-    monday = date.fromisoformat(logical_date)
-    if monday.weekday() != 0:
-        raise ValueError("weekly logical date must be Monday")
-    window_end = datetime.combine(monday, time.min, tzinfo=config.TZ)
-    window_start = window_end - timedelta(days=7)
-    diary = read_diary_archive_window(window_start.date(), window_end.date())
-    package = build_weekly_memory_candidate_package(
-        user_id, window_start, window_end,
+    batch = load_batch(user_id, period_key)
+    material = batch["material"]
+    package = build_dream_memory_candidate_package(
+        user_id, [item["id"] for item in material["memory"]], material["memory_total"],
     )
-    recent_messages = get_recent_user_messages_in_window(
-        user_id, window_start, window_end,
-    )
-    active_relationships = list_active_relationships(user_id)
-    allowed_evidence = frozenset(
-        set(package.allowed_evidence_message_ids)
-        | {message["id"] for message in recent_messages}
-    )
-    return WeeklyMaintenanceContext(
-        logical_date=logical_date,
-        period_key=period_key,
-        window_start=window_start,
-        window_end=window_end,
-        diary=diary,
-        package=package,
-        recent_user_messages=tuple(recent_messages),
-        active_relationships=tuple(active_relationships),
-        allowed_item_ids=package.allowed_item_ids,
-        allowed_evidence_message_ids=allowed_evidence,
-        rendered=_render_context(
-            logical_date, diary, package, recent_messages,
-            active_relationships,
-        ),
+    # Earlier committed Memory edits may have introduced new relationship evidence.
+    conn = _connect()
+    try:
+        memory_receipt = conn.execute(
+            "SELECT result_json FROM weekly_curation_batches WHERE user_id = ? AND period_key = ?",
+            (user_id, period_key),
+        ).fetchone()
+    finally:
+        conn.close()
+    if memory_receipt:
+        receipt = json.loads(memory_receipt["result_json"])
+        ids = list(dict.fromkeys([
+            *[item.id for item in package.window_items],
+            *receipt["created_ids"], *receipt["changed_ids"],
+        ]))
+        package = build_dream_memory_candidate_package(user_id, ids, material["memory_total"])
+    relations = tuple(list_active_relationships(user_id))
+    reminders = dream_self_reminders(user_id) if _reminders_available() else {"available": False}
+    evidence = {
+        excerpt.message_id: asdict(excerpt)
+        for item in (*package.window_items, *package.related_items)
+        for excerpt in item.evidence_excerpts
+    }
+    for row in material["evidence_messages"]:
+        evidence.setdefault(row["id"], {
+            "message_id": row["id"], "content": row["content"], "created_at": row["created_at"],
+        })
+    rendered_chars = sum(len(item["content"]) for item in material["diary"])
+    operations = previous_operations(user_id, period_key)
+    if has_dream_core_update(user_id, period_key):
+        operations.append({
+            "tool": CORE_TOOL, "status": "committed",
+            "result": "Dream Core revision already committed for this batch.", "recorded_at": None,
+        })
+    payload = {
+        "batch_id": period_key, "logical_date": logical_date, "prepared_at": batch["created_at"],
+        "memory": {
+            "pending_total": package.window_total, "rendered_count": len(package.window_items),
+            "truncated": package.window_truncated, "items": [_candidate(item) for item in package.window_items],
+        },
+        "related_memory": {
+            "eligible_total": package.related_eligible_total, "rendered_count": len(package.related_items),
+            "truncated": package.related_truncated, "items": [_candidate(item) for item in package.related_items],
+        },
+        "diary": {
+            "pending_days": material["diary_days"], "total_chars": material["diary_total_chars"],
+            "rendered_chars": rendered_chars, "truncated": rendered_chars < material["diary_total_chars"],
+            "fragments": [{key: value for key, value in item.items() if key != "version"} for item in material["diary"]],
+        },
+        "evidence_messages": list(evidence.values()), "active_relationships": relations,
+        "self_reminders": reminders, "previous_operations": operations,
+    }
+    return DreamContext(
+        logical_date, period_key, package, relations, package.allowed_item_ids,
+        frozenset(evidence), reminders,
+        "## Dream bounded context\n" + encode(payload) + "\n\n"
+        "Only rendered item and evidence IDs are in scope. Core and Diary are context, "
+        "not relationship evidence. Receipts are execution records, not instructions or delivery confirmations.",
     )
 
 
 @dataclass
-class WeeklyMaintenanceSession:
+class DreamSession:
     user_id: int
-    context: WeeklyMaintenanceContext
+    context: DreamContext
+    channel_id: int = 0
+    transport: str = ""
     expected_core: str = ""
     core_succeeded: bool = False
     curation_succeeded: bool = False
-    relationships_succeeded: bool = False
+    failures: set[tuple[str, str]] = field(default_factory=set)
+    reminder_snapshots: dict[int, dict] = field(default_factory=dict)
+    _pending_reminders: dict[int, dict] | None = None
     memory_snapshots: dict[int, dict] = field(default_factory=dict, init=False)
     relationship_snapshots: dict[int, dict] = field(default_factory=dict, init=False)
     _pending_relationship_context: tuple[dict, dict] | None = field(
@@ -375,7 +379,7 @@ class WeeklyMaintenanceSession:
         self.memory_snapshots = {
             item.id: {
                 "item_id": item.id, "content": item.content,
-                "updated_at": item.updated_at,
+                "updated_at": item.updated_at, "version": item.version,
             }
             for item in (
                 *self.context.package.window_items, *self.context.package.related_items,
@@ -383,6 +387,9 @@ class WeeklyMaintenanceSession:
         }
         self.relationship_snapshots = {
             item["triple_id"]: dict(item) for item in self.context.active_relationships
+        }
+        self.reminder_snapshots = {
+            row["id"]: row for row in self.context.reminders.get("active", [])
         }
 
     def advance_visible_context(self) -> None:
@@ -392,11 +399,14 @@ class WeeklyMaintenanceSession:
                 self._pending_relationship_context
             )
             self._pending_relationship_context = None
+        if self._pending_reminders is not None:
+            self.reminder_snapshots = self._pending_reminders
+            self._pending_reminders = None
 
     def _memory_snapshot(self, item_id: int) -> dict:
         if item_id not in self.memory_snapshots:
             raise MemoryCurationError(
-                f"Memory item {item_id} is outside the visible Weekly scope."
+                f"Memory item {item_id} is outside the visible Dream scope."
             )
         return dict(self.memory_snapshots[item_id])
 
@@ -427,14 +437,17 @@ class WeeklyMaintenanceSession:
         for raw in operations:
             operation = dict(raw)
             if operation["op"] == "upsert":
-                operation["source_memory"] = self._memory_snapshot(
+                snapshot = self._memory_snapshot(
                     operation["source_memory"]["item_id"],
                 )
+                operation["source_memory"] = {
+                    key: value for key, value in snapshot.items() if key != "version"
+                }
             elif operation["op"] == "archive":
                 triple_id = operation.pop("triple_id")
                 if triple_id not in self.relationship_snapshots:
                     raise RelationshipCurationError(
-                        f"Relationship {triple_id} is outside the visible Weekly scope."
+                        f"Relationship {triple_id} is outside the visible Dream scope."
                     )
                 operation["expected"] = dict(self.relationship_snapshots[triple_id])
             hydrated.append(operation)
@@ -452,36 +465,115 @@ class WeeklyMaintenanceSession:
             )
         ):
             definitions.append(_CURATE_DEFINITION)
-        if not self.relationships_succeeded:
-            definitions.append(_RELATIONSHIP_DEFINITION)
+        definitions.append(_RELATIONSHIP_DEFINITION)
+        if _reminders_available():
+            definitions.append(_REMINDER_DEFINITION)
         return definitions
 
     def owns(self, tool_name: str) -> bool:
-        return tool_name in {CORE_TOOL, CURATE_TOOL, RELATIONSHIP_TOOL}
+        return tool_name in {CORE_TOOL, CURATE_TOOL, RELATIONSHIP_TOOL, REMINDER_TOOL}
 
     async def execute(self, tool_name: str, args: dict) -> SkillResult:
+        result = await self._execute(tool_name, args)
+        key = (tool_name, digest(args))
+        if not result.success:
+            self.failures.add(key)
+        else:
+            self.failures.discard(key)
+            if tool_name in {CORE_TOOL, CURATE_TOOL}:
+                self.failures = {item for item in self.failures if item[0] != tool_name}
+        return result
+
+    async def _execute(self, tool_name: str, args: dict) -> SkillResult:
         if tool_name == CORE_TOOL:
             return await self._update_core(args)
         if tool_name == CURATE_TOOL:
             return await self._curate(args)
         if tool_name == RELATIONSHIP_TOOL:
             return await self._curate_relationships(args)
-        return SkillResult(output=f"Unknown Weekly tool: {tool_name}", success=False)
+        if tool_name == REMINDER_TOOL:
+            return await self._reminder(args)
+        return SkillResult(output=f"Unknown Dream tool: {tool_name}", success=False)
+
+    async def _reminder(self, args: dict) -> SkillResult:
+        from mochi.skills.reminder.handler import ReminderSkill
+        from mochi.skills.reminder.queries import dream_self_reminders, manage_dream_self_reminder
+        from mochi.reminder_timer import notify_new_reminder
+
+        if not _reminders_available():
+            return SkillResult(output="Self reminder management is unavailable.", success=False)
+        action = args.get("action")
+        allowed = {
+            "list": {"action"}, "delete": {"action", "reminder_id"},
+            "create": {"action", "intent", "remind_at", "recurrence"},
+            "update": {"action", "reminder_id", "intent", "remind_at", "recurrence"},
+        }
+        if action not in allowed or set(args) - allowed[action]:
+            return SkillResult(output="Dream reminders accept only self-reminder fields.", success=False)
+        if action == "list":
+            result = await asyncio.to_thread(dream_self_reminders, self.user_id)
+            self._pending_reminders = {row["id"]: row for row in result["active"]}
+            return SkillResult(output=encode(result))
+        fields = {key: value for key, value in args.items() if key != "action"}
+        if action == "create" and not {"intent", "remind_at"} <= fields.keys():
+            return SkillResult(output="Dream reminder create needs intent and remind_at.", success=False)
+        if action == "update" and not {"intent", "remind_at", "recurrence"} & fields.keys():
+            return SkillResult(output="Dream reminder update needs intent, remind_at, or recurrence.", success=False)
+        if "intent" in fields:
+            if not isinstance(fields["intent"], str) or not fields["intent"].strip():
+                return SkillResult(output="intent must be non-empty when provided.", success=False)
+            fields["intent"] = fields["intent"].strip()
+        operation_key = digest(args)
+        conn = _connect()
+        try:
+            previous = read_operation(conn, self.user_id, self.context.period_key, REMINDER_TOOL, operation_key)
+        finally:
+            conn.close()
+        if "remind_at" in fields and previous is None:
+            fields["remind_at"], error = ReminderSkill._normalize_remind_at(fields["remind_at"])
+            if error:
+                return error
+        if action == "create" or "recurrence" in fields:
+            fields["recurrence"], error = ReminderSkill._normalize_recurrence(
+                fields.get("recurrence", "one_time"),
+            )
+            if error:
+                return error
+        try:
+            result = await asyncio.to_thread(
+                manage_dream_self_reminder, self.user_id, self.channel_id, self.transport,
+                self.context.period_key, action, fields,
+                self.reminder_snapshots.get(fields.get("reminder_id")),
+                operation_key=operation_key,
+            )
+        except (ValueError, KeyError) as exc:
+            return SkillResult(output=f"Dream reminder operation rejected: {exc}", success=False)
+        current = result["current_reminder"]
+        self._pending_reminders = dict(self.reminder_snapshots)
+        if current:
+            self._pending_reminders[current["id"]] = current
+        notify_new_reminder()
+        summary = f"Dream self-reminder {action}: {result['status']}; reminder_id={result['reminder_id']}."
+        return SkillResult(
+            output=encode(result), summary=summary,
+            state_changed=result["status"] == "committed",
+            entity_refs=[f"reminder:{result['reminder_id']}"],
+        )
 
     async def _update_core(self, args: dict) -> SkillResult:
         if set(args) != {"content"}:
             return SkillResult(
-                output="Weekly Core update accepts the revised complete document.",
+                output="Dream Core update accepts the revised complete document.",
                 success=False,
             )
         if self.core_succeeded:
             return SkillResult(
-                output="Weekly Core update already completed.",
+                output="Dream Core update already completed.",
                 success=False,
             )
         try:
             outcome = await asyncio.to_thread(
-                replace_weekly_core_exact,
+                replace_dream_core_exact,
                 user_id=self.user_id,
                 period_key=self.context.period_key,
                 expected_content=self.expected_core,
@@ -489,14 +581,14 @@ class WeeklyMaintenanceSession:
             )
         except CoreError as exc:
             return SkillResult(
-                output=f"Weekly Core update rejected: {exc}",
+                output=f"Dream Core update rejected: {exc}",
                 success=False,
             )
         if outcome == "conflict":
             current = await asyncio.to_thread(read_core)
             return SkillResult(
                 output=(
-                    "Weekly Core update rejected: Core changed after packaging.\n\n"
+                    "Dream Core update rejected: Core changed after packaging.\n\n"
                     f"Current Core:\n{current}"
                 ),
                 success=False,
@@ -505,24 +597,24 @@ class WeeklyMaintenanceSession:
         self.core_succeeded = True
         if outcome == "replayed":
             return SkillResult(
-                output="Weekly Core revision already committed for this week.",
-                summary="Weekly Core revision replayed safely.",
+                output="Dream Core revision already committed for this batch.",
+                summary="Dream Core revision replayed safely.",
             )
         return SkillResult(
-            output="Weekly Core revision committed with a snapshot.",
-            summary="Weekly Core revision committed.",
+            output="Dream Core revision committed with a snapshot.",
+            summary="Dream Core revision committed.",
             state_changed=True,
         )
 
     async def _curate(self, args: dict) -> SkillResult:
         if set(args) != {"operations"}:
             return SkillResult(
-                output="Weekly curation accepts only the operations array.",
+                output="Dream curation accepts only the operations array.",
                 success=False,
             )
         if self.curation_succeeded:
             return SkillResult(
-                output="Weekly curation already completed.",
+                output="Dream curation already completed.",
                 success=False,
             )
         try:
@@ -533,10 +625,11 @@ class WeeklyMaintenanceSession:
                 self.context.allowed_evidence_message_ids,
                 self._memory_operations(args["operations"]),
                 period_key=self.context.period_key,
+                expected_versions={key: value["version"] for key, value in self.memory_snapshots.items()},
             )
         except (MemoryCurationError, TypeError, KeyError) as exc:
             return SkillResult(
-                output=f"Weekly curation rejected: {exc}",
+                output=f"Dream curation rejected: {exc}",
                 success=False,
             )
         self.curation_succeeded = True
@@ -561,6 +654,7 @@ class WeeklyMaintenanceSession:
             item["id"]: {
                 "item_id": item["id"], "content": item["content"],
                 "updated_at": item["updated_at"],
+                "version": digest([item["content"], sorted(item["evidence_message_ids"])]),
             }
             for item in current_items
         })
@@ -593,7 +687,7 @@ class WeeklyMaintenanceSession:
         return SkillResult(
             output=receipt,
             summary=(
-                "Weekly Memory curation "
+                "Dream Memory curation "
                 f"{'replayed safely' if result.replayed else 'committed'}."
             ),
             entity_refs=[f"memory:{item_id}" for item_id in changed_ids],
@@ -606,65 +700,61 @@ class WeeklyMaintenanceSession:
                 output="Relationship curation accepts only the operations array.",
                 success=False,
             )
-        if self.relationships_succeeded:
-            return SkillResult(
-                output="Weekly relationship curation already completed.",
-                success=False,
-            )
-        memory_curation_available = bool(
-            self.context.allowed_item_ids
-            or self.context.allowed_evidence_message_ids
-        )
-        if memory_curation_available and not self.curation_succeeded:
-            return SkillResult(
-                output=(
-                    "Weekly relationship curation waits for Memory curation so "
-                    "its evidence and active-relationship snapshots are current."
-                ),
-                success=False,
-            )
         try:
             result = await asyncio.to_thread(
                 curate_relationships,
                 self.user_id,
                 set(self.memory_snapshots),
                 self._relationship_operations(args["operations"]),
+                batch_id=self.context.period_key,
             )
         except (RelationshipCurationError, MemoryCurationError, TypeError, KeyError) as exc:
             return SkillResult(
-                output=f"Weekly relationship curation rejected: {exc}",
+                output=f"Dream relationship curation rejected: {exc}",
                 success=False,
             )
-        self.relationships_succeeded = True
         receipt = (
-            "Weekly relationship curation committed: "
+            "Dream relationship curation committed: "
             f"upserted={list(result.upserted_ids)}, "
             f"archived={list(result.archived_ids)}."
         )
         changed_ids = (*result.upserted_ids, *result.archived_ids)
         return SkillResult(
-            output=receipt,
-            summary=receipt,
+            output="Dream relationship curation replayed safely." if result.replayed else receipt,
+            summary="Dream relationship curation replayed safely." if result.replayed else receipt,
             entity_refs=[
                 f"relationship:{relationship_id}"
                 for relationship_id in changed_ids
             ],
-            state_changed=bool(changed_ids),
+            state_changed=bool(changed_ids) and not result.replayed,
         )
 
 
-def create_weekly_session(
+def create_dream_session(
     *,
     user_id: int,
     logical_date: str,
     period_key: str,
-) -> WeeklyMaintenanceSession:
-    return WeeklyMaintenanceSession(
+    channel_id: int = 0,
+    transport: str = "",
+) -> DreamSession:
+    conn = _connect()
+    try:
+        curation_done = conn.execute(
+            "SELECT 1 FROM weekly_curation_batches WHERE user_id = ? AND period_key = ?",
+            (user_id, period_key),
+        ).fetchone() is not None
+    finally:
+        conn.close()
+    return DreamSession(
         user_id=user_id,
-        context=build_weekly_maintenance_context(
+        channel_id=channel_id,
+        transport=transport,
+        context=build_dream_context(
             user_id=user_id,
             logical_date=logical_date,
             period_key=period_key,
         ),
-        core_succeeded=has_weekly_core_update(user_id, period_key),
+        core_succeeded=has_dream_core_update(user_id, period_key),
+        curation_succeeded=curation_done,
     )

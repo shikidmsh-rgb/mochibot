@@ -1543,6 +1543,12 @@ async function loadSettings() {
         <input class="form-input" id="pref-proactive-limit" type="number" min="1" max="10" style="width:80px" value="${esc(proactiveLimit)}" ${proactiveEnabled?'':'disabled'}>
         <span style="font-size:12px;color:var(--text-soft)">次</span>
       </div>
+      <div class="config-form-row" style="display:flex;align-items:center;gap:12px;padding:10px 0">
+        <label class="toggle"><input id="pref-dream-enabled" type="checkbox" ${prefs.WEEKLY_MAINTENANCE_ENABLED?.value ? 'checked' : ''}><span class="slider"></span></label>
+        <div><div style="font-size:14px">Dream 记忆整理</div>
+          <div style="font-size:12px;color:var(--text-soft)">每天检查，材料累计后回望；关闭不删除记忆或已有自我提醒。</div>
+        </div>
+      </div>
       <div style="margin-top:14px"><button class="btn btn-primary" onclick="savePreferences()">保存偏好</button></div>
     </div>`;
 
@@ -1665,6 +1671,7 @@ async function savePreferences() {
     await api('PUT', '/preferences', {
       TIMEZONE_OFFSET_HOURS: timezone,
       MAX_DAILY_PROACTIVE: enabled ? limit : 0,
+      WEEKLY_MAINTENANCE_ENABLED: document.getElementById('pref-dream-enabled').checked,
     });
     showToast('✅ 偏好已保存');
     loaded.settings = false;
@@ -1852,6 +1859,15 @@ async function loadSystem() {
     html += `<div class="stat-card"><div class="stat-number" style="font-size:18px">v${esc(s.version || 'unknown')}</div><div class="stat-label">版本</div></div>`;
     html += '</div>';
 
+    if (s.dream) {
+      const d = s.dream;
+      const reasons = {not_checked:'尚未检查', no_evidence:'暂无材料', below_threshold:'继续累计',
+        evidence_pressure:'已达累计门槛', max_age:'已到回望时间', backlog:'有剩余材料', pending_retry:'等待继续'};
+      const last = d.last_run;
+      html += `<div style="font-size:12px;margin-bottom:16px">Dream：${d.enabled ? esc(reasons[d.reason] || d.reason) : '已关闭'} · 待整理 ${esc(d.total ?? '—')} 个单位 · 上次成功 ${esc(d.last_success_day || '尚无')}`;
+      if (last) html += ` · 最近运行 ${esc(last.status)}${last.error ? '：' + esc(last.error) : ''}`;
+      html += '</div>';
+    }
     if (checkupData?.ok) html += renderCheckupCard(checkupData);
 
     const dbSize = s.db_size_bytes || 0;

@@ -1,4 +1,4 @@
-"""Bounded Weekly Memory candidates and guarded atomic curation."""
+"""Bounded Dream Memory candidates and guarded atomic curation."""
 
 from __future__ import annotations
 
@@ -26,9 +26,10 @@ from mochi.memory_contract import (
     validate_memory_content,
     validate_memory_importance,
 )
+from mochi.dream_store import MEMORY_LIMIT, memory_version
 
 
-WINDOW_ITEM_LIMIT = 40
+WINDOW_ITEM_LIMIT = MEMORY_LIMIT
 RELATED_ITEM_LIMIT = 40
 RELATED_SIMILARITY_THRESHOLD = 0.72
 MIN_CONTAINMENT_CHARS = 4
@@ -54,7 +55,7 @@ class MemoryEvidenceExcerpt:
 
 
 @dataclass(frozen=True)
-class WeeklyMemoryCandidate:
+class DreamMemoryCandidate:
     id: int
     content: str
     importance: int
@@ -63,15 +64,14 @@ class WeeklyMemoryCandidate:
     updated_at: str
     evidence_message_ids: tuple[int, ...]
     evidence_excerpts: tuple[MemoryEvidenceExcerpt, ...]
+    version: str
 
 
 @dataclass(frozen=True)
-class WeeklyMemoryCandidatePackage:
+class DreamMemoryCandidatePackage:
     user_id: int
-    window_start: str
-    window_end: str
-    window_items: tuple[WeeklyMemoryCandidate, ...]
-    related_items: tuple[WeeklyMemoryCandidate, ...]
+    window_items: tuple[DreamMemoryCandidate, ...]
+    related_items: tuple[DreamMemoryCandidate, ...]
     window_total: int
     related_eligible_total: int
     window_truncated: bool
@@ -118,36 +118,26 @@ def _load_evidence(conn, user_id: int, ids: list[int]) -> dict[int, dict]:
     return {row["id"]: dict(row) for row in rows}
 
 
-def build_weekly_memory_candidate_package(
+def build_dream_memory_candidate_package(
     user_id: int,
-    start: datetime,
-    end: datetime,
-) -> WeeklyMemoryCandidatePackage:
-    """Return a read-only, immutable, bounded Weekly candidate snapshot."""
+    item_ids: list[int],
+    total: int,
+) -> DreamMemoryCandidatePackage:
+    """Return a read-only, immutable, bounded Dream candidate snapshot."""
     if isinstance(user_id, bool) or not isinstance(user_id, int) or user_id < 0:
         raise ValueError("user_id must be a non-negative integer")
-    if start.tzinfo is None or end.tzinfo is None or start >= end:
-        raise ValueError("weekly window must be timezone-aware and increasing")
-    start_iso = start.astimezone(config.TZ).isoformat()
-    end_iso = end.astimezone(config.TZ).isoformat()
     conn = _connect()
     try:
         conn.execute("BEGIN")
-        window_total = conn.execute(
-            "SELECT COUNT(*) FROM memory_items WHERE user_id = ? "
-            "AND julianday(created_at) >= julianday(?) "
-            "AND julianday(created_at) < julianday(?)",
-            (user_id, start_iso, end_iso),
-        ).fetchone()[0]
+        placeholders = ",".join("?" for _ in item_ids) or "NULL"
+        window_total = total
         window_rows = [
             dict(row) for row in conn.execute(
                 "SELECT id, content, importance, source, "
                 "evidence_message_ids, created_at, updated_at "
-                "FROM memory_items WHERE user_id = ? "
-                "AND julianday(created_at) >= julianday(?) "
-                "AND julianday(created_at) < julianday(?) "
-                "ORDER BY julianday(created_at) DESC, id DESC LIMIT ?",
-                (user_id, start_iso, end_iso, WINDOW_ITEM_LIMIT),
+                f"FROM memory_items WHERE user_id = ? AND id IN ({placeholders}) "
+                "ORDER BY julianday(updated_at), id LIMIT ?",
+                (user_id, *item_ids, WINDOW_ITEM_LIMIT),
             ).fetchall()
         ]
         related_ranked: list[tuple[float, dict]] = []
@@ -155,10 +145,9 @@ def build_weekly_memory_candidate_package(
             cursor = conn.execute(
                 "SELECT id, content, importance, source, "
                 "evidence_message_ids, created_at, updated_at "
-                "FROM memory_items WHERE user_id = ? "
-                "AND julianday(created_at) < julianday(?) "
+                f"FROM memory_items WHERE user_id = ? AND id NOT IN ({placeholders}) "
                 "ORDER BY importance DESC, julianday(updated_at) DESC, id DESC",
-                (user_id, start_iso),
+                (user_id, *item_ids),
             )
             while True:
                 chunk = cursor.fetchmany(400)
@@ -194,7 +183,7 @@ def build_weekly_memory_candidate_package(
                     evidence_ids.append(message_id)
         evidence = _load_evidence(conn, user_id, evidence_ids)
         allowed_evidence: set[int] = set()
-        candidates: list[WeeklyMemoryCandidate] = []
+        candidates: list[DreamMemoryCandidate] = []
         for row, stored_ids in zip(ordered_rows, decoded):
             valid_ids = tuple(item for item in stored_ids if item in evidence)
             excerpts = []
@@ -213,7 +202,7 @@ def build_weekly_memory_candidate_package(
                     content=message["content"][:EXCERPT_CHAR_LIMIT],
                     created_at=message["created_at"],
                 ))
-            candidates.append(WeeklyMemoryCandidate(
+            candidates.append(DreamMemoryCandidate(
                 id=row["id"],
                 content=row["content"],
                 importance=row["importance"],
@@ -222,14 +211,13 @@ def build_weekly_memory_candidate_package(
                 updated_at=row["updated_at"],
                 evidence_message_ids=valid_ids,
                 evidence_excerpts=tuple(excerpts),
+                version=memory_version(row),
             ))
         window_items = tuple(candidates[:len(window_rows)])
         related_items = tuple(candidates[len(window_rows):])
         conn.rollback()
-        return WeeklyMemoryCandidatePackage(
+        return DreamMemoryCandidatePackage(
             user_id=user_id,
-            window_start=start_iso,
-            window_end=end_iso,
             window_items=window_items,
             related_items=related_items,
             window_total=window_total,
@@ -402,20 +390,21 @@ def curate_memory_items(
     operations: object,
     *,
     period_key: str,
+    expected_versions: Mapping[int, str] | None = None,
 ) -> MemoryCurationResult:
     """Apply one candidate-scoped curation batch in a single transaction."""
     allowed_items = frozenset(allowed_item_ids)
     allowed_evidence = frozenset(allowed_evidence_message_ids)
     parsed, touched = _parse_operations(operations)
     if not touched <= allowed_items:
-        raise MemoryCurationError("referenced Memory Items are outside Weekly scope")
+        raise MemoryCurationError("referenced Memory Items are outside Dream scope")
     requested_evidence = {
         message_id
         for operation in parsed
         for message_id in operation["evidence"]
     }
     if not requested_evidence <= allowed_evidence:
-        raise MemoryCurationError("cited evidence is outside Weekly scope")
+        raise MemoryCurationError("cited evidence is outside Dream scope")
 
     conn = _connect()
     try:
@@ -439,6 +428,10 @@ def curate_memory_items(
                 list(touched),
             ).fetchall()
             rows_by_id = {row["id"]: row for row in rows}
+        if expected_versions is not None:
+            for item_id, row in rows_by_id.items():
+                if expected_versions.get(item_id) != memory_version(row):
+                    raise MemoryCurationConflict(f"Memory Item {item_id} changed after packaging")
         expectations = []
         for operation in parsed:
             if operation["op"] in {"edit", "archive"}:
@@ -492,7 +485,7 @@ def curate_memory_items(
                     user_id,
                     operation["content"],
                     operation["importance"],
-                    source="weekly_main",
+                    source="dream_main",
                     evidence_message_ids=evidence,
                     conn=conn,
                 )
@@ -509,7 +502,7 @@ def curate_memory_items(
                         "content-changing edit requires new evidence"
                     )
                 _insert_memory_trash_snapshot(
-                    conn, row, deleted_by="weekly_edit", deleted_at=now,
+                    conn, row, deleted_by="dream_edit", deleted_at=now,
                 )
                 evidence_json = encode_evidence_message_ids(
                     merge_evidence_message_ids(evidence_by_id[item_id], evidence)
@@ -555,9 +548,9 @@ def curate_memory_items(
                         conn,
                         rows_by_id[item_id],
                         deleted_by=(
-                            "weekly_merge_keep"
+                            "dream_merge_keep"
                             if item_id == keep_id
-                            else "weekly_merge_remove"
+                            else "dream_merge_remove"
                         ),
                         deleted_at=now,
                     )
@@ -605,7 +598,7 @@ def curate_memory_items(
             _insert_memory_trash_snapshot(
                 conn,
                 row,
-                deleted_by="weekly_archive",
+                deleted_by="dream_archive",
                 deleted_at=now,
                 evidence_message_ids=evidence_json,
             )
@@ -622,6 +615,8 @@ def curate_memory_items(
             changed_ids=tuple(changed),
             archived_ids=tuple(archived),
         )
+        from mochi.dream_store import record_memory_versions
+        record_memory_versions(conn, user_id, [*created, *changed])
         conn.execute(
             "INSERT INTO weekly_curation_batches "
             "(user_id, period_key, result_json, created_at) "

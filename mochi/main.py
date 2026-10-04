@@ -33,7 +33,7 @@ from mochi.heartbeat import (
     heartbeat_loop,
     reload_state_after_config_seed,
     set_main_runtime_callbacks,
-    set_weekly_callback,
+    set_dream_callback,
 )
 from mochi.main_runtime import MainRuntimeEntry
 from mochi.reminder_timer import (
@@ -244,19 +244,21 @@ async def main():
                 user_id, ChatResult(text=text), can_deliver=can_deliver,
             )
 
-        async def enter_weekly(
+        async def enter_dream(
             user_id: int,
             logical_date: str,
             period_key: str,
-        ) -> None:
-            entry = MainRuntimeEntry.weekly_maintenance(
+            chat_generation: int,
+        ) -> ChatResult:
+            entry = MainRuntimeEntry.dream(
                 logical_date=logical_date,
                 period_key=period_key,
                 user_id=user_id,
                 channel_id=user_id,
                 transport=_t.name,
+                chat_generation=chat_generation,
             )
-            await chat(runtime_entry=entry)
+            return await chat(runtime_entry=entry)
 
         async def prepare_main_runtime(entry: MainRuntimeEntry) -> ChatResult:
             return await chat(runtime_entry=entry)
@@ -286,7 +288,7 @@ async def main():
             deliver_autonomous,
             _t.name,
         )
-        set_weekly_callback(enter_weekly)
+        set_dream_callback(enter_dream)
         set_reminder_callback(send_proactive)
         set_self_reminder_callbacks(
             prepare_main_runtime,

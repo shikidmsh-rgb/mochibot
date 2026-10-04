@@ -19,7 +19,7 @@ from mochi.token_estimator import estimate_tokens
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 CORE_FILENAME = "core.md"
 HISTORY_DIRNAME = "core_history"
-WEEKLY_RECEIPTS_DIRNAME = "core_weekly_receipts"
+CURATION_RECEIPTS_DIRNAME = "core_weekly_receipts"
 CORE_LOCK_FILENAME = ".core.lock"
 CORE_LOCK_TIMEOUT_SECONDS = 10.0
 CORE_LOCK_POLL_SECONDS = 0.05
@@ -65,13 +65,13 @@ def _history_dir() -> Path:
     return DATA_DIR / HISTORY_DIRNAME
 
 
-def _weekly_receipt_path(user_id: int, period_key: str) -> Path:
+def _dream_receipt_path(user_id: int, period_key: str) -> Path:
     if isinstance(user_id, bool) or not isinstance(user_id, int):
-        raise CoreError("Weekly Core receipt user_id must be an integer.")
+        raise CoreError("Dream Core receipt user_id must be an integer.")
     if not isinstance(period_key, str) or not period_key.strip():
-        raise CoreError("Weekly Core receipt period_key is required.")
+        raise CoreError("Dream Core receipt batch_id is required.")
     digest = hashlib.sha256(period_key.encode("utf-8")).hexdigest()[:16]
-    return DATA_DIR / WEEKLY_RECEIPTS_DIRNAME / f"{user_id}--{digest}.json"
+    return DATA_DIR / CURATION_RECEIPTS_DIRNAME / f"{user_id}--{digest}.json"
 
 
 def _max_tokens() -> int:
@@ -381,30 +381,27 @@ def replace_core_exact(
         return {"changed": True, "content": updated, **_stats(updated)}
 
 
-def _read_weekly_receipt_unlocked(user_id: int, period_key: str) -> dict:
-    path = _weekly_receipt_path(user_id, period_key)
+def _read_dream_receipt_unlocked(user_id: int, period_key: str) -> dict:
+    path = _dream_receipt_path(user_id, period_key)
     if not path.is_file():
         return {}
-    try:
-        receipt = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
+    receipt = json.loads(path.read_text(encoding="utf-8"))
     return receipt if receipt.get("period_key") == period_key else {}
 
 
-def has_weekly_core_update(user_id: int, period_key: str) -> bool:
+def has_dream_core_update(user_id: int, period_key: str) -> bool:
     with _transaction():
-        return bool(_read_weekly_receipt_unlocked(user_id, period_key))
+        return bool(_read_dream_receipt_unlocked(user_id, period_key))
 
 
-def replace_weekly_core_exact(
+def replace_dream_core_exact(
     *,
     user_id: int,
     period_key: str,
     expected_content: str,
     content: str,
 ) -> str:
-    """Commit a complete revision against the visible Core and weekly receipt."""
+    """Commit a complete revision against the visible Core and batch receipt."""
     if not isinstance(expected_content, str):
         raise CoreError("expected_content must be text.")
     updated = _validate(content)
@@ -412,7 +409,7 @@ def replace_weekly_core_exact(
 
     with _transaction():
         _initialize_core_unlocked()
-        receipt = _read_weekly_receipt_unlocked(user_id, period_key)
+        receipt = _read_dream_receipt_unlocked(user_id, period_key)
         if receipt:
             return (
                 "replayed"
@@ -433,7 +430,7 @@ def replace_weekly_core_exact(
             outcome = "committed"
             snapshot = None
         else:
-            snapshot = _snapshot_unlocked(current, f"weekly-{period_key}")
+            snapshot = _snapshot_unlocked(current, f"dream-{period_key}")
             _atomic_write(_core_path(), updated)
             outcome = "committed"
 
@@ -445,7 +442,7 @@ def replace_weekly_core_exact(
             "snapshot": snapshot,
         }
         _atomic_write(
-            _weekly_receipt_path(user_id, period_key),
+            _dream_receipt_path(user_id, period_key),
             json.dumps(receipt, ensure_ascii=False, indent=2),
         )
         return outcome

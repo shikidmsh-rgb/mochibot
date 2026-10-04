@@ -1,4 +1,4 @@
-"""Small user-life relationship graph maintained by Main each week."""
+"""Small user-life relationship graph maintained by Main during Dream."""
 
 import re
 import unicodedata
@@ -27,7 +27,7 @@ MAX_RELATIONSHIP_OPERATIONS = 20
 
 
 class RelationshipCurationError(ValueError):
-    """The requested relationship curation is outside the Weekly scope."""
+    """The requested relationship curation is outside the Dream scope."""
 
 
 class RelationshipCurationConflict(RelationshipCurationError):
@@ -38,6 +38,7 @@ class RelationshipCurationConflict(RelationshipCurationError):
 class RelationshipCurationResult:
     upserted_ids: tuple[int, ...]
     archived_ids: tuple[int, ...]
+    replayed: bool = False
 
 # Emoji pattern: common animal/object emoji + supplementary plane symbols
 _EMOJI_RE = re.compile(
@@ -76,7 +77,7 @@ def get_entity_by_name(user_id: int, name: str) -> dict | None:
 
 
 def list_active_relationships(user_id: int) -> list[dict]:
-    """Return exact snapshots that Weekly Main may archive."""
+    """Return exact snapshots that Dream Main may archive."""
     conn = _connect()
     try:
         rows = conn.execute(
@@ -151,7 +152,7 @@ def _validate_memory_snapshot(
         or item_id not in allowed_item_ids
     ):
         raise RelationshipCurationError(
-            "source_memory must be a Memory Item visible this week"
+            "source_memory must be a Memory Item visible in this Dream"
         )
     row = conn.execute(
         "SELECT content, updated_at, evidence_message_ids "
@@ -164,7 +165,7 @@ def _validate_memory_snapshot(
         or raw["updated_at"] != row["updated_at"]
     ):
         raise RelationshipCurationConflict(
-            "source Memory Item changed after Weekly context was built"
+            "source Memory Item changed after Dream context was built"
         )
     evidence_ids = decode_evidence_message_ids(row["evidence_message_ids"])
     if not evidence_ids:
@@ -211,8 +212,10 @@ def curate_relationships(
     user_id: int,
     allowed_item_ids: set[int] | frozenset[int],
     operations: object,
+    *,
+    batch_id: str | None = None,
 ) -> RelationshipCurationResult:
-    """Apply one exact, evidence-backed Weekly relationship batch atomically."""
+    """Apply one exact, evidence-backed Dream relationship batch atomically."""
     if not isinstance(operations, list):
         raise RelationshipCurationError("operations must be an array")
     if len(operations) > MAX_RELATIONSHIP_OPERATIONS:
@@ -221,6 +224,14 @@ def curate_relationships(
     conn = _connect()
     try:
         conn.execute("BEGIN IMMEDIATE")
+        from mochi.dream_store import digest, read_operation, write_operation
+        key = digest(operations)
+        if batch_id:
+            previous = read_operation(conn, user_id, batch_id, "curate_relationships", key)
+            if previous:
+                return RelationshipCurationResult(
+                    tuple(previous["upserted_ids"]), tuple(previous["archived_ids"]), True,
+                )
         now = datetime.now(TZ).isoformat()
         upserted: list[int] = []
         archived: list[int] = []
@@ -257,7 +268,7 @@ def curate_relationships(
                 if existing:
                     cursor = conn.execute(
                         "UPDATE kg_triples SET source_memory_id = ?, "
-                        "source = 'weekly_main', confidence = 1.0 "
+                        "source = 'dream_main', confidence = 1.0 "
                         "WHERE id = ? AND source_memory_id IS NOT ?",
                         (memory_id, existing["id"], memory_id),
                     )
@@ -268,7 +279,7 @@ def curate_relationships(
                     "INSERT INTO kg_triples "
                     "(user_id, subject_id, predicate, object_id, "
                     "source_memory_id, source, confidence, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, 'weekly_main', 1.0, ?)",
+                    "VALUES (?, ?, ?, ?, ?, 'dream_main', 1.0, ?)",
                     (
                         user_id, subject_id, predicate, object_id,
                         memory_id, now,
@@ -296,7 +307,7 @@ def curate_relationships(
                 ).fetchone()
                 if row is None or dict(row) != expected:
                     raise RelationshipCurationConflict(
-                        "relationship changed after Weekly context was built"
+                        "relationship changed after Dream context was built"
                     )
                 cursor = conn.execute(
                     "UPDATE kg_triples SET valid_to = ? "
@@ -313,6 +324,10 @@ def curate_relationships(
             raise RelationshipCurationError("op must be upsert or archive")
 
         _cleanup_orphan_entities(conn, user_id)
+        if batch_id:
+            write_operation(conn, user_id, batch_id, "curate_relationships", key, {
+                "status": "committed", "upserted_ids": upserted, "archived_ids": archived,
+            })
         conn.commit()
         return RelationshipCurationResult(
             upserted_ids=tuple(upserted),

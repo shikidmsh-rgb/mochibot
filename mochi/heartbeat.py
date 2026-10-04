@@ -110,7 +110,7 @@ _last_sleep_at: datetime | None = (
 )
 _silent_pause = False
 
-_weekly_callback = None
+_dream_callback = None
 _runtime_prepare_callback = None
 _runtime_delivery_callback = None
 _runtime_transport = ""
@@ -125,9 +125,9 @@ def reload_state_after_config_seed() -> None:
     _last_sleep_at = _state_changed_at if _state == SLEEPING else None
 
 
-def set_weekly_callback(callback) -> None:
-    global _weekly_callback
-    _weekly_callback = callback
+def set_dream_callback(callback) -> None:
+    global _dream_callback
+    _dream_callback = callback
 
 
 def set_main_runtime_callbacks(prepare_callback, delivery_callback, transport: str) -> None:
@@ -448,7 +448,7 @@ async def _run_maintenance_if_due(
     return True
 
 
-async def _run_weekly_if_due(
+async def _run_dream_if_due(
     user_id: int,
     now: datetime | None = None,
 ) -> bool:
@@ -456,13 +456,10 @@ async def _run_weekly_if_due(
         return False
     now = now or datetime.now(TZ)
     logical_date = logical_today(now)
-    logical_day = datetime.strptime(logical_date, "%Y-%m-%d").date()
-    if logical_day.weekday() != 0:
-        return False
     maintenance_hour = _effective("MAINTENANCE_HOUR")
-    weekly_minute = _effective("WEEKLY_MAINTENANCE_MINUTE")
+    dream_minute = _effective("WEEKLY_MAINTENANCE_MINUTE")
     if now.hour < maintenance_hour or (
-        now.hour == maintenance_hour and now.minute < weekly_minute
+        now.hour == maintenance_hour and now.minute < dream_minute
     ):
         return False
     from mochi.db import (
@@ -474,23 +471,38 @@ async def _run_weekly_if_due(
     nightly = get_scheduled_run("nightly", logical_date)
     if not nightly or nightly["status"] != "success":
         return False
-    iso = logical_day.isocalendar()
-    period_key = f"{iso.year}-W{iso.week:02d}"
-    if not claim_scheduled_run("weekly", period_key):
+    if has_active_chat() or _state == TRANSITIONING:
         return False
+    from mochi.dream_store import claim_attempt, complete_batch, inspect_pressure, prepare_batch
+
+    pressure = await asyncio.to_thread(inspect_pressure, user_id, now)
+    if not pressure["eligible"] or pressure["last_attempt_day"] == logical_date:
+        return False
+    if _dream_callback is None:
+        log.error("Dream Main callback is not registered")
+        return False
+    generation = chat_activity_generation()
+    batch_id = await asyncio.to_thread(prepare_batch, user_id, now)
+    if not batch_id or has_active_chat() or generation != chat_activity_generation():
+        return False
+    if not claim_attempt(user_id, logical_date):
+        return False
+    claim_scheduled_run("dream", logical_date)
     try:
-        if _weekly_callback is None:
-            raise RuntimeError("Weekly Main callback is not registered")
-        await asyncio.wait_for(
-            _weekly_callback(user_id, logical_date, period_key),
+        result = await asyncio.wait_for(
+            _dream_callback(user_id, logical_date, batch_id, generation),
             timeout=_effective("LLM_HEARTBEAT_TIMEOUT_SECONDS"),
         )
+        if result.disposition not in {"handled", "skip"}:
+            raise RuntimeError("Dream did not reach a complete terminal state")
+        complete_batch(user_id, batch_id)
     except Exception as exc:
-        finish_scheduled_run("weekly", period_key, success=False, error=str(exc))
-        log_heartbeat(_state, "weekly_error", str(exc)[:200])
+        finish_scheduled_run("dream", logical_date, success=False, error=str(exc))
+        log_heartbeat(_state, "dream_error", str(exc)[:200])
         return True
-    finish_scheduled_run("weekly", period_key, success=True)
-    log_heartbeat(_state, "weekly", period_key)
+    finish_scheduled_run("dream", logical_date, success=True)
+    remaining = inspect_pressure(user_id)
+    log_heartbeat(_state, "dream", f"{batch_id}; remaining={remaining['total']}")
     return True
 
 
@@ -719,7 +731,7 @@ async def heartbeat_loop() -> None:
                 continue
             now = datetime.now(TZ)
             await _run_maintenance_if_due(user_id, now)
-            await _run_weekly_if_due(user_id, now)
+            await _run_dream_if_due(user_id, now)
             now = datetime.now(TZ)
             enabled = bool(_effective("FREE_TIME_ENABLED"))
             expire_abandoned_runs(now=now)

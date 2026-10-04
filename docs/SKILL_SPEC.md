@@ -222,7 +222,7 @@ class MySkill(Skill):
 | `args` | dict | 传给工具的参数 |
 | `actor` | str | 框架提供的调用身份，如 Main；不是模型自行声明的参数 |
 | `owner_authorized` | bool | Transport 确认消息来自已绑定用户，不替代 Main 对请求语义的判断 |
-| `source` | str | `chat`、`weekly` 或 `runtime:<kind>`；脚本默认空值，不获得普通聊天权限 |
+| `source` | str | `chat`、`dream` 或 `runtime:<kind>`；脚本默认空值，不获得普通聊天权限 |
 | `turn_id` | str | 框架生成的本轮标识，供查询排除当前消息、去重和事实统计 |
 | `observation` | dict \| None | 框架显式提供的观察数据；普通 tool 类 skill 不用关心 |
 

@@ -110,7 +110,7 @@ def reset_heartbeat_state(monkeypatch, tmp_path):
     monkeypatch.setattr(hb, "_state", "AWAKE")
     monkeypatch.setattr(hb, "_STATE_FILE", tmp_path / ".heartbeat_state")
     monkeypatch.setattr(hb, "_state_changed_at", hb.datetime.now(hb.TZ))
-    monkeypatch.setattr(hb, "_weekly_callback", None)
+    monkeypatch.setattr(hb, "_dream_callback", None)
     monkeypatch.setattr(hb, "_runtime_prepare_callback", None)
     monkeypatch.setattr(hb, "_runtime_delivery_callback", None)
     monkeypatch.setattr(hb, "_runtime_transport", "")

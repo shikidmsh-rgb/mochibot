@@ -521,7 +521,7 @@ def _build_prompt_zones(user_id: int, capability_context: str = "",
                         conv_summary: str = "",
                         recent_operations: str = "",
                         runtime_entry: MainRuntimeEntry | None = None,
-                        weekly_context: str = "",
+                        dream_context: str = "",
                         policy: ContextPolicy | None = None,
                         habit_progress_context: str = "",
                         history_timestamps: str = "",
@@ -536,8 +536,8 @@ def _build_prompt_zones(user_id: int, capability_context: str = "",
     now = datetime.now(TZ)
     now_str = now.strftime("%Y-%m-%d %H:%M:%S %z") + f" {_WEEKDAY_NAMES[now.weekday()]}"
     policy = policy or context_policy(runtime_entry)
-    is_weekly = bool(
-        runtime_entry and runtime_entry.kind == "weekly_maintenance"
+    is_dream = bool(
+        runtime_entry and runtime_entry.kind == "dream"
     )
     is_autonomous = bool(
         runtime_entry and runtime_entry.kind == "free_time"
@@ -584,17 +584,17 @@ def _build_prompt_zones(user_id: int, capability_context: str = "",
             if habit_lines:
                 capability_parts.append(("habits.list", f"## 习惯列表 (打卡用)\n{habit_lines}"))
 
-    if policy.prompt_sections and not is_weekly:
+    if policy.prompt_sections and not is_dream:
         for index, section in enumerate(skill_registry.get_prompt_sections(compact=True)):
             capability_parts.append((f"skill_prompt.{index}", section))
 
     from mochi.config import BUBBLE_ENABLED
-    if BUBBLE_ENABLED and not is_weekly and not is_autonomous:
+    if BUBBLE_ENABLED and not is_dream and not is_autonomous:
         bubble_inst = get_prompt("system_chat/_bubble")
         if bubble_inst:
             capability_parts.append(("bubble", bubble_inst))
 
-    if history_timestamps and not is_weekly and policy.recent_history:
+    if history_timestamps and not is_dream and policy.recent_history:
         hist_ts_inst = get_prompt("system_chat/_history_timestamp")
         if hist_ts_inst:
             dynamic_live_context.append(
@@ -654,18 +654,18 @@ def _build_prompt_zones(user_id: int, capability_context: str = "",
                 "{{scheduled_for}}", runtime_entry.scheduled_for or "",
             ))
         )
-    elif is_weekly:
-        weekly_prompt = get_prompt("weekly_maintenance_entry")
-        if not weekly_prompt:
-            raise RuntimeError("Weekly maintenance entry prompt is missing")
+    elif is_dream:
+        dream_prompt = get_prompt("dream_entry")
+        if not dream_prompt:
+            raise RuntimeError("Dream maintenance entry prompt is missing")
         dynamic_live_context.append(
-            ("weekly.context", weekly_prompt.replace("{{weekly_context}}", weekly_context))
+            ("dream.context", dream_prompt.replace("{{dream_context}}", dream_context))
         )
 
     from mochi.db import get_last_user_message_time
     last_msg_time = (
         get_last_user_message_time(user_id)
-        if policy.temporal_context and not is_weekly
+        if policy.temporal_context and not is_dream
         else None
     )
     if last_msg_time:
@@ -722,7 +722,7 @@ async def chat(
         raise ValueError("chat requires an incoming message or runtime entry")
     turn_id = (
         entry.idempotency_key
-        if entry and entry.kind in {"self_reminder", "weekly_maintenance", "free_time"}
+        if entry and entry.kind in {"self_reminder", "dream", "free_time"}
         and entry.idempotency_key
         else uuid.uuid4().hex
     )
@@ -824,8 +824,8 @@ async def _chat(
     is_self_reminder = bool(
         runtime_entry and runtime_entry.kind == "self_reminder"
     )
-    is_weekly = bool(
-        runtime_entry and runtime_entry.kind == "weekly_maintenance"
+    is_dream = bool(
+        runtime_entry and runtime_entry.kind == "dream"
     )
     is_autonomous = bool(
         runtime_entry and runtime_entry.kind == "free_time"
@@ -884,7 +884,7 @@ async def _chat(
     # Pre-fetch habits (fast sync DB) — shared by router hint + system prompt
     habits = (
         []
-        if is_bedtime or is_self_reminder or is_weekly or is_autonomous
+        if is_bedtime or is_self_reminder or is_dream or is_autonomous
         else await runtime_trace.prepare("habit_list", list_habits, user_id)
     )
 
@@ -963,19 +963,21 @@ async def _chat(
         is_bedtime
         or is_self_reminder
         or is_autonomous
-        or (not is_weekly and turn_plan.request_tools_enabled)
+        or (not is_dream and turn_plan.request_tools_enabled)
     )
     _health_warning = ""
 
-    weekly_session = None
-    if is_weekly:
-        from mochi.weekly_maintenance import create_weekly_session
-        weekly_session = create_weekly_session(
+    dream_session = None
+    if is_dream:
+        from mochi.dream import create_dream_session
+        dream_session = create_dream_session(
             user_id=user_id,
             logical_date=runtime_entry.logical_date or "",
             period_key=runtime_entry.period_key or "",
+            channel_id=channel_id,
+            transport=transport,
         )
-        tools = weekly_session.definitions()
+        tools = dream_session.definitions()
         core_memory, conversation_context = await asyncio.gather(
             runtime_trace.prepare("core", read_core),
             _safe_conversation_context(),
@@ -1187,8 +1189,8 @@ async def _chat(
         ),
     }
     core_expected = core_memory
-    if weekly_session:
-        weekly_session.expected_core = core_memory
+    if dream_session:
+        dream_session.expected_core = core_memory
 
     from mochi.db import get_day_conversation
     bedtime_review = ""
@@ -1247,8 +1249,8 @@ async def _chat(
         conv_summary=(conv_summary or "") if prompt_policy.conversation_summary else "",
         recent_operations=recent_operations,
         runtime_entry=runtime_entry,
-        weekly_context=(
-            weekly_session.context.rendered if weekly_session else ""
+        dream_context=(
+            dream_session.context.rendered if dream_session else ""
         ),
         policy=prompt_policy,
         habit_progress_context=habit_progress_context,
@@ -1350,6 +1352,7 @@ async def _chat(
     on_interim = message.on_interim if message is not None else None
     history_response: LLMResponse | None = None
     image_pending_review = False
+    dream_protocol_errors: set[str] = set()
 
     def _log_main_usage(
         response: LLMResponse,
@@ -1369,8 +1372,8 @@ async def _chat(
                 if is_self_reminder
                 else runtime_entry.kind
                 if is_autonomous
-                else "weekly_maintenance"
-                if is_weekly
+                else "dream"
+                if is_dream
                 else f"chat:{tier}"
             ),
             call_type=call_type,
@@ -1381,6 +1384,19 @@ async def _chat(
         )
 
     def _free_time_cancelled() -> bool:
+        if is_dream:
+            from mochi.heartbeat import (
+                TRANSITIONING, _state, chat_activity_generation, has_active_chat,
+            )
+            from mochi.admin.admin_db import get_system_config
+            return bool(
+                has_active_chat() or _state == TRANSITIONING
+                or not get_system_config("WEEKLY_MAINTENANCE_ENABLED")
+                or (
+                    runtime_entry.chat_generation is not None
+                    and runtime_entry.chat_generation != chat_activity_generation()
+                )
+            )
         if not is_autonomous:
             return False
         from mochi.heartbeat import free_time_turn_available
@@ -1392,7 +1408,7 @@ async def _chat(
     def _cancelled_result() -> ChatResult:
         return ChatResult(
             tool_audit=tool_audit, successful_effects=successful_effects,
-            disposition="handled" if successful_effects else "skip",
+            disposition="invalid" if is_dream else "handled" if successful_effects else "skip",
         )
 
     def _final_result(reply: str, *, final_reply: bool = True) -> ChatResult:
@@ -1450,11 +1466,16 @@ async def _chat(
                 _after_delivery=list(after_delivery) if final_reply else [],
                 _pending_history=pending_history,
             )
-        if is_weekly:
+        if is_dream:
+            complete = bool(
+                final_reply and history_response
+                and history_response.finish_reason in {"stop", "end_turn", "completed"}
+                and not dream_session.failures and not dream_protocol_errors
+            )
             return ChatResult(
                 tool_audit=tool_audit,
                 successful_effects=successful_effects,
-                disposition="handled" if successful_effects else "skip",
+                disposition=("handled" if successful_effects else "skip") if complete else "invalid",
             )
         return ChatResult(
             text=reply,
@@ -1479,8 +1500,8 @@ async def _chat(
         generated_images: list[ImageAttachment] = []
         if _free_time_cancelled():
             return _cancelled_result()
-        if weekly_session:
-            weekly_session.advance_visible_context()
+        if dream_session:
+            dream_session.advance_visible_context()
         if not habit_context_loaded:
             habit_progress_context = await _habit_progress_context()
             if habit_progress_context:
@@ -1540,7 +1561,7 @@ async def _chat(
                     )
                 if is_self_reminder or is_autonomous:
                     return ChatResult(disposition="invalid")
-                if is_weekly:
+                if is_dream:
                     raise
                 if image:
                     return ChatResult(
@@ -1750,22 +1771,22 @@ async def _chat(
                 except Exception:
                     pass
 
-            is_weekly_tool = bool(
-                weekly_session and weekly_session.owns(tc["name"])
+            is_dream_tool = bool(
+                dream_session and dream_session.owns(tc["name"])
             )
-            if is_weekly and not is_weekly_tool:
+            if is_dream and not is_dream_tool:
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc["id"],
                     "content": model_result_for(SkillResult(
-                        output="Tool is outside the Weekly entry scope.",
+                        output="Tool is outside the Dream entry scope.",
                         success=False,
                         error_code="tool_outside_runtime_scope",
                         retryable=False,
                     )),
                 })
                 continue
-            if not is_weekly_tool:
+            if not is_dream_tool:
                 decision = policy_check(tc["name"], user_id)
                 if not decision.allowed:
                     messages.append({
@@ -1785,13 +1806,13 @@ async def _chat(
             )
             skill_name = (
                 "memory"
-                if is_weekly_tool
+                if is_dream_tool
                 else round_availability.binding_for(tc["name"]).name
                 if round_availability.binding_for(tc["name"]) is not None
                 else skill_registry.get_tool_skill(tc["name"]) or ""
             )
             execution_source = (
-                "weekly" if is_weekly_tool
+                "dream" if is_dream_tool
                 else f"runtime:{runtime_entry.kind}" if runtime_entry is not None
                 else "chat"
             )
@@ -1826,8 +1847,8 @@ async def _chat(
                         _source_date=diary_source_date,
                         _target_date=target,
                     )
-                if is_weekly_tool:
-                    result = await weekly_session.execute(
+                if is_dream_tool:
+                    result = await dream_session.execute(
                         tc["name"], arguments,
                     )
                     result.execution_started = True
@@ -1895,7 +1916,7 @@ async def _chat(
                     state_changed=outcome["state_changed"],
                     result_json=(
                         retained_result_for(tc["name"], result)
-                        if not is_weekly_tool else None
+                        if not is_dream_tool else None
                     ),
                 )
                 runtime_trace.finish_tool(trace_tool, result)
@@ -1925,7 +1946,7 @@ async def _chat(
                 "content": model_result_for(result),
             })
             if result.document_snapshot is not None:
-                if tc["name"] in {"update_core", "view_core_memory", "update_weekly_core"}:
+                if tc["name"] in {"update_core", "view_core_memory", "update_dream_core"}:
                     document_updates["core"] = result.document_snapshot
                 elif tc["name"] == "write_diary":
                     target = diary_target_dates[arguments.get("day", "today")]
@@ -1936,6 +1957,15 @@ async def _chat(
         paired_results = [
             item for item in messages[tool_messages_start:] if item["role"] == "tool"
         ]
+        if is_dream:
+            names = {call["id"]: call["name"] for call in response.tool_calls}
+            for paired in paired_results:
+                facts = json.loads(paired["content"])
+                name = names[paired["tool_call_id"]]
+                if facts.get("ok") is False and paired["tool_call_id"] not in executed_call_ids:
+                    dream_protocol_errors.add(name)
+                elif facts.get("ok") is True:
+                    dream_protocol_errors.discard(name)
         runtime_trace.event(
             "tool_results", {"round": round_num + 1}, paired_results,
             facts=runtime_trace.tool_rejection_facts(
@@ -1954,14 +1984,14 @@ async def _chat(
         # Only advance snapshots after their results become visible to Main.
         core_expected = document_updates.pop("core", core_expected)
         diary_expected.update(document_updates)
-        if weekly_session:
-            weekly_session.expected_core = core_expected
+        if dream_session:
+            dream_session.expected_core = core_expected
         availability = next_availability
 
     # If we exhausted tool rounds, return whatever we have
     reply = STICKER_RE.sub("", response.content or "").strip()
     if not reply and not (
-        is_bedtime or bedtime_requested or is_self_reminder or is_weekly or is_autonomous
+        is_bedtime or bedtime_requested or is_self_reminder or is_dream or is_autonomous
     ):
         reply = "处理过程出了点问题，你再说一次试试？"
     if _health_warning and reply:

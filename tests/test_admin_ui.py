@@ -5,6 +5,33 @@ import pytest
 
 
 @pytest.mark.asyncio
+async def test_dream_preference_preserves_existing_key_and_does_not_run_main(monkeypatch):
+    import httpx
+    import mochi.config as config
+    from mochi.admin import admin_db
+    from mochi.admin.admin_server import app
+    from mochi.db import _connect
+
+    monkeypatch.setattr(config, "ADMIN_TOKEN", "test-admin-token")
+    monkeypatch.setattr(admin_db, "_system_config_cache", {})
+    monkeypatch.setattr(admin_db, "_system_config_cache_time", 0)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test",
+        headers={"Authorization": "Bearer test-admin-token"},
+    ) as client:
+        result = await client.put("/api/preferences", json={"WEEKLY_MAINTENANCE_ENABLED": False})
+        assert result.status_code == 200
+        prefs = (await client.get("/api/preferences")).json()
+        assert prefs["WEEKLY_MAINTENANCE_ENABLED"]["value"] is False
+        bad = await client.put("/api/preferences", json={"WEEKLY_MAINTENANCE_ENABLED": "false"})
+        assert bad.status_code == 400
+    assert admin_db.get_system_overrides()["WEEKLY_MAINTENANCE_ENABLED"] == "false"
+    conn = _connect()
+    assert conn.execute("SELECT COUNT(*) FROM dream_batches").fetchone()[0] == 0
+    conn.close()
+
+
+@pytest.mark.asyncio
 async def test_admin_update_hands_off_only_after_authenticated_response(monkeypatch):
     import httpx
     import mochi.config as config
