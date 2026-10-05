@@ -12,7 +12,7 @@ Tool-only mode: `log_meal` (record meals with nutrition estimation) + `query_mea
 
 ## Tools
 
-### log_meal (routed)
+### log_meal (routed, adaptive)
 记录一餐的食物、估算热量和宏量营养素，适用于文字描述或食物照片。总量由代码累加逐项估算，作为后续交流的真实依据。
 
 | Parameter | Type | Required | Description |
@@ -22,7 +22,7 @@ Tool-only mode: `log_meal` (record meals with nutrition estimation) + `query_mea
 | source | string (enum: text, photo, voice) | | text / photo / voice，默认 text |
 | date | string | | YYYY-MM-DD，默认今天 |
 
-### query_meals (routed)
+### query_meals (routed, adaptive)
 读取近期餐食、记录 ID、热量摄入和营养趋势，可按日期或回看天数汇总。
 
 | Parameter | Type | Required | Description |

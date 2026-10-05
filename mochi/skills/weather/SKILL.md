@@ -16,7 +16,7 @@ config:
 
 ## Tools
 
-### get_weather (routed)
+### get_weather (routed, adaptive)
 读取配置城市的当前天气实况，可为当下温度、降水和穿衣判断提供数据。
 
 | Parameter | Type | Required | Description |

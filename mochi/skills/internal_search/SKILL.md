@@ -15,7 +15,7 @@ type: tool
 | source | string (enum: all, conversation, diary, memory) | no | 搜索范围，默认 all |
 | limit | integer | no | 每类最多返回条数，默认 5，范围 1-10 |
 
-### read_tool_result (on_demand)
+### read_tool_result (on_demand, adaptive)
 翻看一张回执对应的详细结果，不会重新执行原操作。长内容可以接着读；当时没有完整保留下来的内容会注明。
 
 | Parameter | Type | Required | Description |

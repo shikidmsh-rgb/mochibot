@@ -132,9 +132,7 @@ FALLBACK_WAKE_HOUR = _env_int("FALLBACK_WAKE_HOUR", 10)
 # ═══════════════════════════════════════════════════════════════════════════
 
 MAX_HISTORY_TURNS: int = _env_int("MAX_HISTORY_TURNS", 10)
-CONV_SUMMARY_BATCH_TURNS: int = max(
-    1, _env_int("CONV_SUMMARY_BATCH_TURNS", 20),
-)
+CONV_SUMMARY_BATCH_TURNS: int = _env_int("CONV_SUMMARY_BATCH_TURNS", 20)
 CONV_SUMMARY_MAX_TOKENS: int = max(
     100, _env_int("CONV_SUMMARY_MAX_TOKENS", 300),
 )
@@ -324,6 +322,8 @@ KG_MAX_TRIPLES_PER_ENTITY = _env_int("KG_MAX_TRIPLES_PER_ENTITY", 20)
 AI_CHAT_MAX_COMPLETION_TOKENS = _env_int("AI_CHAT_MAX_COMPLETION_TOKENS", 4096)
 # Empty keeps the provider default; applied to models using the Responses API.
 REASONING_EFFORT = _env("REASONING_EFFORT").strip().lower()
+# Opt-in stable-prefix caching for ordinary owner chat on supported Main Responses models.
+MAIN_EXPLICIT_CACHE = _env_bool("MAIN_EXPLICIT_CACHE", False)
 DEFAULT_TOOL_LOOP_MAX_ROUNDS = 16
 TOOL_LOOP_MAX_ROUNDS = _env_int("TOOL_LOOP_MAX_ROUNDS", DEFAULT_TOOL_LOOP_MAX_ROUNDS)
 TOOL_LOOP_TOTAL_TOOL_LIMIT = max(
@@ -415,6 +415,11 @@ def validate_config() -> str:
     """Return normal, guided setup, or admin-only startup mode."""
     import logging as _logging
     _log = _logging.getLogger(__name__)
+    if not 0 < MAX_HISTORY_TURNS < CONV_SUMMARY_BATCH_TURNS:
+        raise ValueError(
+            "CONV_SUMMARY_BATCH_TURNS must exceed MAX_HISTORY_TURNS, "
+            "and MAX_HISTORY_TURNS must be positive"
+        )
 
     # Normal runtime requires explicit Main and Lite assignments.
     has_required_models = False

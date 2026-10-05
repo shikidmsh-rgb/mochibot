@@ -19,7 +19,7 @@ sense:
 | remind_at | string | yes | ISO 8601 格式的首次回望时间 |
 | recurrence | string (enum: one_time, daily, weekdays, weekly) | no | 默认 one_time；daily 每天，weekdays 周一至周五，weekly 每周 |
 
-### manage_reminder (routed)
+### manage_reminder (routed, adaptive)
 管理定时联系：notify 到点直接通知用户；self 到点让未来的自己结合当时情况重新判断。提醒可一次性或周期重复，但不追踪事情后来是否完成。
 
 | Parameter | Type | Required | Description |

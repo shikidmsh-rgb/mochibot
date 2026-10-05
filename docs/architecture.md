@@ -131,6 +131,14 @@ current time — travel as one read-only `turn_context` message just before the
 current input and are never persisted, so providers can reuse the system +
 history prefix across turns. Runtime entries keep that context in system.
 
+Ordinary authorized owner chat may opt into explicit Main Responses caching.
+The adapter marks a supported text boundary within the stable prefix captured
+before `turn_context`, keeps implicit caching enabled, and verifies that prefix
+on every tool round without modifying history or provider reasoning. The option
+is off by default and does not affect Lite, runtime entries, or other protocols;
+endpoint acceptance and savings require real provider evidence, not a model
+name or client-side prefix match alone.
+
 Once per logical day, during awake hours, the first owner chat turn or Free
 Time run — whichever comes first — also carries a "new day" look at the last
 seven archived diaries (newest days kept within budget). It is marked done in
@@ -317,6 +325,8 @@ newly routed, so follow-ups keep their tools and the provider schema stays
 stable. Every turn revalidates carried tools against the live registry and
 policy; idle expiry, a conversation reset, restart, or an oversized toolbox
 starts over. Runtime entries never carry chat tools.
+Even an append-only tool change can invalidate reuse of later prompt content;
+stable ordering does not guarantee a provider cache hit.
 
 After live extension activation, in-flight calls finish on their existing
 immutable code snapshot. Subsequent provider rounds refresh tools already
@@ -339,13 +349,16 @@ Heartbeat resolves sleep/wake values at each decision boundary. Message wake
 eligibility and scheduled fallback wake are separate preferences. Core may
 remember a preference but is never runtime configuration authority.
 
-Only explicitly adaptive tools may move between `on_demand` and `routed`
-loading, starting at their declared tier. Document readers default to `routed`.
-Nightly derives that projection from successful,
-distinct ordinary chat turns; autonomous work does not count. Main can pin or
-reset eligible tool visibility. This never grants resident loading, bypasses
-eligibility, or expands an in-flight round's allowlist. Definitions remain the
-source of declared contracts; SQLite stores only the current loading projection.
+Only explicitly adaptive tools may move between `on_demand`, `routed` and
+`resident`, starting at their declared non-resident tier. Document readers
+default to `routed`. Nightly derives the projection from successful, distinct
+ordinary chat turns and local active dates; autonomous work does not count.
+Resident promotion requires sustained cross-day use and shares a bounded
+schema/capability-context budget, with existing residents preferred over new
+candidates. Main can pin or reset eligible visibility within the same budget.
+This never bypasses live eligibility or expands an in-flight round's allowlist.
+Definitions remain the source of declared contracts; SQLite stores only the
+current loading projection. The Skill contract owns thresholds and limits.
 
 ## Stable-release updates
 
@@ -460,11 +473,17 @@ reviews the bounded Memory Item package and active graph, using semantic
 judgment to keep only durable user-life relationships. Deterministic code
 enforces type, predicate, evidence, snapshot, and transaction boundaries.
 
-Conversation context uses a durable per-user rolling summary. Every configured
-batch of complete ordinary user/assistant turns is combined with the previous
-summary by personality-free Lite, and SQLite advances the cursor only after a
-successful result. Until then Main receives the durable previous summary, every
-unsummarized complete turn, and the recent role-true window. Context reset starts
+Conversation context uses a durable per-user rolling summary as its raw-window
+boundary. Raw completed turns normally append until the configured high-water
+mark (default 20). Personality-free Lite combines the oldest batch with the
+previous summary, leaving the newest complete turns raw (default 10); SQLite
+commits summary and cursor together only after a successful result. A bounded
+oversize batch can retire fewer complete turns without reducing the trigger
+threshold. Until then Main receives the durable previous summary, every
+unsummarized complete turn, and at least the recent role-true window. Delivered
+standalone messages are selected against that whole raw window, subject to their
+existing separate bounds. Existing summaries and source records are not rebuilt.
+Context reset starts
 a clean summary epoch and rejects any in-flight result from the old epoch.
 On the official DeepSeek adapter, both summary generation and its bounded
 compression retry disable thinking per request, without changing shared model

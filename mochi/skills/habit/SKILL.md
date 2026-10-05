@@ -12,7 +12,7 @@ diary_status_order: 10
 
 ## Tools
 
-### habit_progress (routed)
+### habit_progress (routed, adaptive)
 读取习惯进度或记录已经完成的进展；“打算做”或“晚点做”不算完成。
 
 | Parameter | Type | Required | Description |
@@ -24,7 +24,7 @@ diary_status_order: 10
 | count | integer | no | 仅 add 使用；本次新增的完成次数，正整数，默认 1 |
 | total | integer | no | 仅 sync 使用且必填；当前周期累计完成次数，非负整数；工具原子读取已存进度并只补齐差额，不减少已有记录 |
 
-### edit_habit (routed)
+### edit_habit (routed, adaptive)
 创建或调整需要反复追踪的长期习惯，包括频率、重要性、暂停和恢复。
 
 | Parameter | Type | Required | Description |

@@ -21,7 +21,7 @@ config:
 
 ## Tools
 
-### web_search (routed)
+### web_search (routed, adaptive)
 搜索互联网，查询时事、新闻、价格、知识、教程等。配置 Tavily API Key 后使用 Tavily；否则沿用百度千帆优先、Bing 备用。Bing 不支持时间范围筛选，切换时结果会注明。
 
 | Parameter | Type | Required | Description |

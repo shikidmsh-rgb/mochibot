@@ -14,6 +14,7 @@ import base64
 import logging
 import re
 from abc import ABC, abstractmethod
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, TypedDict
 from urllib.parse import urlsplit, urlunsplit
@@ -84,11 +85,27 @@ class LLMResponse:
     response_items: list[dict] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class ResponsesCacheContext:
+    """Snapshot of the converted stable prefix for one Main owner turn."""
+
+    input_prefix: list[dict]
+    key: str
+
+    @classmethod
+    def from_messages(cls, messages: list[dict], *, key: str) -> "ResponsesCacheContext":
+        return cls(input_prefix=deepcopy(_responses_input(messages)), key=key)
+
+
 class LLMProvider(ABC):
     """Abstract base class for LLM providers."""
 
     @property
     def supports_thinking_control(self) -> bool:
+        return False
+
+    @property
+    def supports_explicit_cache(self) -> bool:
         return False
 
     @property
@@ -99,7 +116,8 @@ class LLMProvider(ABC):
     @abstractmethod
     def chat(self, messages: list[dict], tools: list[dict] | None = None,
              temperature: float | None = None, max_tokens: int = 2048,
-             json_mode: bool = False, *, thinking: bool | None = None) -> LLMResponse:
+             json_mode: bool = False, *, thinking: bool | None = None,
+             cache_context: ResponsesCacheContext | None = None) -> LLMResponse:
         """Send a chat completion request.
 
         json_mode=True asks the provider to return strict JSON. Each provider
@@ -108,6 +126,7 @@ class LLMProvider(ABC):
         the framework-layer markdown fence strip.
         thinking is a per-request override only for providers advertising
         supports_thinking_control. None preserves the provider's default.
+        cache_context is only sent to providers advertising supports_explicit_cache.
         """
         ...
 
@@ -291,6 +310,35 @@ def _responses_input(messages: list[dict]) -> list[dict]:
                 ]
             items.append({"role": role, "content": content})
     return items
+
+
+def _with_stable_cache_boundary(
+    items: list[dict], context: ResponsesCacheContext,
+) -> list[dict]:
+    prefix = context.input_prefix
+    if not prefix or items[:len(prefix)] != prefix:
+        raise ValueError("Explicit cache prefix does not match the request input")
+
+    # Replayed provider output can share nested objects with stored history.
+    request_items = deepcopy(items)
+    for index in range(len(prefix) - 1, -1, -1):
+        item = request_items[index]
+        if item.get("type") == "function_call_output":
+            field_name = "output"
+        elif item.get("role") in {"system", "developer", "user"}:
+            field_name = "content"
+        else:
+            continue
+        content = item.get(field_name)
+        if isinstance(content, str):
+            content = [{"type": "input_text", "text": content}]
+            item[field_name] = content
+        if isinstance(content, list):
+            for block in reversed(content):
+                if block.get("type") == "input_text":
+                    block["prompt_cache_breakpoint"] = {"mode": "explicit"}
+                    return request_items
+    raise ValueError("Explicit cache prefix has no supported input_text boundary")
 
 
 def _responses_tools(tools: list[dict]) -> list[dict]:
@@ -562,6 +610,10 @@ class OpenAIProvider(_OpenAICompatChat, LLMProvider):
         return urlsplit(self._base_url).hostname == "api.deepseek.com"
 
     @property
+    def supports_explicit_cache(self) -> bool:
+        return _uses_responses_api(self._model)
+
+    @property
     def reasoning_source(self) -> str:
         return (
             f"{self._caps_cache_key}::responses"
@@ -571,9 +623,12 @@ class OpenAIProvider(_OpenAICompatChat, LLMProvider):
 
     def chat(self, messages: list[dict], tools: list[dict] | None = None,
              temperature: float | None = None, max_tokens: int = 2048,
-             json_mode: bool = False, *, thinking: bool | None = None) -> LLMResponse:
+             json_mode: bool = False, *, thinking: bool | None = None,
+             cache_context: ResponsesCacheContext | None = None) -> LLMResponse:
         if thinking is not None and not self.supports_thinking_control:
             raise ValueError("This provider does not support per-request thinking control")
+        if cache_context is not None and not self.supports_explicit_cache:
+            raise ValueError("This provider does not support explicit prefix caching")
         if _uses_responses_api(self._model):
             kwargs: dict = {
                 "model": self._model,
@@ -582,6 +637,12 @@ class OpenAIProvider(_OpenAICompatChat, LLMProvider):
                 "store": False,
                 "include": ["reasoning.encrypted_content"],
             }
+            if cache_context is not None:
+                kwargs["input"] = _with_stable_cache_boundary(kwargs["input"], cache_context)
+                kwargs["prompt_cache_key"] = cache_context.key
+                kwargs["extra_body"] = {
+                    "prompt_cache_options": {"mode": "implicit", "ttl": "30m"},
+                }
             from mochi import config
             if config.REASONING_EFFORT:
                 kwargs["reasoning"] = {"effort": config.REASONING_EFFORT}
@@ -629,9 +690,12 @@ class AnthropicProvider(LLMProvider):
 
     def chat(self, messages: list[dict], tools: list[dict] | None = None,
              temperature: float | None = None, max_tokens: int = 2048,
-             json_mode: bool = False, *, thinking: bool | None = None) -> LLMResponse:
+             json_mode: bool = False, *, thinking: bool | None = None,
+             cache_context: ResponsesCacheContext | None = None) -> LLMResponse:
         if thinking is not None:
             raise ValueError("This provider does not support per-request thinking control")
+        if cache_context is not None:
+            raise ValueError("This provider does not support explicit prefix caching")
         # Anthropic has no native JSON mode. Caller must rely on prompting.
         # Framework-layer strip below is the safety net (gated on json_mode).
         # Separate system message from conversation

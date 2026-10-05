@@ -7,7 +7,7 @@ locked: true
 
 ## Tools
 
-### browse_workspace (on_demand)
+### browse_workspace (on_demand, adaptive)
 Browse your saved documents and personal skills. Omit path to see the workspace and available operations. Use list, search or read for files; guide returns the authoring guide with document and Python templates; report reads a draft's last script-run report.
 
 | Parameter | Type | Required | Description |
@@ -19,7 +19,7 @@ Browse your saved documents and personal skills. Omit path to see the workspace 
 | offset | integer | no | Default 0; result offset for list/search, character offset within each read file |
 | limit | integer | no | List maximum/default 100; search maximum/default 20; shared read character maximum/default 12000 |
 
-### edit_workspace (on_demand)
+### edit_workspace (on_demand, adaptive)
 Create or revise personal documents and skill drafts. A draft-root create accepts files; kind: document in SKILL.md makes a document skill without Python. Other new packages fill omitted standard files from the Python template. Editing a draft does not change the active skill.
 
 | Parameter | Type | Required | Description |

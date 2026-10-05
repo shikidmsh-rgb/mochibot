@@ -89,11 +89,16 @@ previous holds its predecessor. A read already in progress keeps its version.
 Creation, editing and activation use the existing development switch; installed
 skills remain usable when development is turned off.
 
-New document skills start as routing candidates. Infrequent use can move them
-to on_demand; repeated use brings them back to routed. This tracks successful
-reads in ordinary chats, not advice quality. Revisions and restarts do not reset
-that history. manage_settings can inspect loading state, pin on_demand or routed,
-or reset to automatic loading. Skills are not automatically made resident.
+New document skills start as routing candidates. Successful ordinary-chat use can
+move adaptive tools between on_demand, routed and resident. Automatic resident
+loading requires at least 12 successful chat turns across 3 days in the last 30
+days, within a shared limit of 6 tools and approximately 3,000 estimated tokens
+including capability context. Existing residents are preferred when allocating
+that budget. Unused residents return to routed after 30 unused days and at least
+7 days at that tier. Revisions and restarts do not reset usage history.
+manage_settings can inspect loading state, pin on_demand, routed or resident, or
+reset to automatic loading. Loading never changes tool permissions or
+automatically reads a guide body.
 
 ## Personal extension API v1
 

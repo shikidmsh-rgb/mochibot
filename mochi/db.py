@@ -978,36 +978,43 @@ def get_adaptive_tool_load_states() -> dict[str, dict]:
         conn.close()
 
 
-def save_adaptive_tool_load_state(
-    tool_name: str, *, effective_load: str, changed_at: str,
-    pinned_load: str | None, reason: str,
-) -> None:
+def save_adaptive_tool_load_states(states: list[dict]) -> None:
     conn = _connect()
     try:
-        conn.execute(
+        conn.executemany(
             "INSERT INTO adaptive_tool_loads "
             "(tool_name,effective_load,changed_at,pinned_load,reason) VALUES (?,?,?,?,?) "
             "ON CONFLICT(tool_name) DO UPDATE SET "
             "effective_load=excluded.effective_load, changed_at=excluded.changed_at, "
             "pinned_load=excluded.pinned_load, reason=excluded.reason",
-            (tool_name, effective_load, changed_at, pinned_load, reason),
+            [
+                (
+                    state["tool_name"], state["effective_load"], state["changed_at"],
+                    state["pinned_load"], state["reason"],
+                )
+                for state in states
+            ],
         )
         conn.commit()
     finally:
         conn.close()
 
 
-def get_successful_chat_tool_turn_counts(*, user_id: int, since: str) -> dict[str, int]:
+def get_successful_chat_tool_usage(*, user_id: int, since: str) -> dict[str, dict[str, int]]:
     conn = _connect()
     try:
+        offset = int(datetime.now(TZ).utcoffset().total_seconds() // 60)
         return {
-            row["tool_name"]: row["turn_count"]
+            row["tool_name"]: {
+                "turns": row["turn_count"], "days": row["day_count"],
+            }
             for row in conn.execute(
-                "SELECT tool_name, COUNT(DISTINCT turn_id) AS turn_count "
+                "SELECT tool_name, COUNT(DISTINCT turn_id) AS turn_count, "
+                "COUNT(DISTINCT date(started_at, ?)) AS day_count "
                 "FROM tool_executions WHERE user_id=? AND source='chat' "
                 "AND status='success' AND finished_at IS NOT NULL AND turn_id != '' "
                 "AND julianday(started_at) >= julianday(?) GROUP BY tool_name",
-                (user_id, since),
+                (f"{offset:+d} minutes", user_id, since),
             ).fetchall()
         }
     finally:
@@ -1507,10 +1514,26 @@ def _ensure_conversation_summary_state(
     ).fetchone()
 
 
+def _conversation_summary_window(
+    batch_turns: int, retained_turns: int | None,
+) -> tuple[int, int]:
+    if retained_turns is None:
+        from mochi.config import MAX_HISTORY_TURNS
+        retained_turns = MAX_HISTORY_TURNS
+    high_water, retained = int(batch_turns), int(retained_turns)
+    if retained < 1 or high_water <= retained:
+        raise ValueError(
+            "CONV_SUMMARY_BATCH_TURNS must exceed MAX_HISTORY_TURNS, "
+            "and MAX_HISTORY_TURNS must be positive"
+        )
+    return high_water, retained
+
+
 def get_conversation_summary_batch(
-    user_id: int, batch_turns: int = 20,
+    user_id: int, batch_turns: int = 20, *, retained_turns: int | None = None,
 ) -> dict | None:
-    """Return the exact next complete-turn batch without advancing state."""
+    """At the high-water mark, claim the oldest turns above the retained floor."""
+    high_water, retained = _conversation_summary_window(batch_turns, retained_turns)
     conn = _connect()
     try:
         state = _ensure_conversation_summary_state(conn, user_id)
@@ -1523,10 +1546,9 @@ def get_conversation_summary_batch(
             if turn["through_message_id"] > state["through_message_id"]
         ]
         conn.commit()
-        size = max(1, int(batch_turns))
-        if len(turns) < size:
+        if len(turns) < high_water:
             return None
-        batch = turns[:size]
+        batch = turns[:high_water - retained]
         return {
             "user_id": user_id,
             "reset_at": state["reset_at"],
@@ -1664,6 +1686,7 @@ def get_conversation_context(
                 flattened.extend((turn["user"], turn["assistant"]))
             return flattened
 
+        overflow_messages = _flatten(overflow)
         recent_messages = _flatten(recent)
         if include_standalone:
             paired_ids = {
@@ -1671,7 +1694,11 @@ def get_conversation_context(
                 for message in (turn["user"], turn["assistant"])
             }
             start_id = min(
-                (message["id"] for message in recent_messages), default=0,
+                (
+                    message["id"]
+                    for message in [*overflow_messages, *recent_messages]
+                ),
+                default=0,
             )
             standalone = [
                 message for message in messages
@@ -1693,7 +1720,6 @@ def get_conversation_context(
             )
             recent_messages.sort(key=lambda message: message["id"])
 
-        overflow_messages = _flatten(overflow)
         if reasoning_source:
             selected = {
                 message["id"]: message
@@ -1729,6 +1755,7 @@ def get_conversation_summary_status(
     user_id: int, batch_turns: int = 20,
 ) -> dict:
     """Expose cursor, complete pending turns, and the latest worker result."""
+    high_water, retained = _conversation_summary_window(batch_turns, None)
     conn = _connect()
     try:
         state = _ensure_conversation_summary_state(conn, user_id)
@@ -1744,7 +1771,9 @@ def get_conversation_summary_status(
         result = dict(state)
         result.update({
             "pending_turns": pending,
-            "batch_turns": max(1, int(batch_turns)),
+            "batch_turns": high_water,
+            "retained_turns": retained,
+            "retire_turns": high_water - retained,
         })
         return result
     finally:

@@ -18,7 +18,7 @@ sense:
 
 ## Tools
 
-### manage_todo (routed)
+### manage_todo (routed, adaptive)
 创建、查看、完成、重新打开、更新或删除需要持续追踪的一次性事项，例如买猫粮、交报告或已经完成的 PR。
 
 | Parameter | Type | Required | Description |

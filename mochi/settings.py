@@ -215,13 +215,13 @@ def _tool_settings(setting_id: str = "") -> list[dict]:
         result.append(_entry(
             full_id, f"{name} · 加载方式",
             (
-                "设置为 on_demand 或 routed 会锁定加载方式；reset 恢复按真实使用记录自动调整，不改变工具权限。"
+                "设置为 on_demand、routed 或 resident 会锁定加载方式；resident 受常驻数量与 token 预算限制。reset 恢复按真实使用记录自动调整，不改变工具权限。"
                 if adaptive else "工具加载方式由技能合同固定，不能修改。"
             ),
             tool["_load"], "string",
             "declared" if not adaptive else "pinned" if tool["_load_pinned"] else "automatic",
             writable=adaptive,
-            authority="main", constraints={"choices": ["on_demand", "routed"]},
+            authority="main", constraints={"choices": ["on_demand", "routed", "resident"]},
             reset="恢复自动调整，并按现有使用记录重新计算加载方式。",
             effect="影响后续工具加载；需要立即使用尚未出现的工具时，可调用 request_tools。",
             details={
@@ -463,16 +463,21 @@ def change_setting(
         else:
             changed = _write_skill_value(name, key.removeprefix("config."), value, reset=reset)
     else:
-        from mochi.adaptive_tool_load import pin_definition
+        from mochi.adaptive_tool_load import AdaptiveLoadError, pin_definition
         from mochi.skills import get_declared_tools
 
         tool_name = address.removesuffix(".load")
         definition = next(
             tool for tool in get_declared_tools() if tool["function"]["name"] == tool_name
         )
-        if not reset and value not in {"on_demand", "routed"}:
+        if not reset and value not in {"on_demand", "routed", "resident"}:
             raise SettingsError("invalid_setting_value", f"配置值不符合类型或范围：{setting_id}。")
-        changed = pin_definition(definition, None if reset else value, user_id=user_id)["changed"]
+        try:
+            changed = pin_definition(definition, None if reset else value, user_id=user_id)["changed"]
+        except AdaptiveLoadError as exc:
+            if exc.code != "resident_budget_exceeded":
+                raise
+            raise SettingsError(exc.code, "Resident tool budget exceeded.") from exc
     after = get_setting(setting_id)
     return {
         "id": setting_id, "action": "reset" if reset else "set", "changed": changed,

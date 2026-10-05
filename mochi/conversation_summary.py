@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from mochi.config import CONV_SUMMARY_BATCH_TURNS
+from mochi.config import CONV_SUMMARY_BATCH_TURNS, MAX_HISTORY_TURNS
 from mochi.db import (
     get_conversation_summary_batch,
     get_conversation_summary_status,
@@ -22,6 +22,7 @@ from mochi.token_estimator import estimate_tokens
 log = logging.getLogger(__name__)
 
 SUMMARY_BATCH_SIZE = CONV_SUMMARY_BATCH_TURNS
+SUMMARY_RETAINED_TURNS = MAX_HISTORY_TURNS
 SUMMARY_CONTEXT_MAX_TOKENS = 16_000
 SUMMARY_GENERATION_MIN_TOKENS = 1_200
 _TRUNCATED_FINISH_REASONS = frozenset({"length", "max_tokens", "max_output_tokens"})
@@ -137,46 +138,46 @@ async def _generate_summary(claim: dict) -> str:
 
 async def _drain_user(user_id: int) -> None:
     failed = False
-    batch_size = SUMMARY_BATCH_SIZE
     try:
         while True:
             claim = await asyncio.to_thread(
                 get_conversation_summary_batch,
                 user_id,
-                batch_size,
+                SUMMARY_BATCH_SIZE,
+                retained_turns=SUMMARY_RETAINED_TURNS,
             )
             if claim is None:
-                if batch_size < SUMMARY_BATCH_SIZE:
-                    status = await asyncio.to_thread(
-                        get_conversation_summary_status, user_id, SUMMARY_BATCH_SIZE,
-                    )
-                    if status["pending_turns"]:
-                        batch_size = min(batch_size, status["pending_turns"])
+                return
+            while True:
+                try:
+                    summary = await _generate_summary(claim)
+                    if not summary:
+                        raise ValueError(
+                            "Lite returned an empty conversation summary"
+                        )
+                    break
+                except Exception as exc:
+                    if isinstance(exc, SummaryContextError) and len(claim["turns"]) > 1:
+                        turns = claim["turns"][:max(1, len(claim["turns"]) // 2)]
+                        claim = {
+                            **claim,
+                            "turns": turns,
+                            "next_through_message_id": turns[-1]["through_message_id"],
+                        }
+                        log.info("Reducing summary batch to %d complete turns", len(turns))
                         continue
-                return
-            try:
-                summary = await _generate_summary(claim)
-                if not summary:
-                    raise ValueError(
-                        "Lite returned an empty conversation summary"
+                    failed = True
+                    await asyncio.to_thread(
+                        record_conversation_summary_error,
+                        claim,
+                        f"{type(exc).__name__}: {exc}",
                     )
-            except Exception as exc:
-                if isinstance(exc, SummaryContextError) and batch_size > 1:
-                    batch_size = max(1, batch_size // 2)
-                    log.info("Reducing summary batch to %d complete turns", batch_size)
-                    continue
-                failed = True
-                await asyncio.to_thread(
-                    record_conversation_summary_error,
-                    claim,
-                    f"{type(exc).__name__}: {exc}",
-                )
-                log.warning(
-                    "Conversation summary failed for user %d: %s",
-                    user_id,
-                    exc,
-                )
-                return
+                    log.warning(
+                        "Conversation summary failed for user %d: %s",
+                        user_id,
+                        exc,
+                    )
+                    return
 
             saved = await asyncio.to_thread(
                 save_conversation_summary, claim, summary,

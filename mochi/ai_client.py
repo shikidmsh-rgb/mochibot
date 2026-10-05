@@ -21,7 +21,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from typing import Callable
 
-from mochi.llm import get_client_for_tier, LLMResponse
+from mochi.llm import get_client_for_tier, LLMResponse, ResponsesCacheContext
 from mochi.prompt_loader import get_prompt, get_system_chat_modules
 from mochi.db import (
     save_message, save_message_once, log_usage,
@@ -794,7 +794,7 @@ async def _chat(
         TOOL_LOOP_MAX_ROUNDS, AI_CHAT_MAX_COMPLETION_TOKENS,
         TOOL_ROUTER_ENABLED, TOOL_ESCALATION_ENABLED,
         TOOL_ESCALATION_MAX_PER_TURN, TOOL_LOOP_TOTAL_TOOL_LIMIT,
-        TOOL_LOOP_PER_TOOL_LIMIT, DREAM_MAX_COMPLETION_TOKENS,
+        TOOL_LOOP_PER_TOOL_LIMIT, DREAM_MAX_COMPLETION_TOKENS, MAIN_EXPLICIT_CACHE,
     )
 
     runtime_entry = runtime_entry or (
@@ -1311,11 +1311,19 @@ async def _chat(
             await runtime_trace.prepare("attachment", _file_content, text, attachment),
         )
     current_input_index = None
+    cache_kwargs: dict[str, ResponsesCacheContext] = {}
     if split_turn_context:
         current_index = (
             len(messages) - 1 if messages[-1].get("role") == "user"
             else len(messages)
         )
+        if (
+            MAIN_EXPLICIT_CACHE and tier == "main" and message.owner_authorized
+            and client.supports_explicit_cache
+        ):
+            cache_kwargs["cache_context"] = ResponsesCacheContext.from_messages(
+                messages[:current_index], key="mochibot-main-owner-chat-v1",
+            )
         messages.insert(current_index, {
             "role": "user",
             "content": (
@@ -1561,6 +1569,7 @@ async def _chat(
                             else None
                         ),
                         max_tokens=DREAM_MAX_COMPLETION_TOKENS if is_dream else AI_CHAT_MAX_COMPLETION_TOKENS,
+                        **cache_kwargs,
                     )
                 break
             except asyncio.CancelledError:
