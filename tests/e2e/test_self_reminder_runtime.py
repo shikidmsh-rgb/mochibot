@@ -1,6 +1,7 @@
 """One durable Self Reminder delivery path."""
 
 import asyncio
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -18,13 +19,18 @@ from tests.e2e.mock_llm import make_response, make_tool_call
 @pytest.mark.asyncio
 @pytest.mark.parametrize("expires_while_waiting", [False, True])
 async def test_self_turns_wait_for_confirmed_history_without_blocking_notify(
-    monkeypatch, expires_while_waiting,
+    mock_llm_factory, monkeypatch, expires_while_waiting,
 ):
-    from mochi.ai_client import ChatResult
     from mochi.db import _connect
+    import mochi.ai_client as ai_client
     import mochi.reminder_timer as timer
     import mochi.skills.reminder.queries as queries
 
+    mock = mock_llm_factory([
+        make_response("A prepared check-in."),
+        make_response("[SKIP]"),
+    ])
+    monkeypatch.setattr(ai_client, "_retrieve_memories_for_turn", lambda *args: [])
     clock = {"now": datetime(2026, 9, 26, 15, 0, tzinfo=timezone.utc)}
     monkeypatch.setattr(timer, "_utc_now", lambda: clock["now"])
     monkeypatch.setattr(queries, "_now", lambda: clock["now"])
@@ -39,6 +45,7 @@ async def test_self_turns_wait_for_confirmed_history_without_blocking_notify(
     allow_preparation = asyncio.Event()
     allow_delivery = asyncio.Event()
     seen_history = {}
+    deliveries = []
 
     def status(rid):
         with _connect() as conn:
@@ -50,20 +57,15 @@ async def test_self_turns_wait_for_confirmed_history_without_blocking_notify(
         seen_history[entry.reminder_id] = [
             row["turn_id"] for row in get_recent_messages(1)
         ]
+        result = await chat(runtime_entry=entry)
         if entry.reminder_id == first_id:
             first_preparing.set()
             await allow_preparation.wait()
-        return ChatResult(
-            text="A prepared check-in.",
-            _pending_history={
-                "user_id": 1, "content": "A prepared check-in.",
-                "turn_id": entry.idempotency_key,
-                "tool_history": None, "processed": True,
-            },
-        )
+        return result
 
     async def deliver(_channel, _result, *, can_deliver):
         assert can_deliver()
+        deliveries.append(_result)
         if not first_sending.is_set():
             first_sending.set()
             await allow_delivery.wait()
@@ -100,9 +102,36 @@ async def test_self_turns_wait_for_confirmed_history_without_blocking_notify(
     if expires_while_waiting:
         assert second_id not in seen_history
         assert status(second_id) == "expired"
+        assert len(mock.call_log) == 1
     else:
         assert f"self-reminder:{first_id}:{due}" in seen_history[second_id]
         assert status(second_id) == "delivered"
+        assert len(mock.call_log) == 2
+        messages = mock.call_log[1]["messages"]
+        assert [message["role"] for message in messages] == ["system", "user"]
+        assert reminders[second_id]["context"] in messages[-1]["content"]
+        assert due in messages[-1]["content"]
+        records = json.loads(messages[0]["content"].split(
+            '<recent_completed_turns role="read_only_evidence">\n', 1,
+        )[1].split("\n</recent_completed_turns>", 1)[0])
+        assert records == [
+            {
+                "speaker": row["role"], "timestamp": row["created_at"],
+                "content": row["content"],
+            }
+            for row in get_recent_messages(1)
+        ]
+        with _connect() as conn:
+            assert conn.execute(
+                "SELECT outcome FROM reminders WHERE id = ?", (second_id,),
+            ).fetchone()[0] == "no_op"
+
+    await _fire_reminder(reminders[first_id])
+    assert len(deliveries) == 1
+    assert len(mock.call_log) == (1 if expires_while_waiting else 2)
+    history = get_recent_messages(1)
+    assert len(history) == 2
+    assert all(row["role"] == "assistant" for row in history)
 
 
 @pytest.mark.asyncio

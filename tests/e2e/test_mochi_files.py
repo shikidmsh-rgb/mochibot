@@ -17,6 +17,98 @@ WORKSPACE_TOOLS = FILES_TOOLS | {"run_extension", "activate_extension"}
 
 
 @pytest.mark.asyncio
+async def test_document_skill_create_read_edit_and_reactivate_in_main(
+    monkeypatch, mock_llm_factory,
+):
+    import mochi.config as config
+    from mochi.extensions import store
+
+    monkeypatch.setattr(config, "TOOL_ESCALATION_ENABLED", True)
+    monkeypatch.setattr(config, "TOOL_LOOP_MAX_ROUNDS", 9)
+    name = "local_packing"
+    read_tool = f"{name}_read"
+    draft = f"extensions/{name}/draft"
+    original = "# Packing\n\nBring a light jacket.\n"
+    revised = "# Packing\n\nBring a raincoat.\n"
+    manifest = (
+        f"---\nname: {name}\nmod_api: 1\nkind: document\n"
+        "description: Packing guidance\ntype: tool\n---\n\n"
+    )
+    mock = mock_llm_factory([
+        make_response(tool_calls=[
+            make_tool_call("request_tools", {"skills": ["personal_workspace"]}),
+        ]),
+        make_response(tool_calls=[
+            make_tool_call("edit_workspace", {
+                "action": "create", "path": draft,
+                "files": [{"path": "SKILL.md", "content": manifest + original}],
+            }),
+        ]),
+        make_response(tool_calls=[
+            make_tool_call("activate_extension", {"path": draft}),
+        ]),
+        make_response(tool_calls=[
+            make_tool_call("request_tools", {"skills": [read_tool]}),
+        ]),
+        make_response(tool_calls=[
+            make_tool_call(read_tool, {}, call_id="read-original"),
+        ]),
+        make_response(tool_calls=[
+            make_tool_call("edit_workspace", {
+                "action": "edit", "path": f"{draft}/SKILL.md",
+                "old_text": original, "new_text": revised,
+            }),
+            make_tool_call(read_tool, {}, call_id="read-before-activation"),
+        ]),
+        make_response(tool_calls=[
+            make_tool_call("activate_extension", {"path": draft}),
+        ]),
+        make_response(tool_calls=[
+            make_tool_call(read_tool, {}, call_id="read-revised"),
+        ]),
+        make_response("Done."),
+    ])
+
+    await chat(IncomingMessage(
+        user_id=1, channel_id=100, text="Create and update a packing guide.",
+        transport="fake",
+    ))
+
+    assert len(mock.call_log) == 9
+    assert read_tool not in {
+        item["function"]["name"] for item in mock.call_log[3]["tools"]
+    }
+    assert read_tool in {
+        item["function"]["name"] for item in mock.call_log[4]["tools"]
+    }
+    receipts = {
+        item["tool_call_id"]: json.loads(item["content"])
+        for item in mock.call_log[-1]["messages"] if item["role"] == "tool"
+    }
+    reads = [
+        receipts[call_id]
+        for call_id in ("read-original", "read-before-activation", "read-revised")
+    ]
+    assert all(read["ok"] and read["source"] == "agent_authored_document" for read in reads)
+    pages = [json.loads(read["result"]) for read in reads]
+    assert [page["content"] for page in pages] == [original, original, revised]
+    assert pages[0]["version"] == pages[1]["version"]
+    assert pages[2]["version"] != pages[0]["version"]
+    assert (store.ROOT / name / "current" / "SKILL.md").read_text(
+        encoding="utf-8",
+    ) == manifest + revised
+    assert (store.ROOT / name / "previous" / "SKILL.md").read_text(
+        encoding="utf-8",
+    ) == manifest + original
+    executions = get_recent_tool_executions(1, limit=20, state_changes_only=False)
+    assert sorted(item["tool_name"] for item in executions) == sorted([
+        "edit_workspace", "activate_extension", read_tool,
+        "edit_workspace", read_tool, "activate_extension", read_tool,
+    ])
+    assert all(item["status"] == "success" for item in executions)
+
+
+@pytest.mark.asyncio
 async def test_personal_workspace_document_vertical_contract(
     tmp_path, monkeypatch, mock_llm_factory,
 ):
