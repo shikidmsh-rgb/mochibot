@@ -457,9 +457,14 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         ("reasoning_tokens", "INTEGER DEFAULT NULL"),
         ("cached_prompt_tokens", "INTEGER DEFAULT NULL"),
         ("cache_write_tokens", "INTEGER DEFAULT NULL"),
+        ("model_span_id", "TEXT DEFAULT NULL"),
+        ("billing_json", "TEXT DEFAULT NULL"),
     ]:
         _add_col("usage_log", col, typedef)
 
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_model_span ON usage_log(model_span_id)"
+    )
     conn.commit()
 
 def _init_fts(conn: sqlite3.Connection) -> None:
@@ -2764,21 +2769,35 @@ def log_usage(prompt_tokens: int, completion_tokens: int, total_tokens: int,
               cost_usd: float | None = None,
               reasoning_tokens: int | None = None,
               cached_prompt_tokens: int | None = None,
-              cache_write_tokens: int | None = None) -> None:
+              cache_write_tokens: int | None = None,
+              model_span_id: str | None = None) -> None:
     now = datetime.now(TZ).isoformat()
     eff_call_type = call_type or purpose
     conn = _connect()
+    billing_json = None
+    if model_span_id:
+        evidence = conn.execute(
+            "SELECT facts_json FROM runtime_traces WHERE span_id=? AND span_kind='model'",
+            (model_span_id,),
+        ).fetchone()
+        if evidence:
+            billing = json.loads(evidence["facts_json"] or "{}").get("billing")
+            if billing is not None:
+                billing_json = json.dumps(billing, ensure_ascii=False, separators=(",", ":"))
+                estimate = billing.get("cost", {}).get("estimated_usd")
+                cost_usd = float(estimate) if estimate is not None else None
     conn.execute(
         """INSERT INTO usage_log (prompt_tokens, completion_tokens, total_tokens,
            tool_calls, model, purpose, created_at,
            tool_name, model_role, call_type, usage_stage,
            prompt_system_tokens, prompt_history_tokens, prompt_tool_tokens, cost_usd,
-           reasoning_tokens, cached_prompt_tokens, cache_write_tokens)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           reasoning_tokens, cached_prompt_tokens, cache_write_tokens,model_span_id,billing_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(model_span_id) DO NOTHING""",
         (prompt_tokens, completion_tokens, total_tokens, tool_calls, model, purpose, now,
          tool_name, model_role, eff_call_type, usage_stage,
          prompt_system_tokens, prompt_history_tokens, prompt_tool_tokens, cost_usd,
-         reasoning_tokens, cached_prompt_tokens, cache_write_tokens),
+         reasoning_tokens, cached_prompt_tokens, cache_write_tokens, model_span_id, billing_json),
     )
     conn.commit()
     conn.close()

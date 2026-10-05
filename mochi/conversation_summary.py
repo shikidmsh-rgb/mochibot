@@ -80,6 +80,7 @@ def _log_response_usage(response, stage: str) -> None:
             reasoning_tokens=response.reasoning_tokens,
             cached_prompt_tokens=response.cached_prompt_tokens,
             cache_write_tokens=response.cache_write_tokens,
+            model_span_id=response.usage_span_id,
         )
 
 
@@ -99,17 +100,23 @@ async def _generate_summary(claim: dict) -> str:
         raise SummaryContextError("Conversation summary input exceeds bounded context")
     client = get_client_for_tier("lite")
     thinking_options = {"thinking": False} if client.supports_thinking_control else {}
-    response = await asyncio.to_thread(
-        client.chat,
-        messages=[
-            {"role": "system", "content": prompt},
-            {"role": "user", "content": summary_input},
-        ],
-        tools=None,
-        max_tokens=generation_tokens,
-        temperature=0.2,
-        **thinking_options,
-    )
+    async def request(phase: str, temperature: float):
+        from mochi.runtime_trace import stage
+
+        with stage(
+            phase, model_role="LITE", purpose="conversation_summary", usage_stage=phase,
+        ):
+            return await asyncio.to_thread(
+                client.chat,
+                messages=[
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": summary_input},
+                ],
+                tools=None, max_tokens=generation_tokens, temperature=temperature,
+                **thinking_options,
+            )
+
+    response = await request("rolling_update", 0.2)
     _log_response_usage(response, "rolling_update")
     summary = _normalize_summary(response.content or "")
     if not _needs_compression(response, summary, CONV_SUMMARY_MAX_TOKENS):
@@ -120,15 +127,7 @@ async def _generate_summary(claim: dict) -> str:
     )
     if not _fits_context(prompt, summary_input, generation_tokens):
         raise SummaryContextError("Conversation summary retry exceeds bounded context")
-    response = await asyncio.to_thread(
-        client.chat,
-        messages=[
-            {"role": "system", "content": prompt},
-            {"role": "user", "content": summary_input},
-        ],
-        tools=None, max_tokens=generation_tokens, temperature=0.1,
-        **thinking_options,
-    )
+    response = await request("compression_retry", 0.1)
     _log_response_usage(response, "compression_retry")
     summary = _normalize_summary(response.content or "")
     if _needs_compression(response, summary, CONV_SUMMARY_MAX_TOKENS):

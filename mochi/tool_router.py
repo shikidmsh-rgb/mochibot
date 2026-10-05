@@ -120,7 +120,7 @@ async def classify_skills_llm(message: str, user_id: int | None = None,
     try:
         from mochi.runtime_trace import prepare_sync, span, stage
         client = prepare_sync("router_client", get_client_for_tier, "lite")
-        with stage("router"):
+        with stage("router", model_role="LITE", purpose="tool_router", usage_stage="classification"):
             response = await asyncio.to_thread(
                 client.chat,
                 messages=[
@@ -135,9 +135,11 @@ async def classify_skills_llm(message: str, user_id: int | None = None,
         log_usage(
             response.prompt_tokens, response.completion_tokens,
             response.total_tokens, model=response.model, purpose="tool_router",
+            model_role="LITE", usage_stage="classification",
             reasoning_tokens=response.reasoning_tokens,
             cached_prompt_tokens=response.cached_prompt_tokens,
             cache_write_tokens=response.cache_write_tokens,
+            model_span_id=response.usage_span_id,
         )
 
         with span("preparation", "router_parse"):

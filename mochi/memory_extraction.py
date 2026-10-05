@@ -199,19 +199,21 @@ def _run_batch(user_id: int, cursor: int, batch: list[dict]) -> list[int]:
         },
     }
     client = get_client_for_tier("lite")
-    response = client.chat(
-        messages=[
-            {"role": "system", "content": prompt},
-            {
-                "role": "user",
-                "content": json.dumps(payload, ensure_ascii=False),
-            },
-        ],
-        tools=None,
-        temperature=0.1,
-        max_tokens=EXTRACTION_OUTPUT_TOKENS,
-        **({"thinking": False} if client.supports_thinking_control else {}),
-    )
+    from mochi.runtime_trace import stage
+    with stage("memory_extract", model_role="LITE", purpose="memory_extract", usage_stage="fixed_batch"):
+        response = client.chat(
+            messages=[
+                {"role": "system", "content": prompt},
+                {
+                    "role": "user",
+                    "content": json.dumps(payload, ensure_ascii=False),
+                },
+            ],
+            tools=None,
+            temperature=0.1,
+            max_tokens=EXTRACTION_OUTPUT_TOKENS,
+            **({"thinking": False} if client.supports_thinking_control else {}),
+        )
     if response.total_tokens:
         log_usage(
             response.prompt_tokens,
@@ -225,6 +227,7 @@ def _run_batch(user_id: int, cursor: int, batch: list[dict]) -> list[int]:
             reasoning_tokens=response.reasoning_tokens,
             cached_prompt_tokens=response.cached_prompt_tokens,
             cache_write_tokens=response.cache_write_tokens,
+            model_span_id=response.usage_span_id,
         )
 
     if response.finish_reason in {"length", "max_tokens", "max_output_tokens"}:

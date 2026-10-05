@@ -61,6 +61,9 @@ class Phase:
     name: str
     operation_id: str
     waiting_cancelled: bool = False
+    model_role: str = ""
+    purpose: str = ""
+    usage_stage: str = ""
 
 
 _stage: ContextVar[Phase | None] = ContextVar("runtime_trace_stage", default=None)
@@ -295,8 +298,14 @@ def run_scope(turn_id: str, kind: str, user_id: int | None, request):
 
 
 @contextmanager
-def stage(name: str, *, operation_id: str | None = None):
-    phase = Phase(name, operation_id or uuid.uuid4().hex)
+def stage(
+    name: str, *, operation_id: str | None = None,
+    model_role: str = "", purpose: str = "", usage_stage: str = "",
+):
+    phase = Phase(
+        name, operation_id or uuid.uuid4().hex,
+        model_role=model_role, purpose=purpose, usage_stage=usage_stage,
+    )
     token = _stage.set(phase)
     try:
         yield
@@ -412,7 +421,7 @@ def joined_system_token_source(messages: list[dict], text: str) -> None:
 
 def sdk_call(
     fn, *, protocol: str, provider: str, endpoint: str = "",
-    client_timeout=None, **kwargs,
+    client_timeout=None, receipt: dict | None = None, **kwargs,
 ):
     """Record the exact SDK boundary, including negotiation attempts."""
     if _current.get() is None:
@@ -420,7 +429,7 @@ def sdk_call(
         with run_scope(uuid.uuid4().hex, "provider", OWNER_USER_ID or 0, code_version()) as run:
             result = sdk_call(
                 fn, protocol=protocol, provider=provider, endpoint=endpoint,
-                client_timeout=client_timeout, **kwargs,
+                client_timeout=client_timeout, receipt=receipt, **kwargs,
             )
             finish_run(run.trace_id, "completed")
             return result
@@ -429,13 +438,31 @@ def sdk_call(
     )
     phase = _stage.get()
     operation_id = phase.operation_id if phase else uuid.uuid4().hex
-    from mochi.token_distribution import record_request, record_usage
+    from mochi.token_distribution import cache_fingerprint, record_request, record_usage
+    from mochi.token_accounting import capture_price, record_billing
     distribution = record_request(kwargs, _current.get().token_sources)
+    billing = {
+        "provider": provider, "endpoint": endpoint, "model": kwargs.get("model"),
+        "protocol": protocol,
+        "price": capture_price(provider, endpoint, kwargs.get("model", "")),
+    }
+    facts = {
+        "kind": "model", "operation_id": operation_id, "token_distribution": distribution,
+        "billing": billing,
+        "model_role": "EMBEDDING" if protocol == "embeddings.create" else phase.model_role if phase else "",
+        "purpose": "embedding" if protocol == "embeddings.create" else phase.purpose if phase else "",
+        "usage_stage": phase.usage_stage if phase else "",
+    }
+    try:
+        facts["cache_fingerprint"] = cache_fingerprint(kwargs)
+    except (TypeError, ValueError):
+        log.exception("Could not fingerprint the client-visible cache prefix")
+        facts["cache_fingerprint"] = {"status": "unavailable"}
     with span("model", protocol, {
         "provider": provider, "endpoint": endpoint, "client_timeout": timeout, **kwargs,
-    }, facts={
-        "kind": "model", "operation_id": operation_id, "token_distribution": distribution,
-    }) as item:
+    }, facts=facts) as item:
+        if receipt is not None and item is not None:
+            receipt["span_id"] = item.span_id
         try:
             response = fn(**kwargs)
         except Exception as exc:
@@ -448,6 +475,7 @@ def sdk_call(
             raise
         if item:
             record_usage(distribution, response)
+            record_billing(billing, distribution.get("provider_usage"), protocol)
             request_id = getattr(response, "_request_id", None)
             item.response = (
                 {"body": response, "request_id": request_id} if request_id else response

@@ -1383,6 +1383,13 @@ async def _chat(
     history_response: LLMResponse | None = None
     image_pending_review = False
     dream_protocol_errors: set[str] = set()
+    usage_purpose = (
+        "bedtime_entry" if is_bedtime
+        else "self_reminder_entry" if is_self_reminder
+        else runtime_entry.kind if is_autonomous
+        else "dream" if is_dream
+        else f"chat:{tier}"
+    )
 
     def _log_main_usage(
         response: LLMResponse,
@@ -1395,22 +1402,14 @@ async def _chat(
             response.total_tokens,
             tool_calls=len(response.tool_calls),
             model=response.model,
-            purpose=(
-                "bedtime_entry"
-                if is_bedtime
-                else "self_reminder_entry"
-                if is_self_reminder
-                else runtime_entry.kind
-                if is_autonomous
-                else "dream"
-                if is_dream
-                else f"chat:{tier}"
-            ),
+            model_role="MAIN",
+            purpose=usage_purpose,
             call_type=call_type,
             usage_stage=usage_stage,
             reasoning_tokens=response.reasoning_tokens,
             cached_prompt_tokens=response.cached_prompt_tokens,
             cache_write_tokens=response.cache_write_tokens,
+            model_span_id=response.usage_span_id,
         )
 
     def _free_time_cancelled() -> bool:
@@ -1559,6 +1558,9 @@ async def _chat(
                 with runtime_trace.stage(
                     f"main.round_{round_num + 1}.attempt_{_attempt + 1}",
                     operation_id=f"main.round_{round_num + 1}",
+                    model_role="MAIN",
+                    purpose=usage_purpose,
+                    usage_stage="initial" if round_num == 0 else "tool_continuation",
                 ):
                     response = await asyncio.to_thread(
                         client.chat,

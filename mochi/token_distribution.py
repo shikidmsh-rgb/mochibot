@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
+import hashlib
 import json
 import logging
 import os
@@ -62,6 +63,43 @@ def _size(text: str) -> dict:
 
 def _json(value) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def cache_fingerprint(request: dict) -> dict:
+    """Describe client-visible prefix equality, not provider cache eligibility."""
+    def digest(value) -> str:
+        return hashlib.sha256(_json(value).encode("utf-8")).hexdigest()
+
+    inputs = request.get("messages", request.get("input", []))
+    if not isinstance(inputs, list):
+        inputs = [inputs]
+    leading_system = []
+    for item in inputs:
+        if not isinstance(item, dict) or item.get("role") not in {"system", "developer"}:
+            break
+        leading_system.append(item)
+    tools = request.get("tools") or []
+    chain = hashlib.sha256()
+    prefixes = []
+    for item in inputs:
+        body = _json(item).encode("utf-8")
+        chain.update(len(body).to_bytes(8, "big"))
+        chain.update(body)
+        prefixes.append(chain.hexdigest())
+    return {
+        "tools": digest(tools),
+        "tool_order": digest([tool.get("function", tool).get("name") for tool in tools]),
+        "system": digest({
+            "system": request.get("system"), "instructions": request.get("instructions"),
+            "leading_messages": leading_system,
+        }),
+        "input_prefixes": prefixes,
+        "cache_policy": {
+            key: request.get(key, (request.get("extra_body") or {}).get(key))
+            for key in ("prompt_cache_key", "prompt_cache_options", "prompt_cache_retention")
+        },
+        "reasoning": request.get("reasoning", (request.get("extra_body") or {}).get("thinking")),
+    }
 
 
 def capture_request(request: dict, sources: list[TextSource]) -> dict:

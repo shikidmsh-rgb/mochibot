@@ -236,6 +236,14 @@ encrypted reasoning and provider-internal overhead remain unallocated.
 Read-only queries use the existing evidence store and retention; these facts
 never enter Main's context or influence its decisions.
 
+Human-only token reports use those SDK attempts as the counting authority.
+Request-time price snapshots and client-visible prefix fingerprints support
+cost estimates and like-for-like cache inspection without changing requests.
+Completed usage records link to an exact attempt and retain its frozen billing
+snapshot; the reader never sums both stores or guesses links for old rows.
+The existing evidence retention remains the detailed-report boundary. The CLI
+only reads recorded data, never loads model clients or reprices old calls.
+
 ## Model and provider boundary
 
 The product has exactly two model roles. **Main** owns every personality-bearing

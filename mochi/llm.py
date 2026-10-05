@@ -83,6 +83,7 @@ class LLMResponse:
     cache_write_tokens: int | None = None
     reasoning_source: str = ""
     response_items: list[dict] = field(default_factory=list)
+    usage_span_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -494,7 +495,7 @@ class _OpenAICompatChat:
     def _do_chat(self, client, model: str, messages: list[dict],
                  tools: list[dict] | None, temperature: float | None,
                  max_tokens: int, json_mode: bool = False,
-                 *, thinking: bool | None = None) -> Any:
+                 *, thinking: bool | None = None, receipt: dict | None = None) -> Any:
         """Call chat.completions.create with auto-negotiation."""
         from openai import BadRequestError
 
@@ -532,6 +533,7 @@ class _OpenAICompatChat:
                     protocol="chat.completions.create", provider="openai",
                     endpoint=str(getattr(client, "base_url", getattr(self, "_base_url", ""))),
                     client_timeout=getattr(client, "timeout", None),
+                    receipt=receipt,
                     **kwargs,
                 )
                 if self._use_max_completion_tokens is None:
@@ -629,6 +631,7 @@ class OpenAIProvider(_OpenAICompatChat, LLMProvider):
             raise ValueError("This provider does not support per-request thinking control")
         if cache_context is not None and not self.supports_explicit_cache:
             raise ValueError("This provider does not support explicit prefix caching")
+        receipt: dict = {}
         if _uses_responses_api(self._model):
             kwargs: dict = {
                 "model": self._model,
@@ -657,18 +660,21 @@ class OpenAIProvider(_OpenAICompatChat, LLMProvider):
                 protocol="responses.create", provider="openai",
                 endpoint=str(getattr(self._client, "base_url", self._base_url)),
                 client_timeout=getattr(self._client, "timeout", None),
+                receipt=receipt,
                 **kwargs,
             )
             result = _responses_result(resp, self._model, self.reasoning_source)
+            result.usage_span_id = receipt.get("span_id")
             if json_mode and result.content:
                 result.content = extract_json(result.content)
             return result
         resp = self._do_chat(self._client, self._model, messages, tools,
                              temperature, max_tokens, json_mode=json_mode,
-                             thinking=thinking)
+                             thinking=thinking, receipt=receipt)
         choice = resp.choices[0]
         response = _openai_response(choice, resp.usage, self._model,
                                     _parse_openai_tool_calls(choice))
+        response.usage_span_id = receipt.get("span_id")
         if isinstance(getattr(choice.message, "reasoning_content", None), str):
             response.reasoning_source = self.reasoning_source
         if json_mode and response.content:
@@ -733,11 +739,13 @@ class AnthropicProvider(LLMProvider):
             # Convert OpenAI tool format to Anthropic format
             kwargs["tools"] = self._convert_tools(tools)
 
+        receipt: dict = {}
         resp = sdk_call(
             self._client.messages.create,
             protocol="messages.create", provider="anthropic",
             endpoint=str(getattr(self._client, "base_url", "https://api.anthropic.com")),
             client_timeout=getattr(self._client, "timeout", None),
+            receipt=receipt,
             **kwargs,
         )
 
@@ -789,6 +797,7 @@ class AnthropicProvider(LLMProvider):
             reasoning_tokens=None,
             cached_prompt_tokens=cached,
             cache_write_tokens=cache_write,
+            usage_span_id=receipt.get("span_id"),
         )
 
     @staticmethod
