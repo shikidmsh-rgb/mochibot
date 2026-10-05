@@ -45,6 +45,8 @@ def context_policy(entry: "MainRuntimeEntry | None") -> ContextPolicy:
             recent_history=False,
             auto_recall=False,
         )
+    if entry.kind == "self_reminder":
+        return ContextPolicy(trailing_history=False)
     if entry.kind == "free_time":
         return ContextPolicy(
             early_runtime_situation=True,

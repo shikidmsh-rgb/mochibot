@@ -417,10 +417,7 @@ class TestSimpleReply:
             for message in get_conversation_context(1)["recent"]
         )
 
-        next_entry = MainRuntimeEntry(
-            kind="self_reminder", user_id=1, channel_id=100, transport="fake",
-        )
-        await chat(runtime_entry=next_entry)
+        await chat(_msg("Continue our conversation"))
         messages = mock.call_log[1]["messages"]
         replayed = next(
             message for message in messages if message["role"] == "assistant"
@@ -434,7 +431,7 @@ class TestSimpleReply:
         monkeypatch.setattr(
             type(mock), "reasoning_source", property(lambda self: source + "-other"),
         )
-        await chat(runtime_entry=next_entry)
+        await chat(_msg("Continue with the other model"))
         assert all(
             "reasoning_content" not in message for message in mock.call_log[2]["messages"]
         )

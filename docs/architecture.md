@@ -115,11 +115,13 @@ Absolute message times are supplied as a separate, ordered context table.
 User and assistant message bodies remain unchanged; framework metadata is never
 prepended to speech, where it could become a self-reinforcing reply pattern.
 
-Free Time instead presents the same selected history as completed, read-only
-records inside a runtime-labelled activation message, with speaker, timestamp,
-and unchanged content. It does not reopen historical user/assistant messages or
-replay their reasoning. The activation uses the provider's user input channel,
-not owner authority, and is never persisted as a user message or extracted into
+Free Time and Self Reminders instead present their selected completed history as
+read-only records, with speaker, timestamp, and unchanged content. They do not
+reopen historical user/assistant messages or replay their reasoning. Free Time
+carries these records inside its runtime-labelled activation. Self Reminders
+keep them in system context and put the current reminder intent in a separate,
+latest runtime-event input. Activations use the provider's user input channel,
+not owner authority, and are never persisted as user messages or extracted into
 memory. Existing execution receipts remain separate from these speech records.
 
 For owner message turns, the system prompt holds only cross-turn stable content
@@ -269,8 +271,9 @@ memory evidence. Delivered assistant records and durable delivery outboxes
 preserve it separately from visible text. Main replays it only for the same
 endpoint and model, alongside messages already selected by its context policy;
 it never enters summaries, memory extraction, or user-facing message projections.
-Free Time excludes prior-turn reasoning from its completed-history records;
-reasoning returned during its current tool loop still accompanies that loop.
+Free Time and Self Reminders exclude prior-turn reasoning from their
+completed-history records; reasoning returned during the current tool loop
+still accompanies that loop.
 Older, non-model, or different-provider messages have no reusable reasoning, so
 a provider that requires the field may still receive an empty compatibility
 placeholder for those messages. Matching reasoning, including an explicitly

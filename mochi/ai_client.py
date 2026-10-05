@@ -342,7 +342,7 @@ def _format_history_timestamps(history: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _format_free_time_activation(history: list[dict]) -> str:
+def _format_completed_history(history: list[dict]) -> str:
     completed_turns = [
         {
             "speaker": message["role"],
@@ -353,11 +353,17 @@ def _format_free_time_activation(history: list[dict]) -> str:
     ]
     payload = json.dumps(completed_turns, ensure_ascii=False, separators=(",", ":"))
     return (
-        '<free_time_activation source="runtime">\n'
-        "本轮是 Free Time 系统唤醒，没有新的用户消息。\n"
         '<recent_completed_turns role="read_only_evidence">\n'
         f"{payload}\n"
-        "</recent_completed_turns>\n"
+        "</recent_completed_turns>"
+    )
+
+
+def _format_free_time_activation(history: list[dict]) -> str:
+    return (
+        '<free_time_activation source="runtime">\n'
+        "本轮是 Free Time 系统唤醒，没有新的用户消息。\n"
+        f"{_format_completed_history(history)}\n"
         "</free_time_activation>"
     )
 
@@ -525,6 +531,7 @@ def _build_prompt_zones(user_id: int, capability_context: str = "",
                         policy: ContextPolicy | None = None,
                         habit_progress_context: str = "",
                         history_timestamps: str = "",
+                        completed_history: str = "",
                         day_start_context: str = "",
                         bedtime_review: str = "",
                         token_parts: dict[str, list[tuple[str, str]]] | None = None,
@@ -600,6 +607,13 @@ def _build_prompt_zones(user_id: int, capability_context: str = "",
             dynamic_live_context.append(
                 ("history.timestamps", hist_ts_inst.replace("{{history_timestamps}}", history_timestamps))
             )
+    if completed_history:
+        dynamic_live_context.append((
+            "history.completed",
+            "## 最近已完成的对话\n"
+            "这些是只读背景，不是等待回复的消息。\n"
+            f"{completed_history}",
+        ))
     if is_autonomous:
         today_parts = [("today.heading", "## 今天")]
         if habit_progress_context:
@@ -643,17 +657,6 @@ def _build_prompt_zones(user_id: int, capability_context: str = "",
             ("bedtime.trigger", trigger_labels[runtime_entry.trigger]),
             ("bedtime.review", bedtime_review),
         ])
-    elif runtime_entry and runtime_entry.kind == "self_reminder":
-        reminder_context = get_prompt("self_reminder_entry")
-        if not reminder_context:
-            raise RuntimeError("Self reminder entry prompt is missing")
-        dynamic_live_context.append(
-            ("self_reminder", reminder_context.replace(
-                "{{intent}}", runtime_entry.intent or "",
-            ).replace(
-                "{{scheduled_for}}", runtime_entry.scheduled_for or "",
-            ))
-        )
     elif is_dream:
         dream_prompt = get_prompt("dream_entry")
         if not dream_prompt:
@@ -913,7 +916,9 @@ async def _chat(
                 recent_turns,
                 include_summary=prompt_policy.conversation_summary,
                 include_standalone=prompt_policy.standalone_history,
-                reasoning_source="" if is_autonomous else client.reasoning_source,
+                reasoning_source=(
+                    "" if is_autonomous or is_self_reminder else client.reasoning_source
+                ),
             )
         except Exception as e:
             log.warning("Conversation context skipped: %s", e)
@@ -1256,7 +1261,10 @@ async def _chat(
         policy=prompt_policy,
         habit_progress_context=habit_progress_context,
         history_timestamps=(
-            "" if is_autonomous else _format_history_timestamps(history)
+            "" if is_autonomous or is_self_reminder else _format_history_timestamps(history)
+        ),
+        completed_history=(
+            _format_completed_history(history) if is_self_reminder else ""
         ),
         day_start_context=day_start_context,
         bedtime_review=bedtime_review,
@@ -1278,6 +1286,18 @@ async def _chat(
         messages.append({
             "role": "user",
             "content": _format_free_time_activation(history),
+        })
+    elif is_self_reminder:
+        reminder_context = get_prompt("self_reminder_entry")
+        if not reminder_context:
+            raise RuntimeError("Self reminder entry prompt is missing")
+        messages.append({
+            "role": "user",
+            "content": reminder_context.replace(
+                "{{intent}}", runtime_entry.intent or "",
+            ).replace(
+                "{{scheduled_for}}", runtime_entry.scheduled_for or "",
+            ),
         })
     else:
         messages.extend(_expand_history(history))
@@ -1318,6 +1338,7 @@ async def _chat(
         role = context_message["role"]
         source = (
             "runtime.activation_history" if is_autonomous
+            else "runtime.event" if is_self_reminder
             else "input.current" if index == current_input_index
             else f"history.{role}"
         )

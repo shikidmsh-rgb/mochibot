@@ -130,18 +130,21 @@ def test_observer_rediscovery_preserves_runtime_cache():
 
 
 @pytest.mark.asyncio
-async def test_free_time_carries_completed_history_without_reopening_old_turns(
+@pytest.mark.parametrize("kind", ["free_time", "self_reminder"])
+async def test_runtime_carries_completed_history_without_reopening_old_turns(
     mock_llm_factory,
     monkeypatch,
+    kind,
 ):
     import mochi.ai_client as ai_client
 
     replace_core("CORE_MARKER", source="test")
-    monkeypatch.setattr(
-        ai_client,
-        "_retrieve_memories_for_turn",
-        lambda *args: pytest.fail("Free Time must not auto-recall"),
-    )
+    def recall(*args):
+        if kind == "free_time":
+            pytest.fail("Free Time must not auto-recall")
+        return []
+
+    monkeypatch.setattr(ai_client, "_retrieve_memories_for_turn", recall)
     reasoning_source = "https://api.deepseek.com/v1::model"
     for number in range(3):
         turn_id = f"free-time-history-{number}"
@@ -157,7 +160,9 @@ async def test_free_time_carries_completed_history_without_reopening_old_turns(
     )
     save_message(1, "user", "unpaired-user-message", turn_id="incomplete-turn")
     before = get_recent_messages(1)
-    expected = get_conversation_context(1, 2, include_summary=False)["recent"]
+    expected = get_conversation_context(
+        1, 2 if kind == "free_time" else 10, include_summary=False,
+    )["recent"]
     tool_response = make_response(tool_calls=[
         make_tool_call("write_diary", {"content": "A new observation."}),
     ])
@@ -166,15 +171,19 @@ async def test_free_time_carries_completed_history_without_reopening_old_turns(
     monkeypatch.setattr(
         type(mock), "reasoning_source", property(lambda self: reasoning_source),
     )
-    entry = MainRuntimeEntry.free_time(
-        run_key="free_time:test",
-        wake_reason="periodic",
-        user_id=1,
-        channel_id=100,
-        transport="fake",
-        claim_token="claim",
-        lease_until="2099-01-01T00:00:00+00:00",
-    )
+    entry_args = {
+        "user_id": 1, "channel_id": 100, "transport": "fake",
+        "claim_token": "claim", "lease_until": "2099-01-01T00:00:00+00:00",
+    }
+    if kind == "free_time":
+        entry = MainRuntimeEntry.free_time(
+            run_key="free_time:test", wake_reason="periodic", **entry_args,
+        )
+    else:
+        entry = MainRuntimeEntry.self_reminder(
+            reminder_id=42, scheduled_for="2099-01-01T00:00:00+00:00",
+            intent="CURRENT_REMINDER_INTENT", **entry_args,
+        )
 
     result = await chat(runtime_entry=entry)
 
@@ -183,7 +192,12 @@ async def test_free_time_carries_completed_history_without_reopening_old_turns(
     assert "CORE_MARKER" in prompt
     initial = mock.call_log[0]["messages"]
     assert [item["role"] for item in initial] == ["system", "user"]
-    records = json.loads(initial[-1]["content"].split(
+    if kind == "self_reminder":
+        assert entry.intent in initial[-1]["content"]
+        assert entry.scheduled_for in initial[-1]["content"]
+        assert entry.intent not in prompt
+    history_context = initial[-1]["content"] if kind == "free_time" else prompt
+    records = json.loads(history_context.split(
         '<recent_completed_turns role="read_only_evidence">\n', 1,
     )[1].split("\n</recent_completed_turns>", 1)[0])
     assert records == [
@@ -193,10 +207,13 @@ async def test_free_time_carries_completed_history_without_reopening_old_turns(
         }
         for item in expected
     ]
-    assert [item["content"] for item in records] == [
+    expected_contents = [
         "user-1", "assistant-1", "user-2", "assistant-2",
         "Already delivered.\nDo not lose this context.",
     ]
+    if kind == "self_reminder":
+        expected_contents = ["user-0", "assistant-0", *expected_contents]
+    assert [item["content"] for item in records] == expected_contents
     replay = json.dumps(mock.call_log, ensure_ascii=False)
     assert "OLD_TURN_REASONING" not in replay
     assert "OLD_WAKE_REASONING" not in replay
@@ -455,8 +472,10 @@ async def test_main_sees_delivered_autonomous_history_only(
         review = json.loads(line)
         assert review["messages"][0]["role"] == "assistant"
         assert review["messages"][0]["content"] == "ALREADY_SAID_GOODNIGHT"
-    elif kind == "free_time":
-        assert delivered_messages[0]["role"] == "user"
+    elif kind in {"free_time", "self_reminder"}:
+        assert delivered_messages[0]["role"] == (
+            "user" if kind == "free_time" else "system"
+        )
         records = json.loads(delivered_messages[0]["content"].split(
             '<recent_completed_turns role="read_only_evidence">\n', 1,
         )[1].split("\n</recent_completed_turns>", 1)[0])
