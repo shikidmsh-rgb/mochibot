@@ -1,85 +1,81 @@
-"""Shared fixtures for unit tests.
+"""Shared isolation for the ten deterministic workflow checks."""
 
-Provides:
-- fresh_db: isolated SQLite database per test
-- mock_config: override config values so tests don't need .env
-"""
+import asyncio
+from datetime import datetime, timezone
 
 import pytest
-from datetime import timezone, timedelta
-
-from mochi.db import init_db
-import mochi.skills as skill_registry
-
-
-UTC = timezone.utc
-
-# Ensure skills are discovered once (module-level state)
-_skills_discovered = False
 
 
 @pytest.fixture(autouse=True)
-def isolated_diary(tmp_path, monkeypatch):
+def isolated_state(tmp_path, monkeypatch):
+    from mochi import config, core_store, db, heartbeat, heartbeat_runtime, mochi_files_store, skills
+    from mochi import reminder_timer, tool_policy, turn_tool_policy
+    from mochi.admin import admin_db
     from mochi.diary import diary
+    from mochi.extensions import store
+
+    for key, value in {
+        "OWNER_USER_ID": 1, "TZ": timezone.utc, "TIMEZONE_OFFSET_HOURS": 0,
+        "TOOL_ROUTER_ENABLED": False, "TOOL_ESCALATION_ENABLED": True,
+        "TOOL_LOOP_MAX_ROUNDS": 5, "FREE_TIME_ENABLED": True,
+        "BEDTIME_ENTRY_ENABLED": True, "WEEKLY_MAINTENANCE_ENABLED": True,
+    }.items():
+        monkeypatch.setattr(config, key, value)
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "mochi.db")
+    monkeypatch.setattr(db, "TZ", timezone.utc)
+    monkeypatch.setattr(heartbeat_runtime, "TZ", timezone.utc)
+    monkeypatch.setattr(core_store, "DATA_DIR", tmp_path / "core")
+    monkeypatch.setattr(mochi_files_store, "DATA_DIR", tmp_path / "documents")
     monkeypatch.setattr(diary, "path", tmp_path / "diary.md")
-
-
-@pytest.fixture(autouse=True)
-def isolated_tool_sessions(monkeypatch):
-    import mochi.turn_tool_policy as turn_tool_policy
+    monkeypatch.setattr(store, "ROOT", tmp_path / "extensions")
+    monkeypatch.setattr(skills, "_external_discovered", False)
+    monkeypatch.setattr(skills, "_external_errors", {})
+    monkeypatch.setattr(admin_db, "_system_config_cache", {})
+    monkeypatch.setattr(admin_db, "_system_config_cache_time", 0)
     monkeypatch.setattr(turn_tool_policy, "_session_toolboxes", {})
+    monkeypatch.setattr(tool_policy, "_deny_set", set())
+    monkeypatch.setattr(tool_policy, "_call_log", {})
+    for key, value in {
+        "_state": heartbeat.AWAKE, "TZ": timezone.utc,
+        "_STATE_FILE": tmp_path / "heartbeat.json",
+        "_state_changed_at": datetime.now(timezone.utc),
+        "_silent_pause": False, "_last_sleep_at": None,
+        "_active_chat_tokens": set(), "_chat_activity_generation": 0,
+        "_runtime_prepare_callback": None, "_runtime_delivery_callback": None,
+        "_runtime_transport": "", "_dream_callback": None,
+    }.items():
+        monkeypatch.setattr(heartbeat, key, value)
+    for key, value in {
+        "_send_callback": None, "_self_prepare_callback": None,
+        "_self_delivery_callback": None, "_self_transport": "",
+        "_self_reminder_lock": asyncio.Lock(), "_heap": [],
+        "_heap_event": None, "_active_ids": set(),
+    }.items():
+        monkeypatch.setattr(reminder_timer, key, value)
+    db.init_db()
+    if not skills.all_skills():
+        skills.discover()
+    skills.init_all_skill_schemas()
+    yield
+    external = {name for name, skill in skills.all_skills().items() if skill.external}
+    for name in external:
+        skills._skills.pop(name, None)
+    for tool, owner in list(skills._tool_map.items()):
+        if owner in external:
+            skills._tool_map.pop(tool)
 
 
 @pytest.fixture
-def extension_state(tmp_path, monkeypatch):
-    from mochi.extensions import store
+def mock_llm_factory(monkeypatch):
+    from mochi import ai_client
+    from tests.mock_llm import MockLLMProvider
 
-    monkeypatch.setattr(store, "ROOT", tmp_path / "extensions")
-    monkeypatch.setattr(skill_registry, "_external_discovered", False)
-    monkeypatch.setattr(skill_registry, "_external_errors", {})
-    yield
-    external = {
-        name for name, skill in skill_registry.all_skills().items() if skill.external
-    }
-    for name in external:
-        skill_registry._skills.pop(name, None)
-    for tool, owner in list(skill_registry._tool_map.items()):
-        if owner in external:
-            skill_registry._tool_map.pop(tool)
+    monkeypatch.setattr(ai_client, "_retrieve_memories_for_turn", lambda *args: [])
+    monkeypatch.setattr(ai_client, "_schedule_continuous_memory", lambda _user: None)
 
+    def factory(responses):
+        client = MockLLMProvider(responses)
+        monkeypatch.setattr(ai_client, "get_client_for_tier", lambda _tier: client)
+        return client
 
-@pytest.fixture(autouse=True)
-def fresh_db(tmp_path, monkeypatch, extension_state):
-    """Fresh SQLite database for each test."""
-    global _skills_discovered
-    db_path = tmp_path / "unit_test.db"
-    import mochi.db as db_module
-    monkeypatch.setattr(db_module, "DB_PATH", db_path)
-    import mochi.core_store as core_store
-    monkeypatch.setattr(core_store, "DATA_DIR", tmp_path / "core_data")
-    import mochi.mochi_files_store as files_store
-    monkeypatch.setattr(files_store, "DATA_DIR", tmp_path / "files_data")
-    init_db()
-    if not _skills_discovered:
-        skill_registry.discover()
-        _skills_discovered = True
-    skill_registry.init_all_skill_schemas()
-    yield db_path
-
-
-@pytest.fixture(autouse=True)
-def mock_config(monkeypatch):
-    """Override config values so unit tests never rely on .env."""
-    import mochi.config as cfg
-    monkeypatch.setattr(cfg, "OWNER_USER_ID", 1)
-    monkeypatch.setattr(cfg, "TIMEZONE_OFFSET_HOURS", 0)
-    monkeypatch.setattr(cfg, "TZ", UTC)
-    # Also patch TZ in modules that imported it at module level
-    import mochi.db as db_module
-    monkeypatch.setattr(db_module, "TZ", UTC)
-    monkeypatch.setattr(cfg, "MAINTENANCE_HOUR", 3)
-    monkeypatch.setattr(cfg, "WEEKLY_MAINTENANCE_ENABLED", True)
-    monkeypatch.setattr(cfg, "WEEKLY_MAINTENANCE_MINUTE", 15)
-    monkeypatch.setattr(cfg, "TOOL_ROUTER_ENABLED", False)
-    monkeypatch.setattr(cfg, "TOOL_ESCALATION_ENABLED", False)
-    monkeypatch.setattr(cfg, "TOOL_LOOP_MAX_ROUNDS", 5)
+    return factory

@@ -458,30 +458,15 @@ value = self.get_config("MY_API_KEY")
 
 ## 测试
 
-在 `tests/test_my_skill_handler.py` 中创建测试：
+公开 pytest 保留最多 **10 个实际收集的主流程 case**，不为每个新 Skill
+新增一套测试。新增永久 case 或测试文件需先取得项目维护者明确批准。
+优先复用最接近的主流程，只验证实际写入、权限、数据完整性和真实执行状态，
+不通过预设模型回复证明 Skill 好用，也不镜像外部 Provider 协议。
 
-```python
-import pytest
-from mochi.skills.base import SkillContext, SkillResult
-from mochi.skills.my_skill.handler import MySkill
-
-
-class TestMySkill:
-
-    @pytest.mark.asyncio
-    async def test_add_item(self):
-        ctx = SkillContext(
-            trigger="tool_call",
-            user_id=1,
-            tool_name="my_tool",
-            args={"action": "add", "item": "Test item"},
-        )
-        result = await MySkill().execute(ctx)
-        assert result.success
-        assert "Test item" in result.output
-```
-
-`tests/conftest.py` 中的测试 fixture 会自动为每个测试提供干净的 DB 和 skill schema。
+`python -m pytest --collect-only -q` 核对总数；`python -m pytest -q` 运行公开测试。
+现有 fixture 隔离数据库和文件，不访问实例数据。模型语义和外部集成在
+MochiBot Test 真实使用时验证；必要的一次性检查可放在 Git 忽略的
+`.local-tests/`，显式执行，不作为常驻套件或旧测试归档。
 
 ## 提交前检查清单
 
@@ -493,6 +478,6 @@ class TestMySkill:
 - [ ] 没有导入框架内部模块（heartbeat、ai_client 等） — 只能用 `mochi.skills.base`、`mochi.db`、`mochi.config`、`mochi.llm`
 - [ ] 如果加了 observer：`observer.py` + `OBSERVATION.md` 存在，`SKILL.md` 有 `sense:` 字段，`OBSERVATION.md` 的 `name` 与 skill name 一致
 - [ ] 代码全英文（变量名、函数名、注释、docstring）
-- [ ] 测试通过：`pytest tests/test_my_skill_handler.py`
+- [ ] 与改动相关的现有主流程检查通过，实际收集的永久 case 不超过 10 个
 - [ ] Bot 启动成功：日志中看到 `Registered skill: my_skill`
 - [ ] Admin Portal 验证：打开 Skills 页面，确认 skill 卡片正确显示（名称、描述、开关、配置项）

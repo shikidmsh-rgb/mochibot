@@ -50,3 +50,6 @@ run_admin.py
 
 # Live E2E tests (use real LLM + real DB — not for public repo)
 tests/live/
+
+# Optional one-off validation, outside the public test suite
+/.local-tests/

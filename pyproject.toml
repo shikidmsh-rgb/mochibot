@@ -36,3 +36,6 @@ dependencies = [
 Homepage = "https://github.com/shikidmsh-rgb/mochibot"
 Repository = "https://github.com/shikidmsh-rgb/mochibot"
 Issues = "https://github.com/shikidmsh-rgb/mochibot/issues"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

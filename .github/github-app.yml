@@ -47,6 +47,14 @@ instructions: |
 
   Validate changed behavior with existing targeted tests and affected
   boundaries. Keep runtime data and real model calls out of ordinary checks.
+  The public pytest suite is capped at 10 collected cases, including
+  parametrization. New permanent cases or test files require explicit owner
+  approval; a feature request or one-off simulation is not that approval.
+  Check the collected count before changing tests and before delivery.
+  Keep each case focused on one workflow and its essential failure boundary;
+  do not hide large scenario matrices inside ten functions.
+  Optional one-off checks belong in Git-ignored .local-tests/ and run only
+  when explicitly selected. Do not move retired test suites there wholesale.
   Every assertion must be able to fail on a real bug in our own logic. Do not
   assert static prompt prose, mock replies echoed back, removed features being
   absent, or mirrored external provider request/response shapes; verify
