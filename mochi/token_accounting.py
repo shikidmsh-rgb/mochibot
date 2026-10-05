@@ -140,7 +140,11 @@ def estimate_cost(units: dict, price: dict, *, embedding: bool = False) -> dict:
             components[unit] = str(Decimal(count) * Decimal(rate) / Decimal(1_000_000))
     known = sum((Decimal(value) for value in components.values()), Decimal(0))
     return {
-        "status": "complete" if not missing else "partial" if components else "unknown",
+        "status": (
+            "complete" if not missing
+            else "partial" if any(units[unit] for unit in components)
+            else "unknown"
+        ),
         "currency": "USD",
         "estimated_usd": str(known) if not missing else None,
         "known_component_usd": str(known),
