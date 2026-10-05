@@ -6,6 +6,8 @@ from mochi.llm import LLMResponse
 
 
 class Client:
+    supports_thinking_control = False
+
     def __init__(self, outputs):
         self.outputs = list(outputs)
         self.calls = []
@@ -46,6 +48,7 @@ async def test_summary_advances_in_complete_batches(monkeypatch):
     status = get_conversation_summary_status(1, 2)
     assert status["summary"] == "summary"
     assert status["pending_turns"] == 0
+    assert "thinking" not in client.calls[0]
 
 
 @pytest.mark.asyncio
@@ -79,12 +82,15 @@ async def test_truncated_summary_is_not_saved_or_skipped(monkeypatch, retry_fail
             finish_reason="length" if retry_fails else "stop",
         ),
     ])
+    client.supports_thinking_control = True
     monkeypatch.setattr(summary_worker, "get_client_for_tier", lambda _tier: client)
     await summary_worker.schedule_conversation_summary(1)
     status = get_conversation_summary_status(1, 2)
     assert status["pending_turns"] == (2 if retry_fails else 0)
     assert status["summary"] == ("" if retry_fails else "Complete summary.")
     assert len(client.calls) == 2
+    assert all(call["thinking"] is False for call in client.calls)
+    assert client.supports_thinking_control is True
     assert client.calls[0]["max_tokens"] >= 1200
     assert client.calls[0]["messages"][1] == client.calls[1]["messages"][1]
 

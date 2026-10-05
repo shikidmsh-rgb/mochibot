@@ -97,6 +97,7 @@ async def _generate_summary(claim: dict) -> str:
     if not _fits_context(prompt, summary_input, generation_tokens):
         raise SummaryContextError("Conversation summary input exceeds bounded context")
     client = get_client_for_tier("lite")
+    thinking_options = {"thinking": False} if client.supports_thinking_control else {}
     response = await asyncio.to_thread(
         client.chat,
         messages=[
@@ -106,6 +107,7 @@ async def _generate_summary(claim: dict) -> str:
         tools=None,
         max_tokens=generation_tokens,
         temperature=0.2,
+        **thinking_options,
     )
     _log_response_usage(response, "rolling_update")
     summary = _normalize_summary(response.content or "")
@@ -124,6 +126,7 @@ async def _generate_summary(claim: dict) -> str:
             {"role": "user", "content": summary_input},
         ],
         tools=None, max_tokens=generation_tokens, temperature=0.1,
+        **thinking_options,
     )
     _log_response_usage(response, "compression_retry")
     summary = _normalize_summary(response.content or "")

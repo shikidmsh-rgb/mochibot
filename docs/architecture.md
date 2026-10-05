@@ -463,6 +463,9 @@ summary by personality-free Lite, and SQLite advances the cursor only after a
 successful result. Until then Main receives the durable previous summary, every
 unsummarized complete turn, and the recent role-true window. Context reset starts
 a clean summary epoch and rejects any in-flight result from the old epoch.
+On the official DeepSeek adapter, both summary generation and its bounded
+compression retry disable thinking per request, without changing shared model
+defaults, Main, Dream, or other Lite tasks.
 
 Memory extraction is another independent Lite coordinator. It consumes fixed
 batches of complete eligible normal-chat turns, requires evidence IDs from
