@@ -1,196 +1,207 @@
-# 新手上路：本地部署 MochiBot
+# MochiBot 使用指南
 
-跟着做，大约 10 分钟就能让 bot 跑起来。
+## 1. 需要准备什么
 
----
+**AI 模型 API Key**
 
-## 目录
+MochiBot 由 AI API 驱动，目前支持以下 Provider：
 
-1. [你需要准备什么](#1-你需要准备什么)
-2. [下载 MochiBot](#2-下载-mochibot)
-3. [运行安装](#3-运行安装)
-4. [管理后台配置](#4-管理后台配置)
-5. [Skill 开关](#5-skill-开关)
-6. [注意事项](#6-注意事项)
-7. [更新 MochiBot](#7-更新-mochibot)
-8. [常见问题](#8-常见问题)
+| Provider | 接入方式 |
+| --- | --- |
+| OpenAI / GPT | OpenAI API |
+| Anthropic / Claude | Anthropic API |
+| DeepSeek | 官方 OpenAI-compatible 接口 |
+| Google Gemini | 官方 OpenAI-compatible 接口 |
+| 第三方兼容服务 | HTTPS OpenAI-compatible 接口 |
 
----
+并非每个 Provider、模型和接口组合都经过实测，工具调用、图片等能力以实际使用为准。费用由对应服务商收取。
 
-## 1. 你需要准备什么
+**电脑或服务器**
 
-### Python
+支持 Windows、macOS 和 Linux。推荐使用云服务器，避免本地电脑需要一直开机。不熟悉安装和配置的话，可以让 Codex 等 Code Agent 协助操作。
 
-MochiBot 需要 Python 3.11 或更高版本。没装的话去 [python.org/downloads](https://www.python.org/downloads/) 下载。
+**聊天平台**
 
-**Windows 用户安装时记得勾选 "Add Python to PATH"**——这个很重要，不勾的话后面会报错。
+微信或 Telegram，二选一。微信在后台扫码登录；Telegram 需要先通过 @BotFather 的 `/newbot` 创建 Bot，取得 Bot Token。
 
-### 一个 LLM API Key
+**网络**
 
-MochiBot 本身不包含 AI 模型，需要你提供一个 API key（调用 AI 的"通行证"）。去你选的 AI 平台注册获取即可，比如 OpenAI、DeepSeek、Anthropic 等。
+运行环境需要能访问所选模型服务和聊天平台。使用 Claude、GPT 或 Telegram 等服务时，按实际网络情况准备代理，本文不展开。
 
-> 这些服务按用量收费，日常使用一个月大概几块到几十块人民币。
-> 使用 GPT-6 Sol 时默认沿用服务端推理强度（通常是 `medium`）；可在 `.env` 设置
-> `REASONING_EFFORT=high` 等档位并重启生效，档位越高通常越慢、费用越高。
+准备好后开始安装。
 
-### 消息平台（二选一）
+## 2. 下载与启动
 
-MochiBot 需要一个消息平台来跟你聊天。**Telegram 或微信，选一个就行。**
+### 下载
 
-**选 Telegram？** 你需要提前创建一个 bot token：
+默认安装[最新正式版](https://github.com/shikidmsh-rgb/mochibot/releases/latest)，两种方式任选其一：
 
-1. 在 Telegram 搜索 **@BotFather**，点进去发消息
-2. 发送 `/newbot`
-3. 给 bot 起个名字（显示名），比如 `My Mochi`
-4. 再起个用户名（必须以 `bot` 结尾），比如 `my_mochi_bot`
-5. BotFather 会回复一串 token，长得像 `123456789:ABCdefGHIjklMNOpqrsTUVwxyz`
-6. **复制保存好这个 token**，等下要用
+- **ZIP**：打开正式版页面，在 **Assets** 中下载 **Source code (zip)**，解压。
+- **Git**：安装 [Git](https://git-scm.com/downloads)，按 Release 页的版本标签下载。需要聊天自助更新时使用此方式。以下以 `v1.0.22` 为例，发布新版后替换标签：
 
-**选微信？** 不需要提前准备任何东西。后续在管理后台配置时会引导你用个人微信号扫码登录。
-
-> Telegram 和微信均支持文字和单张、5 MB 以内的图片，需要 Main 模型支持看图。微信图片支持 JPG、PNG、GIF、WebP，下载或解析失败会明确提示；原图仅用于当轮对话，不保存到聊天历史。微信还可以接收 20 MB 以内的文件：纯文本、代码、CSV、PDF 和 Word（.docx）会读出文字给 Mochi，内容过长时只读前 20000 字；其他格式只告诉 Mochi 文件名。文件同样只用于当轮对话，聊天历史只记录文件名。Telegram 还支持表情包；语音音频暂未接入模型。
-
-后台「模型 → 图片生成」只保存生图模型、API Key 和 API 根地址，不执行生图或发图。
-官方地址自动识别，兼容服务需选择 OpenAI Images 或 Gemini 原生接口；模型名按服务商填写。
-配置完整并启用图片生成 Skill 后，Mochi 可在微信聊天中按需生成和发送图片，
-随后在同一轮看到生成的画面并据实回复。Telegram 和主动消息暂不支持生图；
-关闭 Skill 或清除图片模型配置后，这项能力不再可用。
-
----
-
-## 2. 下载 MochiBot
-
-1. 打开 MochiBot 的 GitHub 页面：[github.com/shikidmsh-rgb/mochibot](https://github.com/shikidmsh-rgb/mochibot)
-2. 点击页面上**绿色的 "Code" 按钮**
-3. 在弹出的菜单里点 **"Download ZIP"**
-4. 下载完成后，**解压 ZIP 文件**到你想放的位置（比如桌面或文档文件夹）
-
-解压后你会得到一个 `mochibot-main` 文件夹，里面就是全部代码。
-
----
-
-## 3. 运行安装
-
-打开刚才解压的文件夹，找到 `setup.bat`（Windows）或 `setup.sh`（macOS/Linux），**双击运行**。
-
-> macOS/Linux 如果双击没反应，右键文件 → 在终端中打开，然后输入 `bash setup.sh` 回车。
-
-脚本会自动：
-- 创建独立的 Python 环境（不会影响你电脑上的其他程序）
-- 安装所有依赖
-- 打开管理后台
-
-看到类似这样的输出就说明成功了：
-
-```
-  [OK] Python 3.xx
-  [OK] Dependencies installed.
-
-  Setup complete!
-  Opening admin portal at http://127.0.0.1:8080
+```bash
+git clone --branch v1.0.22 https://github.com/shikidmsh-rgb/mochibot.git
+cd mochibot
 ```
 
-浏览器会自动打开管理后台页面。如果没自动打开，手动在浏览器地址栏输入 `http://127.0.0.1:8080`。
+这两种方式安装正式版，不跟随 main。需要未发布改动时，可另选 [main 开发版](https://github.com/shikidmsh-rgb/mochibot/tree/main)，不作为默认安装版本。
 
----
+### 启动
 
-## 4. 管理后台配置
+1. Windows 双击 `setup.bat`；macOS / Linux 在项目目录运行 `bash setup.sh`。
+2. 脚本自动创建运行环境并安装依赖。若提示缺少 Python 或版本过低，安装 [Python 3.11+](https://www.python.org/downloads/) 后重新运行；Windows 安装时勾选 **Add Python to PATH**。脚本不安装 Python 本身。
+3. 在浏览器打开 `http://127.0.0.1:8080`。
 
-管理后台打开后，你会看到一个设置引导页面（「设置向导」），**照着页面上的提示走就行**。
+服务器运行与后台访问见第 7 节。
 
-这里补充几个页面上没有详细说的点：
+## 3. 首次配置
 
-### 谁是 Owner？
+### 模型
 
-配置好启动 bot 之后，**第一个在 Telegram 上给 bot 发消息的人**会绑定为唯一用户，可以使用所有功能和管理指令。
+1. 进入「模型 → 添加模型」，填写 Provider、模型名称、API Key 和 API 地址。
+2. 保存并点击「测试」。
+3. 在「Agent 模型」中分别为 **Main** 和 **Lite** 分配模型。两者都必须配置，可以使用同一个模型。
 
-### 人设很重要
+Main 负责对话、判断和行动，以及 Core、记忆与关系的整理；Lite 负责分类、摘要和记忆提取。
 
-设置向导会让你编辑 Core——这是一份自由文本，决定 bot 的性格、语气、关注点以及长期关系上下文。
+### 消息平台
 
-你可以定义 TA 是温柔的、毒舌的、打工人风格的……随你。改了这个文件之后，bot 说话方式会完全不同。
+进入「设置 → 消息平台」：
 
-不知道写什么？默认 Core 只有一句“刚刚醒来”的起点，不预设性格。你可以留给 TA 随着相处自己更新，也可以随时在管理后台修改。Core 只保存在 `data/core.md`，启动不会改写已有内容，也不会导入旧人格文件或旧数据库 Core。
+- **微信**：点击「扫码登录」，扫描二维码并确认。
+- **Telegram**：填写 Bot Token，点击「保存并连接」。
 
----
+同一实例只能启用一个平台，切换会断开原平台。
 
-## 5. Skill 开关
+### 偏好与启动
 
-### 什么是 Skill？
+按「设置」页面完成偏好配置并启动 Mochi，由你发送第一条普通文字消息完成主人绑定。
 
-Skill 就是 bot 的"能力模块"。每个 Skill 负责一件事，可以独立开关。
+首次绑定由第一位符合条件的发信人触发。若别人先发送，可能绑定到对方。
 
-### 默认的 Skill
+### Core（重要）
 
-| Skill | 干什么 | 需要额外配置吗？ |
-|-------|--------|-----------------|
-| **habit**（习惯） | 追踪日常习惯，打卡、催你 | 不需要 |
-| **todo**（待办） | 记录待办事项 | 不需要 |
-| **reminder**（提醒） | 定时提醒，支持重复 | 不需要 |
-| **meal**（饮食） | 记录饮食、估算热量 | 不需要 |
-| **memory**（记忆） | 记住你说过的事 | 不需要 |
-| **web_search**（搜索） | 联网搜索信息 | 可选 `TAVILY_API_KEY` 或百度千帆 `BAIDU_API_KEY`；Tavily 优先，均不配置时使用 Bing |
-| **weather**（天气） | 查天气 | 不需要（想让心跳带天气信息需设城市名） |
-| **sticker**（表情包） | 学你发的表情包，聊天时自己发 | 不需要（仅 Telegram） |
+core是最重要的agent核心！！！虽然他自己也会写但是靠谱度不确定，所以建议常常维护常看常新，必要的内容直接自己更新进去，是和机体验最重要的一个环节~
 
-### 怎么开关？
+在「记忆」页面查看和编辑 Core。
 
-在管理后台的 **「Skills」** 页签里，每个 Skill 旁边有开关按钮，点一下就行。
+## 4. 日常使用
 
-> 不确定要不要开？**全开着就好**。用不上的 Skill 不会打扰你——bot 只有在你聊到相关话题时才会调用对应的 Skill。
+直接聊天即可使用习惯、待办、提醒、日记、搜索和历史查询等能力，例如「明天九点提醒我带材料」「查一下上周的旅行安排」。
 
----
+### 图片与文件
 
-## 6. 注意事项
+| 内容 | 支持范围 |
+| --- | --- |
+| 图片 | Telegram、微信均支持单张、5 MB 以内的图片，需要 Main 支持看图；微信支持 JPG、PNG、GIF、WebP。 |
+| 文件 | 微信支持 20 MB 以内的文本、代码、CSV、PDF、Word `.docx`，最多提取前 20,000 字；不支持扫描件 OCR。 |
+| 表情包 | Telegram Sticker。 |
+| 语音 | 暂未接入模型。 |
 
-**电脑关了 = bot 离线**
-MochiBot 运行在你的电脑上。电脑关机、合盖、断网，bot 就不会回消息。想让 bot 24 小时在线，需要部署到服务器上——见 [README 的部署章节](../README.md#部署)。
+原图和文件正文只用于当轮对话，不作为附件保存到聊天历史。不支持的文件格式仅提供文件名等信息。
 
-**持久化数据在 `data/` 文件夹里**
-聊天记录、记忆、习惯数据都在这。想备份？复制这个文件夹就行。与模型聊天时，对话内容和图片仍会发送给你配置的 API 提供商；联网搜索也会向外部搜索服务发送查询。
+### 可选配置
 
-**保管好你的配置**
-`.env` 文件里有明文的 API key 和 bot token。不要分享给别人。
+| 功能 | 配置 |
+| --- | --- |
+| 搜索 | 不配置 Key 时使用 Bing；支持 Tavily、百度千帆，Tavily 优先。可通过聊天调整技能配置。 |
+| 语义检索 | 在「模型」页配置 Embedding；不配置时仍可文字检索。 |
+| 图片生成 | 在「模型 → 图片生成」配置独立服务。目前仅支持微信普通聊天中生成并发送，不支持 Telegram 或主动消息。 |
+| 个人扩展 | 默认允许 Mochi 保存资料、维护小指南和开发工具；开发开关在「设置 → 高级」。 |
 
-**日常启动**
-每次想用 bot，双击 `setup.bat`（Windows）或运行 `setup.sh`（macOS/Linux）就行。关闭 bot：直接关掉窗口。
+个人 Python 工具在本机执行，不是沙箱。关闭开发不影响已有资料和已安装工具。详见[个人扩展说明](https://github.com/shikidmsh-rgb/mochibot/blob/main/docs/extensions.md)。
 
----
+### 自主活动
 
-## 7. 更新 MochiBot
+- **Free Time**：在清醒后的剩余可用时段随机安排，默认时段为当地 06:00–21:00。机会不保证全部触发，也不是必须发满的消息配额；聊天、休息或错过时机时不补发旧消息。
+- **Dream**：每天检查积累的材料，达到条件后由 Main 回看日记，整理记忆、Core 和关系，不是每天必做一次总结。
+- **提醒**：固定通知到点发送原文；Mochi 的自我提醒则到点后重新判断是否行动或开口。
 
-MochiBot 会不定期发布新版本。你的数据（聊天记录、配置、API key）不会被更新覆盖。
+### 常用命令
 
-**更新方法：** 先关掉正在运行的 bot，然后双击 `update.bat`（在 mochibot 文件夹里，和 setup.bat 挨着）。脚本会自动拉取最新代码、安装新依赖、启动 bot。
+两个平台均支持，除 `/help` 外仅对主人生效。
 
-> 如果你是通过 Download ZIP 安装的（没有用 Git），update.bat 会提示你需要先安装 Git。按提示去 [git-scm.com](https://git-scm.com/downloads/win) 下载安装即可，之后 update.bat 就能正常工作了。
+| 命令 | 用途 |
+| --- | --- |
+| `/help` | 命令帮助 |
+| `/heartbeat` | 主动陪伴状态 |
+| `/cost` | 今日、本月 Token 用量和模型明细，非服务商账单 |
+| `/core`、`/diary` | 查看 Core、今日日记 |
+| `/skilloff`、`/skillon` | 轻量闲聊模式、完整模式 |
+| `/reset` | 重置短期对话上下文，保留数据库和长期记忆 |
+| `/restart` | 重启 |
 
----
+## 5. 启停与备份
 
-## 8. 常见问题
+**启动**：运行 `setup.bat` 或 `bash setup.sh`，复用现有数据和配置。
 
-### 运行脚本报错 "Python not found"
+**关闭**：「关闭 Agent」保留管理后台；在运行终端按 `Ctrl+C` 完整退出。浏览器页面关闭不影响运行，进程退出、电脑休眠或断网会影响服务。
 
-Python 没装，或者没加到系统路径里。重新安装 Python，**一定勾选 "Add Python to PATH"**。
+**备份**：完整退出后，复制项目目录中的 `data` 文件夹和 `.env` 文件。前者包含聊天、记忆、日记、扩展和数据库配置，后者包含平台凭据及基础配置。
 
-### 管理后台打不开
+`.env` 中原有的 `ADMIN_TOKEN` 必须随备份保留，它同时用于解密已加密保存的凭据。未配置时，模型 Key 不保证加密存储。
 
-1. 确认脚本窗口还在运行、没有报错
-2. 浏览器里输入 `http://127.0.0.1:8080`（不是 https）
-3. 端口被占了？在 `.env` 里加一行 `ADMIN_PORT=9090` 换个端口
+聊天、图片和文件文字会发送给所选模型服务，搜索词会发送给搜索服务，不经过 MochiBot 官方服务器。「运行记录」保留 7 天的详细排障信息，可能包含私人对话；配置、备份和诊断资料均需按私人数据处理。
 
-### Bot 不回消息
+## 6. 更新
 
-按顺序检查：
-1. 脚本窗口里有没有红色错误信息？
-2. 去管理后台确认 API key 没有多余的空格
-3. 确认模型名写对了（比如是 `gpt-4o` 不是 `gpt4o`）
-4. API 余额够吗？去对应平台看看
+### Git 安装的正式版
 
-### Bot 不主动找我
+通过本指南的启动脚本运行时，可在聊天中要求「检查更新」或「更新到最新正式版」。Mochi 按请求检查正式 Release，先送达回复，再退出安装；保留 `.env`、`data` 和个人扩展。
 
-这是正常的。MochiBot 的心跳机制每 20 分钟检查一次，觉得有必要才会找你。刚启动的话等一会儿就好。另外 bot 默认晚上 11 点到早上 7 点不会主动打扰你。
+手动更新步骤：
 
----
+1. 完整退出，备份 `data` 和 `.env`，确认没有未提交的源码改动。
+2. 打开[最新正式版](https://github.com/shikidmsh-rgb/mochibot/releases/latest)，确认目标版本标签，在项目目录执行以下命令。将示例中的 `v1.0.22` 替换为目标标签：
 
-> 还有问题？去 [GitHub Issues](https://github.com/shikidmsh-rgb/mochibot/issues) 提问。
+```bash
+git fetch origin tag v1.0.22
+git checkout --detach v1.0.22
+```
+
+3. Windows 运行 `setup.bat`，macOS / Linux 运行 `bash setup.sh`，安装依赖并启动。
+
+`git pull` 和现有 `update.bat` 用于跟踪分支的源码安装，不适用于上述正式版标签安装。有本地源码改动时先处理，不强制覆盖。
+
+### ZIP 安装
+
+1. 完整退出，备份 `data` 和 `.env`。
+2. 从最新正式版页面下载 **Source code (zip)**，解压到另一个目录，把原 `data` 和 `.env` 复制进去。
+3. 运行新目录中的安装脚本，确认配置和数据正常。新旧实例不能同时运行。
+
+ZIP 安装不支持聊天自助更新或 `update.bat`，补装 Git 不会改变这一点；可另建 Git 安装目录，再恢复原数据和配置。
+
+## 7. 服务器部署
+
+长期运行由进程管理器托管 `scripts/start.py`，以支持重启和聊天自助更新，不直接运行 `python -m mochi.main`。systemd 对应配置示例：
+
+```ini
+[Service]
+WorkingDirectory=/path/to/mochibot
+ExecStart=/path/to/mochibot/.venv/bin/python /path/to/mochibot/scripts/start.py
+```
+
+管理后台默认监听服务器的 `127.0.0.1:8080`。在本机建立 SSH 隧道：
+
+```bash
+ssh -L 8080:127.0.0.1:8080 user@your-server
+```
+
+连接后在本机浏览器打开 `http://127.0.0.1:8080`。
+
+使用反向代理时，配置 HTTPS 并在代理层启用访问认证。后台信任回环连接，仅设置 `ADMIN_TOKEN` 不能保护通过本机反向代理转发的访问。
+
+**Docker**：仓库中的 Compose 文件仅为基础示例，后台默认只监听容器内回环地址，后台写入的 `.env` 配置也未持久化到宿主机，尚不是完整的部署配置。Docker 不支持聊天自助更新。
+
+## 常见问题
+
+| 问题 | 检查项 |
+| --- | --- |
+| 提示 `Python not found` | 安装 Python 3.11+；Windows 勾选 Add Python to PATH，重新运行脚本。 |
+| 后台打不开 | 查看启动日志；默认地址为 `http://127.0.0.1:8080`。端口占用时，在 `.env` 修改 `ADMIN_PORT` 并重启。服务器通过 SSH 隧道访问。 |
+| 没有启动按钮 | Main、Lite 是否均已分配，平台是否已配置，偏好是否已保存。 |
+| 不回复 | 检查运行状态、模型连接和额度、平台连接，以及「系统」「运行记录」中的错误。微信会话过期需重新扫码。 |
+| 没有主动消息 | 用 `/heartbeat` 查看状态；检查时区、自由活动开关和清醒状态。长期未聊天会暂停主动活动，机会触发也不保证发消息。 |
+| 离线期间错过提醒 | 过期主动消息不补发；定时提醒超过五分钟有效期会过期。 |
+
+问题反馈：[GitHub Issues](https://github.com/shikidmsh-rgb/mochibot/issues)。提交日志前移除凭据和私人内容。
