@@ -77,17 +77,17 @@ Calls marked `evaluation` / `cache_evaluation`, or linked to a usage row with
 `call_type=evaluation`, are separated. Old traffic without such labels is not
 guessed to be evaluation. Missing old role, stage and fingerprint metadata is
 unknown. Original per-attempt usage can still be read from old evidence, but
-prices and fingerprints are not reconstructed from redacted text.
+fingerprints are not reconstructed from redacted text.
 
 `runtime_trace` is the per-attempt authority. Completed LLM results carry an
 internal span ID into `usage_log`; repeated logging of that same result cannot
-create another ledger row. The ledger keeps its frozen billing snapshot even
-after detailed evidence expires. The report does **not** add ledger totals to
+create another ledger row. The ledger keeps token counters even after detailed
+evidence expires. The report does **not** add ledger totals to
 trace totals. Unlinked historical ledger rows are counted separately across the
 instance because those older rows have no reliable owner/attempt identity.
 The seven-day detailed-evidence retention still applies; an older requested
 start is explicitly partial coverage. Text/embedding SDK calls are covered,
-not a complete invoice for image, speech or unrelated external services.
+not image, speech or unrelated external services.
 
 Use `mochi.runtime_trace.query_token_distribution(user_id, ...)` from developer
 Python code. Optional filters are `trace_id`, timezone-bearing `since` and
@@ -107,53 +107,19 @@ Records follow the existing seven-day retention. Older requests without these
 counts are explicitly unavailable; redacted historical text is never presented
 as an exact reconstruction of the original input.
 
-## Optional request-time pricing
+## Token counters
 
-No tariffs are guessed from a model name, and no public list price is assumed
-to be the price of a gateway. To enable estimates, create the Git-ignored
-`token-prices.json` beside the configured database. Copy the exact `provider`,
-`endpoint` and requested `model` from a JSON report, and supply the actual
-applicable USD prices per million tokens:
-
-```json
-{
-  "currency": "USD",
-  "models": [
-    {
-      "provider": "openai",
-      "endpoint": "https://api.example.com/v1",
-      "model": "your-model",
-      "source": "Your endpoint tariff and effective date",
-      "input": null,
-      "output": null,
-      "cache_read": null,
-      "cache_write": null
-    }
-  ]
-}
-```
-
-`null` is unknown; explicit `0` means a known zero rate. Rates must be finite
-and nonnegative. The exact provider/endpoint/model triple is the identity;
-trailing endpoint slashes are ignored, credentials and query parameters are
-not allowed. An absent file/entry leaves pricing unconfigured. Invalid pricing
-is logged and marked unavailable without blocking the model request.
-
-Every SDK attempt freezes its matching price before sending. Changing the file
-affects later requests only; the report never loads today's file to reprice
-older requests. This is an estimate using explicitly configured flat rates,
-not currency conversion, tiered-price discovery or a provider invoice.
-
-Uncached input, cached reads, cache writes and output are separate cost buckets.
+The report keeps total input, uncached input, cached reads, cache writes, output
+and reasoning counters separate. It does not configure prices or estimate money.
 Native Anthropic input excludes its separately reported cache buckets;
 OpenAI-style totals include them. DeepSeek's reported cache-miss bucket is
-uncached input, with no separately billed write bucket. Missing counters remain
-unknown rather than zero. Embedding uses its input count alone. Reasoning is
-already part of output and is not charged a second time. The report gives a
-known subtotal and the number of incompletely priced calls; a complete amount
-exists only when every applicable bucket is known.
+uncached input. Missing counters remain unknown rather than zero. Reasoning is
+already part of output and is not added a second time. Every aggregate gives
+the known token subtotal and the number of calls missing that counter. Text
+tables mark those unknown counts explicitly as well.
 
-Input source shares remain local reference-token counts, not dollar allocations.
+Input source shares remain local reference-token counts, not a proportional
+allocation of provider-reported usage.
 
 ## Cache comparisons
 

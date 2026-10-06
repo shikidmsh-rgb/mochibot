@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read a complete time window of recorded token/cost evidence without model calls."""
+"""Read a complete time window of recorded token and cache evidence without model calls."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ import argparse
 from collections import defaultdict
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
 import json
 from pathlib import Path
 import sqlite3
@@ -38,18 +37,10 @@ def summarize(calls: list[dict]) -> dict:
     ]
     total = sum(call["units"]["input_total"] for call in covered)
     cached = sum(call["units"]["cache_read"] for call in covered)
-    known_cost = sum(
-        (Decimal(call["cost"].get("known_component_usd", "0")) for call in calls),
-        Decimal(0),
-    )
-    unknown_cost = sum(call["cost"].get("estimated_usd") is None for call in calls)
     return {
         "attempts": len(calls), "metrics": metrics,
         "cache_read_fraction": cached / total if total else None,
         "cache_ratio_covered_calls": len(covered),
-        "known_estimated_usd": str(known_cost),
-        "unknown_cost_calls": unknown_cost,
-        "complete_estimated_usd": str(known_cost) if not unknown_cost else None,
         "anomalous_attempts": sum(call["anomalous"] for call in calls),
         "additional_attempts": sum(
             call["attempt_index"] > 1 or call["stage"] == "compression_retry" for call in calls
@@ -162,10 +153,6 @@ def build_report(
             "provider_usage": distribution.get("provider_usage"),
             "attempt_index": attempts[operation],
             "anomalous": row["status"] != "completed" or terminal in {"failed", "truncated"},
-            "price": billing.get("price") or {"status": "not_recorded"},
-            "cost": billing.get("cost") or {
-                "status": "unknown", "estimated_usd": None, "known_component_usd": "0",
-            },
             "fingerprint": facts.get("cache_fingerprint") or {},
         }
         # Different roles/stages and evaluation traffic are never cache controls for each other.
@@ -256,8 +243,8 @@ def build_report(
             for (cohort, name), items in sorted(comparison_groups.items())
         ],
         "notes": [
-            "Estimates are not provider invoices; no price or usage is reconstructed for old requests.",
-            "Reference input shares are not dollar shares. Reasoning is part of output, not added again.",
+            "Token totals come from recorded SDK attempts; missing provider usage stays unknown.",
+            "Local reference tokens are not provider token counts. Reasoning is part of output, not added again.",
             "Cache comparisons are client-visible observations, not proof of cause or provider warmup.",
             "Unknown usage and unlinked historical rows are not zero. Detailed evidence lasts seven days.",
         ],
@@ -281,33 +268,41 @@ def build_report(
 
 
 def render(report: dict) -> str:
+    def metric(group: dict, name: str) -> str:
+        counts = group["metrics"][name]
+        text = str(counts["known_tokens"])
+        if counts["unknown_calls"]:
+            text += f" + unknown ({counts['unknown_calls']} calls)"
+        return text
+
     total = report["summary"]
     lines = [
         f"Window: {report['scope']['since']} .. {report['scope']['until_exclusive']} (end exclusive)",
         f"SDK attempts: {total['attempts']}; additional attempts: {total['additional_attempts']}; "
         f"anomalous: {total['anomalous_attempts']}",
-        f"Known estimated USD subtotal: {total['known_estimated_usd']}; "
-        f"calls with incomplete/unknown cost: {total['unknown_cost_calls']}",
+        f"Input tokens: {metric(total, 'input_total')}; output tokens: {metric(total, 'output')}",
+        f"Cache read tokens: {metric(total, 'cache_read')}; "
+        f"cache write tokens: {metric(total, 'cache_write')}",
         f"Evaluation attempts: {report['evaluations']['attempts']}; "
         f"unlinked historical instance ledger rows (NOT added): "
         f"{report['coverage']['unlinked_instance_usage_rows_in_window']}",
         "",
-        "Activity | requests | known input | known output | known USD | cost unknown calls",
+        "Activity | requests | input tokens | output tokens | cache read | cache write",
     ]
     for group in report["by_activity"]:
         lines.append(
             f"{group['name']} | {group['attempts']} | "
-            f"{group['metrics']['input_total']['known_tokens']} | "
-            f"{group['metrics']['output']['known_tokens']} | "
-            f"{group['known_estimated_usd']} | {group['unknown_cost_calls']}"
+            f"{metric(group, 'input_total')} | {metric(group, 'output')} | "
+            f"{metric(group, 'cache_read')} | {metric(group, 'cache_write')}"
         )
-    lines.extend(["", "Model | requests | known USD | cost unknown calls"])
+    lines.extend(["", "Model | requests | input tokens | output tokens | cache read | cache write"])
     for group in report["by_model"]:
         lines.append(
             f"{group['name']} | {group['attempts']} | "
-            f"{group['known_estimated_usd']} | {group['unknown_cost_calls']}"
+            f"{metric(group, 'input_total')} | {metric(group, 'output')} | "
+            f"{metric(group, 'cache_read')} | {metric(group, 'cache_write')}"
         )
-    lines.extend(["", "Largest input sources (local reference tokens, NOT cost allocation)"])
+    lines.extend(["", "Largest input sources (local reference tokens)"])
     for item in sorted(report["input_sources"], key=lambda item: item["reference_tokens"], reverse=True)[:10]:
         share = item["share_of_counted_reference_tokens"]
         label = f"{share:.1%}" if share is not None else "unknown"

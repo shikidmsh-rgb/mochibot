@@ -439,12 +439,11 @@ def sdk_call(
     phase = _stage.get()
     operation_id = phase.operation_id if phase else uuid.uuid4().hex
     from mochi.token_distribution import cache_fingerprint, record_request, record_usage
-    from mochi.token_accounting import capture_price, record_billing
+    from mochi.token_accounting import record_usage_units
     distribution = record_request(kwargs, _current.get().token_sources)
     billing = {
         "provider": provider, "endpoint": endpoint, "model": kwargs.get("model"),
         "protocol": protocol,
-        "price": capture_price(provider, endpoint, kwargs.get("model", "")),
     }
     facts = {
         "kind": "model", "operation_id": operation_id, "token_distribution": distribution,
@@ -475,7 +474,7 @@ def sdk_call(
             raise
         if item:
             record_usage(distribution, response)
-            record_billing(billing, distribution.get("provider_usage"), protocol)
+            record_usage_units(billing, distribution.get("provider_usage"), protocol)
             request_id = getattr(response, "_request_id", None)
             item.response = (
                 {"body": response, "request_id": request_id} if request_id else response

@@ -83,7 +83,7 @@ async def dump() -> str:
         conn = _connect()
         row = conn.execute(
             "SELECT model, purpose, prompt_tokens, completion_tokens, "
-            "       total_tokens, tool_name, cost_usd, created_at "
+            "       total_tokens, tool_name, created_at "
             "FROM usage_log WHERE purpose LIKE 'chat:%' "
             "ORDER BY id DESC LIMIT 1"
         ).fetchone()
@@ -92,7 +92,7 @@ async def dump() -> str:
                 "model": row[0], "purpose": row[1],
                 "prompt_tokens": row[2], "completion_tokens": row[3],
                 "total_tokens": row[4], "tools_called": row[5],
-                "cost": row[6], "time": row[7],
+                "time": row[6],
             }
         conn.close()
     except Exception:
@@ -177,8 +177,6 @@ async def dump() -> str:
         out.append(f"  Model:      {last_call['model']}")
         out.append(f"  Tools:      {last_call['tools_called'] or '(none)'}")
         out.append(f"  Tokens:     {last_call['prompt_tokens']}\u2192{last_call['completion_tokens']} ({last_call['total_tokens']} total)")
-        if last_call.get("cost"):
-            out.append(f"  Cost:       ${last_call['cost']:.4f}")
     else:
         out.append("  (no chat:* call found in usage_log)")
     out.append("")
