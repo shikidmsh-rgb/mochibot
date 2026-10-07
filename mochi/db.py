@@ -1745,6 +1745,13 @@ def get_conversation_context(
         conn.commit()
         return {
             "summary": summary,
+            "summary_source_time": next(
+                (
+                    message["created_at"] for message in messages
+                    if message["id"] == through_message_id
+                ),
+                None,
+            ) if summary else None,
             "through_message_id": through_message_id,
             "overflow": overflow_messages,
             "recent": recent_messages,

@@ -342,6 +342,17 @@ def _format_history_timestamps(history: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _format_conversation_summary(summary: str, source_time: str | None) -> str:
+    if not summary:
+        return ""
+    template = get_prompt("conversation_history")
+    if not template:
+        raise RuntimeError("Conversation history prompt is missing")
+    return template.replace(
+        "{{source_time}}", _format_history_timestamp(source_time) or "未知",
+    ).replace("{{summary}}", summary)
+
+
 def _format_completed_history(history: list[dict]) -> str:
     completed_turns = [
         {
@@ -1244,6 +1255,13 @@ async def _chat(
                 lambda: day_start.mark_done(day_start_day)
             )
 
+    split_turn_context = message is not None and runtime_entry is None
+    summary_context = (
+        _format_conversation_summary(
+            conv_summary, conversation_context.get("summary_source_time"),
+        )
+        if split_turn_context else ""
+    )
     token_parts: dict[str, list[tuple[str, str]]] = {}
     system_prompt, turn_context = runtime_trace.prepare_sync(
         "prompt", _build_prompt_zones,
@@ -1252,7 +1270,7 @@ async def _chat(
         core_memory=core_memory, habits=habits, transport=transport,
         recalled_memories=recalled_memories,
         diary_status=_ds, diary_journal=_dj,
-        conv_summary=(conv_summary or "") if prompt_policy.conversation_summary else "",
+        conv_summary="" if split_turn_context else conv_summary,
         recent_operations=recent_operations,
         runtime_entry=runtime_entry,
         dream_context=(
@@ -1272,7 +1290,6 @@ async def _chat(
     )
     # User turns keep the system prompt stable so providers can reuse the
     # system + history prefix; runtime entries keep everything in system.
-    split_turn_context = message is not None and runtime_entry is None
     if not split_turn_context:
         system_prompt = f"{system_prompt}\n\n{turn_context}"
         token_parts["system"].extend([
@@ -1282,6 +1299,8 @@ async def _chat(
 
     # Build messages array
     messages = [{"role": "system", "content": system_prompt}]
+    if summary_context:
+        messages.append({"role": "user", "content": summary_context})
     if is_autonomous:
         messages.append({
             "role": "user",
@@ -1336,6 +1355,11 @@ async def _chat(
             current_input_index = current_index + 1
 
     for index, context_message in enumerate(messages[1:], start=1):
+        if summary_context and index == 1:
+            runtime_trace.register_token_source(
+                "user", summary_context, [("history.summary", summary_context)],
+            )
+            continue
         if split_turn_context and index == current_index:
             runtime_trace.register_token_source("user", context_message["content"], [
                 ("turn_context.wrapper", '<turn_context source="runtime" role="read_only_context">\n'),

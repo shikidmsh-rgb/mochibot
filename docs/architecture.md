@@ -125,11 +125,18 @@ not owner authority, and are never persisted as user messages or extracted into
 memory. Existing execution receipts remain separate from these speech records.
 
 For owner message turns, the system prompt holds only cross-turn stable content
-(Core, Agent contract, capability guides). Per-turn facts — the history time
-table, today, summary, recent operations, recalled memory, habit snapshot and
-current time — travel as one read-only `turn_context` message just before the
+(Core, Agent contract, capability guides). An early-conversation summary appears
+once as read-only historical context before recent conversation, with the source
+boundary message's local time (or explicitly unknown), not its generation time.
+It uses the provider's user input channel without becoming an owner message or
+entering persisted history, recall queries, or memory extraction. Summary
+generation still uses only the previous summary and retiring complete turns.
+Per-turn facts — the history time table, today, recent operations, recalled
+memory, habit snapshot and current time — travel as one read-only
+`turn_context` message just before the
 current input and are never persisted, so providers can reuse the system +
-history prefix across turns. Runtime entries keep that context in system.
+summary + history prefix across turns. Runtime entries keep their existing
+summary and per-turn context placement in system.
 
 Ordinary authorized owner chat may opt into explicit Main Responses caching.
 The adapter marks a supported text boundary within the stable prefix captured

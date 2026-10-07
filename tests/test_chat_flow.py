@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from mochi import db
+from mochi import config, db
 from mochi.ai_client import chat
 from mochi.core_store import read_core, replace_core
 from mochi.main_runtime import MainRuntimeEntry
@@ -12,6 +12,26 @@ from tests.mock_llm import make_response, make_tool_call
 
 @pytest.mark.asyncio
 async def test_delivery_history_becomes_background_for_the_next_activation(mock_llm_factory, monkeypatch):
+    monkeypatch.setattr(config, "MAX_HISTORY_TURNS", 1)
+    db.save_message(1, "user", "An older question.", turn_id="old")
+    boundary = db.save_message(1, "assistant", "An older answer.", turn_id="old")
+    db.save_message(1, "user", "A recent question.", turn_id="recent")
+    db.save_message(1, "assistant", "A recent answer.", turn_id="recent")
+    source_time = "2026-09-01T03:04:00+00:00"
+    with db._connect() as conn:
+        conn.execute(
+            "UPDATE messages SET created_at=? WHERE turn_id=?",
+            (source_time, "old"),
+        )
+    claim = db.get_conversation_summary_batch(1, 2, retained_turns=1)
+    assert claim["next_through_message_id"] == boundary
+    summary = "The earlier question was resolved."
+    assert db.save_conversation_summary(claim, summary)
+    context = db.get_conversation_context(1, 1)
+    assert context["summary_source_time"] == source_time
+    assert db.get_conversation_context(2, 1)["summary_source_time"] is None
+    existing = db.get_recent_messages(1)
+
     response = make_response("A prepared reply.")
     response.reasoning_content = "OLD_REASONING"
     response.reasoning_source = "test-model"
@@ -21,11 +41,24 @@ async def test_delivery_history_becomes_background_for_the_next_activation(mock_
         user_id=1, channel_id=1, transport="fake", text="An owner message.",
         owner_authorized=True,
     ))
-    assert [row["role"] for row in db.get_recent_messages(1)] == ["user"]
+    messages = client.call_log[0]["messages"]
+    assert [item["role"] for item in messages] == [
+        "system", "user", "user", "assistant", "user", "user",
+    ]
+    assert summary in messages[1]["content"]
+    assert source_time[:16].replace("T", " ") in messages[1]["content"]
+    assert sum(summary in item["content"] for item in messages) == 1
+    assert [item["content"] for item in messages[2:4]] == [
+        row["content"] for row in context["recent"]
+    ]
+    assert messages[-1]["content"] == "An owner message."
+    pending = db.get_recent_messages(1)
+    assert pending[:-1] == existing and pending[-1]["role"] == "user"
     assert result.confirm_delivered()
     assert not result.confirm_delivered()
     delivered = db.get_recent_messages(1)
-    assert [row["role"] for row in delivered] == ["user", "assistant"]
+    assert delivered[:-2] == existing
+    assert [row["role"] for row in delivered[-2:]] == ["user", "assistant"]
     entry = MainRuntimeEntry(
         kind="self_reminder", user_id=1, channel_id=1, transport="fake",
         intent="CURRENT_EVENT", scheduled_for="2099-01-01T23:00:00+00:00",
@@ -37,14 +70,19 @@ async def test_delivery_history_becomes_background_for_the_next_activation(mock_
     assert entry.intent in messages[-1]["content"]
     assert entry.scheduled_for in messages[-1]["content"]
     assert entry.intent not in messages[0]["content"]
+    assert summary in messages[0]["content"]
     records = json.loads(messages[0]["content"].split(
         '<recent_completed_turns role="read_only_evidence">\n', 1,
     )[1].split("\n</recent_completed_turns>", 1)[0])
     assert records == [
         {"speaker": row["role"], "timestamp": row["created_at"], "content": row["content"]}
-        for row in delivered
+        for row in delivered[2:]
     ]
     assert "OLD_REASONING" not in json.dumps(messages)
+    assert db.get_recent_messages(1) == delivered
+    db.set_context_reset(1)
+    cleared = db.get_conversation_context(1, 1)
+    assert cleared["summary"] == "" and cleared["summary_source_time"] is None
     assert db.get_recent_messages(1) == delivered
 
 
