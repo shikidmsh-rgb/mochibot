@@ -6,8 +6,35 @@ from mochi import config, db
 from mochi.ai_client import chat
 from mochi.core_store import read_core, replace_core
 from mochi.main_runtime import MainRuntimeEntry
+from mochi.skills.base import SkillResult
+from mochi.tool_execution import (
+    outcome_for, read_tool_result, retained_result_for,
+)
 from mochi.transport import IncomingMessage
 from tests.mock_llm import make_response, make_tool_call
+
+
+def _record_execution(turn_id, tool_name, result, *, user_id=1):
+    execution_id = db.start_tool_execution(
+        turn_id=turn_id, tool_call_id=make_tool_call(tool_name, {})["id"], user_id=user_id,
+        source="chat", skill_name="test", tool_name=tool_name,
+        action="", arguments_json="{}",
+    )
+    outcome = outcome_for("test", tool_name, {}, result)
+    db.finish_tool_execution(
+        execution_id, status=outcome["status"], state_changed=outcome["state_changed"],
+        result_summary=outcome["result_summary"],
+        result_json=retained_result_for(tool_name, result),
+    )
+    return execution_id
+
+
+def _receipt_facts(messages):
+    for message in messages:
+        if isinstance(message["content"], str):
+            for line in message["content"].splitlines():
+                if line.startswith("- [") and "] {" in line:
+                    yield json.loads(line.split("] ", 1)[1])
 
 
 @pytest.mark.asyncio
@@ -32,6 +59,22 @@ async def test_delivery_history_becomes_background_for_the_next_activation(mock_
     assert db.get_conversation_context(2, 1)["summary_source_time"] is None
     existing = db.get_recent_messages(1)
 
+    write_id = _record_execution("recent", "edit_workspace", SkillResult(
+        output="Saved the document.", state_changed=True,
+    ))
+    failed_id = _record_execution("recent", "activate_extension", SkillResult(
+        output="Saved but activation failed.", success=False, state_changed=True,
+    ))
+    read_ids = [
+        _record_execution("recent", "look_around", SkillResult(
+            output=f"Observation {index}", history_foldable=True,
+        ))
+        for index in range(13)
+    ]
+    _record_execution("recent", "look_around", SkillResult(
+        output="Another owner's observation.", history_foldable=True,
+    ), user_id=2)
+
     response = make_response("A prepared reply.")
     response.reasoning_content = "OLD_REASONING"
     response.reasoning_source = "test-model"
@@ -52,6 +95,15 @@ async def test_delivery_history_becomes_background_for_the_next_activation(mock_
         row["content"] for row in context["recent"]
     ]
     assert messages[-1]["content"] == "An owner message."
+    receipts = list(_receipt_facts(messages))
+    assert {fact.get("receipt_id") for fact in receipts} >= {write_id, failed_id}
+    failed_receipt = next(fact for fact in receipts if fact.get("receipt_id") == failed_id)
+    assert failed_receipt["status"] == "failed" and failed_receipt["changed"] is True
+    folded = next(fact for fact in receipts if "reads" in fact)
+    assert [read["receipt_id"] for read in folded["reads"]] == read_ids
+    restored = json.loads(read_tool_result(1, read_ids[0]).output)
+    assert restored["content"] == "Observation 0"
+    assert not read_tool_result(2, read_ids[0]).success
     pending = db.get_recent_messages(1)
     assert pending[:-1] == existing and pending[-1]["role"] == "user"
     assert result.confirm_delivered()
@@ -71,6 +123,7 @@ async def test_delivery_history_becomes_background_for_the_next_activation(mock_
     assert entry.scheduled_for in messages[-1]["content"]
     assert entry.intent not in messages[0]["content"]
     assert summary in messages[0]["content"]
+    assert next(fact for fact in _receipt_facts(messages) if "reads" in fact) == folded
     records = json.loads(messages[0]["content"].split(
         '<recent_completed_turns role="read_only_evidence">\n', 1,
     )[1].split("\n</recent_completed_turns>", 1)[0])
@@ -84,6 +137,7 @@ async def test_delivery_history_becomes_background_for_the_next_activation(mock_
     cleared = db.get_conversation_context(1, 1)
     assert cleared["summary"] == "" and cleared["summary_source_time"] is None
     assert db.get_recent_messages(1) == delivered
+    assert not read_tool_result(1, read_ids[0]).success
 
 
 @pytest.mark.asyncio

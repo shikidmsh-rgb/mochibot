@@ -108,4 +108,9 @@ class PerceptionSkill(Skill):
                 "mode": mode,
                 "sources": views,
             }),
+            history_foldable=bool(views) and all(
+                view["available"] and not view["stale"] and not view["error"]
+                and not view["facts"].get("view_truncated")
+                for view in views
+            ),
         )

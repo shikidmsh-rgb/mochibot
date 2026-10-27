@@ -246,6 +246,7 @@ class MySkill(Skill):
 | `success` | bool | `True` | 操作是否成功 |
 | `document_snapshot` | str \| None | `None` | 内置 Core/Diary 工具已向 Main 展示的确切文档内容；框架在下一次模型调用前更新并发核对基线，不从回执文案猜测版本 |
 | `exposed_memory_ids` | list[int] | `[]` | 搜索实际返回的 Memory IDs；仅下一次成功模型调用真正看到结果后计引用，同一轮去重 |
+| `history_foldable` | bool | `False` | Skill 明确声明此次只读结果可在已结束轮次的历史中仅保留读取索引。执行时保存声明；只对成功、未改动、无未知副作用且详情完整保留并无需脱敏的结果生效。不改变当前工具结果，不能仅根据 `state_changed=False` 推定可折叠 |
 | `after_delivery` | Callable \| None | `None` | 内部生命周期回调；只用于普通聊天最终回复全部送达后的更新交接，不随 provider 结果或自主投递 outbox 序列化 |
 
 工具回执必须区分“准备完成”和“执行完成”。例如正式版更新先保存待交付请求，

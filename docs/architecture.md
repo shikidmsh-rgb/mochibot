@@ -174,9 +174,20 @@ operations without a confirmed assistant reply. Undelivered chat receipts requir
 an original user message in the same reset epoch; a model or delivery failure does
 not erase completed actions. Silent operations remain visible without inventing
 an assistant message, implying delivery, or automatically retrying execution.
-These receipts share one count/text budget and respect context resets.
+These receipts share one count/text budget and respect context resets. Selection
+uses the eligible ledger scope before applying the 12-entry/2,400-character
+display budget: non-success calls precede writes, other results, then foldable
+reads, with newest calls first within each class. Display keeps recorded order
+and explicitly marks omissions rather than dropping a result summary to fit.
+Only execution-time opt-ins for successful reads with fully retained, unredacted
+results may fold, and only inside a turn with a visible confirmed assistant reply.
+Normal `look_around` results opt in; unavailable, stale, failed or truncated
+observations do not. Groups keep each original receipt ID and read time without
+merging observations across turns. Current tool rounds always keep their results.
+No registry reclassification or diagnostic evidence is used to reconstruct old
+opt-ins; original ledger records remain unchanged.
 Receipts include read-only, failed and unfinished calls as well as successful
-writes; non-success records do not assert the absence of side effects.
+writes; non-success records retain known changes and leave unknown changes unknown.
 They stay inside the same user and reset epoch; Dream keeps its separate
 curation context. Tool-provided summaries are data, not instructions or proof that the
 user's overall task is complete. Only compact summaries and operation identifiers

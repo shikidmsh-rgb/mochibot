@@ -116,6 +116,8 @@ class SkillResult:
     after_delivery: Callable[[], None] | None = None
     exposed_memory_ids: list[int] = field(default_factory=list)
     image: ImageAttachment | None = field(default=None, repr=False)
+    # Explicit opt-in: this read's historical detail may be replaced by its receipt.
+    history_foldable: bool = False
 
 
 @dataclass

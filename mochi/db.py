@@ -1118,7 +1118,7 @@ def finish_tool_execution(execution_id: int, *, status: str,
 
 
 def get_recent_tool_executions(user_id: int, *, hours: int = 24,
-                               limit: int = 3,
+                               limit: int | None = 3,
                                skill_names: list[str] | None = None,
                                state_changes_only: bool = True,
                                turn_ids: list[str] | None = None,
@@ -1182,14 +1182,17 @@ def get_recent_tool_executions(user_id: int, *, hours: int = 24,
         if reset_at:
             conditions.append("julianday(started_at) > julianday(?)")
             params.append(reset_at)
-    params.append(max(1, limit))
+    if limit is not None:
+        params.append(max(1, limit))
     rows = conn.execute(
         "SELECT id, turn_id, tool_call_id, user_id, source, skill_name, "
         "tool_name, action, arguments_json, status, result_summary, "
         "entity_refs_json, state_changed, started_at, finished_at, "
-        "result_json IS NOT NULL AS has_result "
+        "result_json IS NOT NULL AS has_result, "
+        "json_extract(result_json, '$.history_foldable') AS history_foldable, "
+        "json_extract(result_json, '$.execution.changed') AS result_changed "
         "FROM tool_executions WHERE " + " AND ".join(conditions) +
-        " ORDER BY id DESC LIMIT ?",
+        " ORDER BY id DESC" + (" LIMIT ?" if limit is not None else ""),
         params,
     ).fetchall()
     conn.close()
