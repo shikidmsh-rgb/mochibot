@@ -337,14 +337,21 @@ prompt lists unloaded requestable tool names grouped by skill. An exact tool
 request loads only that tool; skill names and query matches load the skill's
 requestable tools. Mixed requests deduplicate tools and distinguish new additions
 from tools already available. A skill's shared capability
-context arrives with the `request_tools` result that loads it. `locked`
+context arrives with the `request_tools` result that loads it. Multiple loading
+requests in one response share the accumulated next-round snapshot, so repeated
+requests do not report another load or repeat the same guide. Dispatch still uses
+the unchanged current-round snapshot. `locked`
 controls only whether the owner may disable a skill. Concrete deny rules, rate
 limits, state-change facts, recoverability, and receipts remain execution
 contracts rather than an abstract risk taxonomy.
 
 The Lite pre-router is a bounded optimization: after a short timeout Main
-answers without routed tools and can still use `request_tools`. Ordinary owner
-chat keeps an in-memory session toolbox: non-resident tools visible in the
+answers without routed tools and can still use `request_tools`. Its network
+operations use the same configured timeout without SDK retries, through a
+request-local client; Main's timeout and retry settings remain unchanged.
+The async waiting deadline and network-operation timeouts are separate bounds,
+not a guarantee that a cancelled provider request stops computing or billing.
+Ordinary owner chat keeps an in-memory session toolbox: non-resident tools visible in the
 previous turn, including those loaded by `request_tools`, stay loaded while
 messages continue within the idle window. The order is resident, carried, then
 newly routed, so follow-ups keep their tools and the provider schema stays

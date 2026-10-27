@@ -152,7 +152,9 @@ async def test_only_authorized_complete_tool_calls_reach_execution(mock_llm_fact
     incomplete.tool_calls_complete = False
     client = mock_llm_factory([
         make_response(tool_calls=[
-            make_tool_call("request_tools", {"skills": ["view_core_memory"]}),
+            make_tool_call("request_tools", {"skills": ["view_core_memory"]}, "load"),
+            make_tool_call("request_tools", {"skills": ["view_core_memory"]}, "load_again"),
+            make_tool_call("view_core_memory", {}, "too_early"),
         ]),
         make_response(tool_calls=[
             make_tool_call("view_core_memory", {}, "allowed"),
@@ -172,8 +174,20 @@ async def test_only_authorized_complete_tool_calls_reach_execution(mock_llm_fact
         item["tool_call_id"]: json.loads(item["content"])
         for item in client.call_log[-1]["messages"] if item["role"] == "tool"
     }
+    assert results["load"]["loaded"] == [
+        {"skill": "memory", "tools": ["view_core_memory"]},
+    ]
+    assert "loaded" not in results["load_again"]
+    assert results["load_again"]["already_loaded"] == [
+        {"skill": "memory", "tools": ["view_core_memory"]},
+    ]
+    assert sum(
+        tool["function"]["name"] == "view_core_memory"
+        for tool in client.call_log[1]["tools"]
+    ) == 1
     assert results["allowed"]["ok"]
     for call_id, code in {
+        "too_early": "tool_not_available_this_turn",
         "unavailable": "tool_not_available_this_turn",
         "invalid": "invalid_tool_arguments",
         "malformed": "malformed_tool_arguments",

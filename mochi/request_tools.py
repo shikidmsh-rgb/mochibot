@@ -380,7 +380,7 @@ def resolve_request(
     loaded: list[dict] = []
     additions: list[dict] = []
     known_names = set(availability.names)
-    # Skills with a tool already present had their context in the system prompt.
+    # A present skill's context was already supplied in system or a loading result.
     present_namespaces = {
         catalog.tool_to_namespace.get(name) for name in availability.names
     }

@@ -1748,7 +1748,7 @@ async def _chat(
                 else:
                     request_result, additions = resolve_request(
                         arguments,
-                        round_availability,
+                        next_availability,
                         transport=transport,
                         excluded_skills=excluded_skills,
                     )

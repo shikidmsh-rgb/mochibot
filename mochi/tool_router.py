@@ -118,6 +118,7 @@ async def classify_skills_llm(message: str, user_id: int | None = None,
     prompt = _build_router_prompt(descriptions, active_habits=active_habits)
 
     try:
+        from mochi.config import TOOL_ROUTER_TIMEOUT_S
         from mochi.runtime_trace import prepare_sync, span, stage
         client = prepare_sync("router_client", get_client_for_tier, "lite")
         with stage("router", model_role="LITE", purpose="tool_router", usage_stage="classification"):
@@ -130,6 +131,7 @@ async def classify_skills_llm(message: str, user_id: int | None = None,
                 temperature=0.0,
                 max_tokens=TOOL_ROUTER_MAX_TOKENS,
                 json_mode=True,
+                timeout_seconds=TOOL_ROUTER_TIMEOUT_S,
             )
 
         log_usage(

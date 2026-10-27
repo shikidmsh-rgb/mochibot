@@ -12,6 +12,7 @@ Usage:
 import json
 import base64
 import logging
+import math
 import re
 from abc import ABC, abstractmethod
 from copy import deepcopy
@@ -29,6 +30,15 @@ log = logging.getLogger(__name__)
 # which silently masks slow gateways. Read=120s is well above worst-case
 # reasoning-model latency on slow third-party gateways but fails fast on hangs.
 _HTTP_TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0)
+
+
+def _client_with_timeout(client, timeout_seconds: float | None):
+    if timeout_seconds is None:
+        return client
+    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+        raise ValueError("Request timeout must be finite and positive")
+    return client.with_options(timeout=timeout_seconds, max_retries=0)
+
 
 _RESPONSES_API_MODELS = frozenset({
     "gpt-5.6-sol",
@@ -118,7 +128,8 @@ class LLMProvider(ABC):
     def chat(self, messages: list[dict], tools: list[dict] | None = None,
              temperature: float | None = None, max_tokens: int = 2048,
              json_mode: bool = False, *, thinking: bool | None = None,
-             cache_context: ResponsesCacheContext | None = None) -> LLMResponse:
+             cache_context: ResponsesCacheContext | None = None,
+             timeout_seconds: float | None = None) -> LLMResponse:
         """Send a chat completion request.
 
         json_mode=True asks the provider to return strict JSON. Each provider
@@ -128,6 +139,8 @@ class LLMProvider(ABC):
         thinking is a per-request override only for providers advertising
         supports_thinking_control. None preserves the provider's default.
         cache_context is only sent to providers advertising supports_explicit_cache.
+        timeout_seconds bounds each network operation without SDK retries, using
+        a request-local client; callers own any overall async waiting deadline.
         """
         ...
 
@@ -626,11 +639,13 @@ class OpenAIProvider(_OpenAICompatChat, LLMProvider):
     def chat(self, messages: list[dict], tools: list[dict] | None = None,
              temperature: float | None = None, max_tokens: int = 2048,
              json_mode: bool = False, *, thinking: bool | None = None,
-             cache_context: ResponsesCacheContext | None = None) -> LLMResponse:
+             cache_context: ResponsesCacheContext | None = None,
+             timeout_seconds: float | None = None) -> LLMResponse:
         if thinking is not None and not self.supports_thinking_control:
             raise ValueError("This provider does not support per-request thinking control")
         if cache_context is not None and not self.supports_explicit_cache:
             raise ValueError("This provider does not support explicit prefix caching")
+        client = _client_with_timeout(self._client, timeout_seconds)
         receipt: dict = {}
         if _uses_responses_api(self._model):
             kwargs: dict = {
@@ -656,10 +671,10 @@ class OpenAIProvider(_OpenAICompatChat, LLMProvider):
             if json_mode:
                 kwargs["text"] = {"format": {"type": "json_object"}}
             resp = sdk_call(
-                self._client.responses.create,
+                client.responses.create,
                 protocol="responses.create", provider="openai",
-                endpoint=str(getattr(self._client, "base_url", self._base_url)),
-                client_timeout=getattr(self._client, "timeout", None),
+                endpoint=str(getattr(client, "base_url", self._base_url)),
+                client_timeout=getattr(client, "timeout", None),
                 receipt=receipt,
                 **kwargs,
             )
@@ -668,7 +683,7 @@ class OpenAIProvider(_OpenAICompatChat, LLMProvider):
             if json_mode and result.content:
                 result.content = extract_json(result.content)
             return result
-        resp = self._do_chat(self._client, self._model, messages, tools,
+        resp = self._do_chat(client, self._model, messages, tools,
                              temperature, max_tokens, json_mode=json_mode,
                              thinking=thinking, receipt=receipt)
         choice = resp.choices[0]
@@ -697,11 +712,13 @@ class AnthropicProvider(LLMProvider):
     def chat(self, messages: list[dict], tools: list[dict] | None = None,
              temperature: float | None = None, max_tokens: int = 2048,
              json_mode: bool = False, *, thinking: bool | None = None,
-             cache_context: ResponsesCacheContext | None = None) -> LLMResponse:
+             cache_context: ResponsesCacheContext | None = None,
+             timeout_seconds: float | None = None) -> LLMResponse:
         if thinking is not None:
             raise ValueError("This provider does not support per-request thinking control")
         if cache_context is not None:
             raise ValueError("This provider does not support explicit prefix caching")
+        client = _client_with_timeout(self._client, timeout_seconds)
         # Anthropic has no native JSON mode. Caller must rely on prompting.
         # Framework-layer strip below is the safety net (gated on json_mode).
         # Separate system message from conversation
@@ -741,10 +758,10 @@ class AnthropicProvider(LLMProvider):
 
         receipt: dict = {}
         resp = sdk_call(
-            self._client.messages.create,
+            client.messages.create,
             protocol="messages.create", provider="anthropic",
-            endpoint=str(getattr(self._client, "base_url", "https://api.anthropic.com")),
-            client_timeout=getattr(self._client, "timeout", None),
+            endpoint=str(getattr(client, "base_url", "https://api.anthropic.com")),
+            client_timeout=getattr(client, "timeout", None),
             receipt=receipt,
             **kwargs,
         )
