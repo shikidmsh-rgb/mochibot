@@ -349,6 +349,10 @@ The Lite pre-router is a bounded optimization: after a short timeout Main
 answers without routed tools and can still use `request_tools`. Its network
 operations use the same configured timeout without SDK retries, through a
 request-local client; Main's timeout and retry settings remain unchanged.
+Like summary and extraction work, the Router disables optional thinking only
+when the configured provider supports that control. It accepts classification
+only from a normally completed response containing the expected object, not
+JSON fragments recovered from a truncated response.
 The async waiting deadline and network-operation timeouts are separate bounds,
 not a guarantee that a cancelled provider request stops computing or billing.
 Ordinary owner chat keeps an in-memory session toolbox: non-resident tools visible in the

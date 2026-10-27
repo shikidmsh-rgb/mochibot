@@ -132,6 +132,7 @@ async def classify_skills_llm(message: str, user_id: int | None = None,
                 max_tokens=TOOL_ROUTER_MAX_TOKENS,
                 json_mode=True,
                 timeout_seconds=TOOL_ROUTER_TIMEOUT_S,
+                **({"thinking": False} if client.supports_thinking_control else {}),
             )
 
         log_usage(
@@ -144,27 +145,31 @@ async def classify_skills_llm(message: str, user_id: int | None = None,
             model_span_id=response.usage_span_id,
         )
 
+        if response.finish_reason not in {"stop", "end_turn", "completed"}:
+            raise ValueError(
+                f"Router output did not complete normally: {response.finish_reason}"
+            )
         with span("preparation", "router_parse"):
             result = json.loads(extract_json(response.content))
-        skills = result.get("skills", [])
-        if isinstance(skills, list):
-            selected: list[str] = []
-            for skill in skills:
-                if (
-                    isinstance(skill, str)
-                    and skill in descriptions
-                    and skill not in selected
-                ):
-                    selected.append(skill)
-                if len(selected) >= 2:
-                    break
-            log.info("Router classified: raw=%s selected=%s", skills, selected)
-            from mochi.model_health import record_success
-            record_success("lite")
-            return selected
-        return None
+        if not isinstance(result, dict) or not isinstance(result.get("skills"), list):
+            raise ValueError("Router output must be an object containing a skills array")
+        skills = result["skills"]
+        selected: list[str] = []
+        for skill in skills:
+            if (
+                isinstance(skill, str)
+                and skill in descriptions
+                and skill not in selected
+            ):
+                selected.append(skill)
+            if len(selected) >= 2:
+                break
+        log.info("Router classified: raw=%s selected=%s", skills, selected)
+        from mochi.model_health import record_success
+        record_success("lite")
+        return selected
 
-    except (json.JSONDecodeError, KeyError) as e:
+    except (ValueError, KeyError) as e:
         log.warning("Router JSON parse failed: %s", e)
         from mochi.model_health import record_failure
         record_failure("lite", str(e))
