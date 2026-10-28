@@ -161,6 +161,8 @@ def retained_result_for(tool_name: str, result: SkillResult) -> str | None:
         and not redacted and snapshot["source_completeness"] == "full"
     ):
         snapshot["history_foldable"] = True
+    if result.exposed_memory_ids and snapshot["source_completeness"] == "full" and not redacted:
+        snapshot["exposed_memory_ids"] = list(result.exposed_memory_ids)
     return json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"))
 
 
@@ -248,7 +250,8 @@ def _execution_line(row: dict, fact: dict) -> str:
 
 def recent_operations_context(user_id: int, history: list[dict],
                               *, max_chars: int = 2400,
-                              include_autonomous: bool = False) -> str:
+                              include_autonomous: bool = False,
+                              excluded_turn_ids: frozenset[str] = frozenset()) -> str:
     """Carry bounded receipts, including undelivered chat and optional autonomous work."""
     from mochi.db import get_recent_tool_executions
 
@@ -262,6 +265,7 @@ def recent_operations_context(user_id: int, history: list[dict],
         include_autonomous=include_autonomous,
         include_undelivered_chat=True,
     )
+    rows = [row for row in rows if row["turn_id"] not in excluded_turn_ids]
     if not rows:
         return ""
 

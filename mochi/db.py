@@ -373,6 +373,8 @@ def init_db() -> None:
 
     # ── Migrations (safe column additions for existing databases) ──────
     _run_migrations(conn)
+    from mochi.conversation_store import init_schema as init_conversation_schema
+    init_conversation_schema(conn)
 
     # ── FTS5 virtual table for memory full-text search ─────────────────
     _init_fts(conn)
@@ -1276,6 +1278,9 @@ def set_context_reset(user_id: int) -> str:
             "updated_at = excluded.updated_at",
             (user_id, now, now),
         )
+        conn.execute(
+            "UPDATE conversation_inputs SET payload=NULL WHERE user_id=?", (user_id,),
+        )
         conn.commit()
     except Exception:
         conn.rollback()
@@ -1303,14 +1308,20 @@ def _eligible_conversation_messages(
     after_message_id: int = 0,
     reset_at: str | None = None,
 ) -> list[dict]:
-    conditions = ["user_id = ?", "id > ?"]
+    conditions = ["m.user_id = ?", "m.id > ?"]
     params: list = [user_id, after_message_id]
     if reset_at is not None:
-        conditions.append("created_at > ?")
+        conditions.append("julianday(m.created_at) > julianday(?) AND (r.id IS NULL OR r.reset_at IS ?)")
+        params.append(reset_at)
         params.append(reset_at)
     rows = conn.execute(
-        "SELECT id, role, content, created_at, tool_history, turn_id, processed "
-        "FROM messages WHERE " + " AND ".join(conditions) + " ORDER BY id",
+        "SELECT m.id,m.role,m.content,m.created_at,m.tool_history,m.turn_id,m.processed, "
+        "r.root_id AS conversation_root, "
+        "CASE WHEN r.id IS NULL THEN 1 ELSE EXISTS("
+        "SELECT 1 FROM conversation_runs done WHERE done.root_id=r.root_id "
+        "AND done.user_id=m.user_id AND done.status='completed') END AS conversation_complete "
+        "FROM messages m LEFT JOIN conversation_runs r ON r.id=m.turn_id "
+        "WHERE " + " AND ".join(conditions) + " ORDER BY m.id",
         params,
     ).fetchall()
     return [dict(row) for row in rows]
@@ -1318,7 +1329,7 @@ def _eligible_conversation_messages(
 
 def _pair_conversation_turns(messages: list[dict]) -> list[dict]:
     """Pair eligible ordinary turns without inventing or changing roles."""
-    modern_users: dict[str, dict] = {}
+    modern: dict[str, list[dict]] = {}
     legacy_user: dict | None = None
     turns: list[dict] = []
 
@@ -1330,26 +1341,30 @@ def _pair_conversation_turns(messages: list[dict]) -> list[dict]:
         if processed or role not in {"user", "assistant"}:
             legacy_user = None
             continue
+        if not message.get("conversation_complete", True):
+            continue
+        if turn_id:
+            modern.setdefault(message.get("conversation_root") or turn_id, []).append(message)
+            legacy_user = None
+            continue
         if role == "user":
-            if turn_id:
-                modern_users.setdefault(turn_id, message)
-                legacy_user = None
-            else:
-                legacy_user = message
+            legacy_user = message
             continue
 
         user_message = None
-        if turn_id:
-            user_message = modern_users.pop(turn_id, None)
-            legacy_user = None
-        elif legacy_user is not None:
+        if legacy_user is not None:
             user_message = legacy_user
             legacy_user = None
         if user_message is not None:
             turns.append({
-                "user": user_message,
-                "assistant": message,
+                "messages": [user_message, message],
                 "through_message_id": message["id"],
+            })
+    for group in modern.values():
+        if any(m["role"] == "user" for m in group) and any(m["role"] == "assistant" for m in group):
+            turns.append({
+                "messages": group,
+                "through_message_id": max(m["id"] for m in group if m["role"] == "assistant"),
             })
 
     turns.sort(key=lambda turn: turn["through_message_id"])
@@ -1412,7 +1427,7 @@ def get_memory_extraction_batch(
             return state["last_processed_message_id"], []
         messages: list[dict] = []
         for turn in turns[:size]:
-            messages.extend((turn["user"], turn["assistant"]))
+            messages.extend(turn["messages"])
         return state["last_processed_message_id"], messages
     finally:
         conn.close()
@@ -1425,7 +1440,7 @@ def get_memory_extraction_status(
     conn = _connect()
     try:
         state = _ensure_memory_extraction_state(conn, user_id)
-        pending_turns = len([
+        pending = [
             turn for turn in _pair_conversation_turns(
                 _eligible_conversation_messages(conn, user_id)
             )
@@ -1433,12 +1448,13 @@ def get_memory_extraction_status(
                 turn["through_message_id"]
                 > state["last_processed_message_id"]
             )
-        ])
+        ]
+        pending_turns = len(pending)
         conn.commit()
         result = dict(state)
         result.update({
             "pending_turns": pending_turns,
-            "pending_messages": pending_turns * 2,
+            "pending_messages": sum(len(turn["messages"]) for turn in pending),
             "batch_turns": max(1, int(batch_turns)),
             "threshold": max(1, int(batch_turns)) * 2,
         })
@@ -1675,7 +1691,10 @@ def get_conversation_context(
             else []
         )
 
-        paired_user_ids = {turn["user"]["id"] for turn in turns}
+        paired_user_ids = {
+            message["id"] for turn in turns for message in turn["messages"]
+            if message["role"] == "user"
+        }
         trailing = []
         if messages:
             last = messages[-1]
@@ -1683,13 +1702,14 @@ def get_conversation_context(
                 last["role"] == "user"
                 and not last["processed"]
                 and last["id"] not in paired_user_ids
+                and not last.get("conversation_root")
             ):
                 trailing.append(last)
 
         def _flatten(selected: list[dict]) -> list[dict]:
             flattened: list[dict] = []
             for turn in selected:
-                flattened.extend((turn["user"], turn["assistant"]))
+                flattened.extend(turn["messages"])
             return flattened
 
         overflow_messages = _flatten(overflow)
@@ -1697,7 +1717,7 @@ def get_conversation_context(
         if include_standalone:
             paired_ids = {
                 message["id"] for turn in turns
-                for message in (turn["user"], turn["assistant"])
+                for message in turn["messages"]
             }
             start_id = min(
                 (
@@ -1709,6 +1729,7 @@ def get_conversation_context(
             standalone = [
                 message for message in messages
                 if message["role"] == "assistant"
+                and message.get("conversation_complete", True)
                 and message["id"] not in paired_ids
                 and message["id"] >= start_id
             ][-_STANDALONE_HISTORY_LIMIT:]

@@ -207,16 +207,18 @@ class WeixinTransport(Transport):
         if self._context_tokens.get(weixin_id) == token:
             return
         if weixin_id == self._owner_weixin_id:
-            from mochi.admin.admin_crypto import encrypt_api_key
+            from mochi.admin.admin_crypto import encrypt_api_key, is_encrypted
             from mochi.db import set_skill_config
-
+            encrypted = encrypt_api_key(token)
+            if token and not is_encrypted(encrypted):
+                raise RuntimeError("WeChat reply context encryption is unavailable")
             set_skill_config(
                 "_transport:wechat",
                 "reply_context",
                 json.dumps({
                     "account": self._context_account(),
                     "owner": weixin_id,
-                    "token": encrypt_api_key(token),
+                    "token": encrypted,
                 }),
             )
         self._context_tokens[weixin_id] = token
@@ -245,6 +247,10 @@ class WeixinTransport(Transport):
         self._session = aiohttp.ClientSession()
         self._stopped = False
         self._session_expired = False
+        from mochi import conversation
+        conversation.register("wechat", conversation.Adapter(
+            self._respond_owner, self._owner_media,
+        ))
         self._poll_task = asyncio.create_task(self._supervised_poll_loop())
         log.info("WeChat transport started (base=%s)", WEIXIN_BASE_URL)
 
@@ -480,6 +486,14 @@ class WeixinTransport(Transport):
 
     async def _weixin_send_item(self, to: str, item: dict,
                                 context_token: str) -> dict:
+        from mochi.conversation import deliver
+        return await deliver(
+            "text" if item.get("type") == _ITEM_TEXT else "image",
+            item.get("text_item", {}).get("text", ""),
+            lambda: self._send_item(to, item, context_token),
+        )
+
+    async def _send_item(self, to: str, item: dict, context_token: str) -> dict:
         import aiohttp
 
         if not self._session or self._session_expired or not context_token:
@@ -655,12 +669,88 @@ class WeixinTransport(Transport):
                      from_user)
             return
 
+        items = msg.get("item_list", [])
+        text = _extract_text(items)
+        media = any(item.get("type") in {_ITEM_IMAGE, _ITEM_FILE} for item in items)
+        if self._owner_weixin_id is None and (text or media):
+            self._owner_weixin_id = from_user
+            from mochi.db import set_skill_config
+            set_skill_config("_transport:wechat", "owner_weixin_id", from_user)
+        if self._owner_weixin_id is not None and from_user != self._owner_weixin_id:
+            log.warning("WeChat: rejected a message not belonging to the bound owner")
+            return
+        token = msg.get("context_token")
+        if isinstance(token, str) and token:
+            self._remember_context_token(from_user, token)
+        commands = {"/restart", "/reset", "/help", "/heartbeat", "/cost", "/core", "/diary", "/skilloff", "/skillon"}
+        if from_user == self._owner_weixin_id and (media or text.strip() not in commands) and (text or media):
+            message_id = msg.get("message_id") or msg.get("client_id")
+            if message_id is None:
+                log.error("WeChat input has no stable message ID")
+                return
+            from mochi import conversation
+            self._dispatch_state_signals()
+            queued_items = [{"type": _ITEM_TEXT, "text_item": {"text": text}}] if text else []
+            for item in items:
+                field = (
+                    "image_item" if item.get("type") == _ITEM_IMAGE
+                    else "file_item" if item.get("type") == _ITEM_FILE else None
+                )
+                if field:
+                    value = item.get(field) or {}
+                    reference = {
+                        key: value[key] for key in ("aeskey", "file_name") if key in value
+                    }
+                    reference["media"] = {
+                        key: value["media"][key]
+                        for key in ("encrypt_query_param", "full_url", "aes_key")
+                        if key in (value.get("media") or {})
+                    }
+                    queued_items.append({"type": item["type"], field: reference})
+            queued_text = text
+            if any(item.get("type") == _ITEM_IMAGE for item in items):
+                queued_text = f"[图片] {text or '用户发来一张图片。'}"
+            elif any(item.get("type") == _ITEM_FILE for item in items):
+                queued_text = f"[文件] {text}"
+            conversation.receive(
+                user_id=OWNER_USER_ID or 0, transport="wechat",
+                source_id=json.dumps(["wechat", from_user, str(message_id)]),
+                text=queued_text, payload={"message": {
+                    "from_user_id": from_user, "context_token": token,
+                    "item_list": queued_items,
+                }},
+            )
+            return
         from mochi.heartbeat import active_chat
         with active_chat():
             await self._handle_allowed_message(msg, from_user)
 
+    async def _respond_owner(self, payload: dict) -> None:
+        msg = payload["message"]
+        peer = msg.get("from_user_id")
+        if not peer or peer != self._owner_weixin_id or not _is_allowed(peer):
+            raise PermissionError("Queued WeChat owner identity no longer matches")
+        await self._handle_allowed_message(msg, peer)
+
+    async def _owner_media(self, payload: dict) -> tuple[ImageAttachment | None, FileAttachment | None]:
+        msg = payload["message"]
+        if msg.get("from_user_id") != self._owner_weixin_id:
+            raise PermissionError("Prior WeChat input is not the current owner")
+        items = msg.get("item_list", [])
+        images = [item for item in items if item.get("type") == _ITEM_IMAGE]
+        files = [item for item in items if item.get("type") == _ITEM_FILE]
+        if images:
+            if len(images) != 1:
+                raise ValueError("Multiple images in one input are unsupported")
+            return await self._download_image(images[0].get("image_item") or {}), None
+        if files:
+            return None, await self._download_file(files[0].get("file_item") or {})
+        return None, None
+
     async def _handle_allowed_message(self, msg: dict, from_user: str) -> None:
         import aiohttp
+        from mochi.conversation import checkpoint, wait_read
+        checkpoint()
 
         items = msg.get("item_list", [])
         text = _extract_text(items)
@@ -691,7 +781,7 @@ class WeixinTransport(Transport):
                 error_text = "目前一次只能查看一张图片，请分开发送。"
             else:
                 try:
-                    image = await self._download_image(images[0].get("image_item") or {})
+                    image = await wait_read(self._download_image(images[0].get("image_item") or {}))
                 except _MediaTooLargeError:
                     log.warning("WeChat: image exceeds size limit")
                     error_text = "图片太大了，请发送 5 MB 以内的图片。"
@@ -704,7 +794,7 @@ class WeixinTransport(Transport):
             text = text or "用户发来一张图片。"
         elif files:
             try:
-                attachment = await self._download_file(files[0].get("file_item") or {})
+                attachment = await wait_read(self._download_file(files[0].get("file_item") or {}))
             except _MediaTooLargeError:
                 log.warning("WeChat: file exceeds size limit")
                 await self._send_text(
@@ -717,11 +807,14 @@ class WeixinTransport(Transport):
                 return
             text = text or f"用户发来文件「{attachment.name}」。"
 
+        checkpoint()
         command = text.strip() if image is None and attachment is None else ""
         # System command: /restart (owner only)
         if command == "/restart":
             if from_user != self._owner_weixin_id:
                 return
+            from mochi.conversation import invalidate
+            invalidate(OWNER_USER_ID or 0)
             try:
                 await self._weixin_send_message(
                     from_user, "正在重启...", context_token)
@@ -737,6 +830,8 @@ class WeixinTransport(Transport):
                 return
             from mochi.db import set_context_reset
             set_context_reset(OWNER_USER_ID or 0)
+            from mochi.conversation import invalidate
+            invalidate(OWNER_USER_ID or 0)
             try:
                 await self._weixin_send_message(
                     from_user, "已重置对话上下文，bot 不会记得之前聊了什么。",
@@ -925,6 +1020,8 @@ class WeixinTransport(Transport):
 
             async def _process_main_turn() -> None:
                 nonlocal bedtime_claimed
+                from mochi.conversation import checkpoint
+                checkpoint()
                 try:
                     result = await _on_message_callback(incoming)
                 except Exception as e:
@@ -938,6 +1035,7 @@ class WeixinTransport(Transport):
 
                 if result:
                     if result.bedtime_requested:
+                        checkpoint()
                         bedtime_claimed = claim_sleep_transition("explicit")
                         if (
                             not bedtime_claimed
@@ -959,7 +1057,12 @@ class WeixinTransport(Transport):
                 await _process_main_turn()
             finally:
                 if bedtime_claimed:
-                    go_to_sleep("explicit")
+                    from mochi.conversation import is_current
+                    if is_current():
+                        go_to_sleep("explicit")
+                    else:
+                        from mochi.heartbeat import cancel_sleep_transition
+                        cancel_sleep_transition()
         else:
             # Cancel typing even if no callback
             if typing_ticket:
@@ -1024,7 +1127,6 @@ class WeixinTransport(Transport):
         """Main long-poll loop for WeChat messages."""
         get_updates_buf = ""
         consecutive_failures = 0
-        _tasks: set[asyncio.Task] = set()
 
         log.info("WeChat poll loop started (timeout=%ss)",
                  WEIXIN_POLL_TIMEOUT_S)
@@ -1067,16 +1169,12 @@ class WeixinTransport(Transport):
 
                 consecutive_failures = 0
 
+                for msg in msgs:
+                    if msg.get("message_type") == _MSG_TYPE_USER:
+                        await self._handle_message(msg)
                 new_buf = resp.get("get_updates_buf", "")
                 if new_buf:
                     get_updates_buf = new_buf
-
-                for msg in msgs:
-                    if msg.get("message_type") == _MSG_TYPE_USER:
-                        task = asyncio.create_task(
-                            self._handle_message(msg))
-                        _tasks.add(task)
-                        task.add_done_callback(_tasks.discard)
 
             except asyncio.CancelledError:
                 log.info("WeChat poll loop cancelled")

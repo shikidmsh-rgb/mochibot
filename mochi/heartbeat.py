@@ -240,6 +240,14 @@ def claim_sleep_transition(trigger: str) -> bool:
     return True
 
 
+def cancel_sleep_transition() -> None:
+    global _state, _state_changed_at
+    if _state == TRANSITIONING:
+        _state = AWAKE
+        _state_changed_at = datetime.now(TZ)
+        _persist_state(AWAKE, _state_changed_at)
+
+
 def should_wake_on_message() -> bool:
     return (
         _state == SLEEPING

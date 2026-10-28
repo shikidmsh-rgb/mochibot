@@ -403,7 +403,7 @@ TG_STATUS_EDIT_INTERVAL_S = _env_float("TG_STATUS_EDIT_INTERVAL_S", 1.0)
 ADMIN_ENABLED = _env_bool("ADMIN_ENABLED", True)
 ADMIN_PORT = _env_int("ADMIN_PORT", 8080)
 ADMIN_BIND = _env("ADMIN_BIND", "127.0.0.1")   # default localhost-only; set 0.0.0.0 for remote access
-ADMIN_TOKEN = _env("ADMIN_TOKEN")               # optional; if set, all requests must include this token
+ADMIN_TOKEN = _env("ADMIN_TOKEN")               # encryption root for credentials and pending owner inputs
 LOG_LEVEL = _env("LOG_LEVEL", "INFO")            # DEBUG, INFO, WARNING, ERROR, CRITICAL
 
 
@@ -430,6 +430,12 @@ def validate_config() -> str:
         pass  # DB not initialized yet or admin_db unavailable
 
     has_transport = bool(TELEGRAM_BOT_TOKEN) or WEIXIN_ENABLED
+    if has_transport and not ADMIN_TOKEN:
+        _log.error(
+            "Owner chat requires ADMIN_TOKEN for encrypted pending input. "
+            "Only the admin portal will start; preserve any existing encryption root."
+        )
+        return "admin_only"
     mode = "ok"
 
     if has_transport and not has_required_models:

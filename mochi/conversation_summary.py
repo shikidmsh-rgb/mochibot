@@ -43,12 +43,10 @@ def _summary_input(claim: dict) -> str:
         "<new_turns>",
     ]
     for turn in claim["turns"]:
-        user = turn["user"]
-        assistant = turn["assistant"]
-        lines.extend([
-            f"[{user['created_at']}] user: {user['content']}",
-            f"[{assistant['created_at']}] assistant: {assistant['content']}",
-        ])
+        lines.extend(
+            f"[{message['created_at']}] {message['role']}: {message['content']}"
+            for message in turn["messages"]
+        )
     lines.append("</new_turns>")
     return "\n".join(lines)
 

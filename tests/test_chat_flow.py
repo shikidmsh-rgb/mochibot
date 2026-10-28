@@ -1,8 +1,10 @@
+import asyncio
 import json
 
 import pytest
 
-from mochi import config, db
+from mochi import config, conversation, db
+from mochi.admin import admin_crypto
 from mochi.ai_client import chat
 from mochi.core_store import read_core, replace_core
 from mochi.main_runtime import MainRuntimeEntry
@@ -39,6 +41,11 @@ def _receipt_facts(messages):
 
 @pytest.mark.asyncio
 async def test_delivery_history_becomes_background_for_the_next_activation(mock_llm_factory, monkeypatch):
+    monkeypatch.setenv("ADMIN_TOKEN", "local-chat-workflow-key")
+    monkeypatch.setattr(admin_crypto, "_fernet_instance", None)
+    monkeypatch.setattr(conversation, "_owners", {})
+    monkeypatch.setattr(conversation, "_adapters", {})
+    monkeypatch.setattr(conversation, "_closing", False)
     monkeypatch.setattr(config, "MAX_HISTORY_TURNS", 1)
     db.save_message(1, "user", "An older question.", turn_id="old")
     boundary = db.save_message(1, "assistant", "An older answer.", turn_id="old")
@@ -80,11 +87,40 @@ async def test_delivery_history_becomes_background_for_the_next_activation(mock_
     response.reasoning_source = "test-model"
     client = mock_llm_factory([response, make_response("[SKIP]")])
     monkeypatch.setattr(type(client), "reasoning_source", property(lambda _: "test-model"))
-    result = await chat(IncomingMessage(
-        user_id=1, channel_id=1, transport="fake", text="An owner message.",
-        owner_authorized=True,
-    ))
+    finished = asyncio.Event()
+
+    async def send():
+        return None
+
+    async def media(payload):
+        return None, None
+
+    async def respond(payload):
+        result = await chat(IncomingMessage(
+            user_id=1, channel_id=1, transport="fake", text=payload["text"],
+            owner_authorized=True,
+        ))
+        pending = db.get_recent_messages(1)
+        assert pending[:-1] == existing and pending[-1]["role"] == "user"
+        await conversation.deliver("text", result.text, send)
+        assert result.confirm_delivered()
+        assert not result.confirm_delivered()
+        result.confirm_delivered(final=True)
+        finished.set()
+
+    conversation.register("fake", conversation.Adapter(respond, media))
+    try:
+        assert conversation.receive(
+            user_id=1, transport="fake", source_id="owner-message",
+            text="An owner message.", payload={"text": "An owner message."},
+        )
+        await asyncio.wait_for(finished.wait(), 5)
+    finally:
+        await conversation.close()
     messages = client.call_log[0]["messages"]
+    assert "search_personal_history" in {
+        tool["function"]["name"] for tool in client.call_log[0]["tools"]
+    }
     assert [item["role"] for item in messages] == [
         "system", "user", "user", "assistant", "user", "user",
     ]
@@ -104,10 +140,6 @@ async def test_delivery_history_becomes_background_for_the_next_activation(mock_
     restored = json.loads(read_tool_result(1, read_ids[0]).output)
     assert restored["content"] == "Observation 0"
     assert not read_tool_result(2, read_ids[0]).success
-    pending = db.get_recent_messages(1)
-    assert pending[:-1] == existing and pending[-1]["role"] == "user"
-    assert result.confirm_delivered()
-    assert not result.confirm_delivered()
     delivered = db.get_recent_messages(1)
     assert delivered[:-2] == existing
     assert [row["role"] for row in delivered[-2:]] == ["user", "assistant"]
@@ -153,7 +185,7 @@ async def test_only_authorized_complete_tool_calls_reach_execution(mock_llm_fact
     client = mock_llm_factory([
         make_response(tool_calls=[
             make_tool_call("request_tools", {"skills": ["view_core_memory"]}, "load"),
-            make_tool_call("request_tools", {"skills": ["view_core_memory"]}, "load_again"),
+            make_tool_call("request_tools", {"query": "view_core_memory"}, "load_again"),
             make_tool_call("view_core_memory", {}, "too_early"),
         ]),
         make_response(tool_calls=[

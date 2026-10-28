@@ -114,7 +114,10 @@ sense:
 并从下一次 provider round 才生效。工具 schema 与 dispatch 始终共享同一份
 不可变轮次快照。
 `skills` 中的具体工具名只加载该工具；Skill 名加载该技能的可请求工具，
-`query` 仍按技能匹配和加载。混合请求按工具去重，已加载工具单独回报，
+准确名称通过 `skills` 或 `query` 都不调用模型；自然语言 `query` 由 Lite 从当前合格目录
+选择零或一个具体工具，不连带加载同技能其他工具。选择后再次检查资格；选择失败明确报错，
+不退回关键词匹配，也不冒充 `no_match`。混合请求中已准确点名加载的工具不因语义选择失败而撤销。
+混合请求按工具去重，已加载工具单独回报，
 不会因点名一个工具而顺带加载同组工具。共享 Capability Context 按技能提供一次。
 请求参数只有 `skills` 和 `query`。成功解析的回执省略空的
 `loaded`、`already_loaded`、`matches`、`unavailable`、`renamed`；

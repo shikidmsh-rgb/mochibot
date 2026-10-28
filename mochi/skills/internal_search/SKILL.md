@@ -6,7 +6,7 @@ type: tool
 
 ## Tools
 
-### search_personal_history (on_demand, adaptive)
+### search_personal_history (resident)
 在本地保存的聊天记录、Diary 和 Memory 中搜索关键词或短语。
 
 | Parameter | Type | Required | Description |

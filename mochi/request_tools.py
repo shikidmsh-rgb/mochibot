@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
-import re
+import logging
 from dataclasses import dataclass, field
 from typing import Iterable
 
@@ -14,7 +15,7 @@ from mochi import tool_policy
 
 MAX_EXACT_REQUESTS = 3
 MAX_QUERY_LENGTH = 200
-MAX_SEARCH_MATCHES = 2
+log = logging.getLogger(__name__)
 _WORKSPACE_ALIASES = frozenset({
     "mochi_files", "development", "browse_mochi_files", "save_mochi_file",
     "inspect_extension", "write_extension",
@@ -31,8 +32,8 @@ REQUEST_TOOLS_DEF = {
         "description": (
             "Load additional tools for later rounds of this turn. "
             "Use skills for exact names: a tool name loads only that tool, "
-            "and a skill name loads its requestable tools. Use query for a "
-            "short natural-language skill search, or both. "
+            "and a skill name loads its requestable tools. "
+            "Use query to find at most one matching tool, or combine it with exact names. "
             "Requested tools are not usable in the same response."
         ),
         "parameters": {
@@ -84,6 +85,7 @@ class RequestCatalog:
     resident_tools: dict[str, tuple[str, ...]]
     denied_tools: frozenset[str]
     unavailable_tools: dict[str, str] = field(default_factory=dict)
+    search_tools: dict[str, dict] = field(default_factory=dict)
 
 
 @dataclass
@@ -173,6 +175,7 @@ def build_catalog(
     resident_tools: dict[str, tuple[str, ...]] = {}
     denied_tools: set[str] = set()
     unavailable_tools: dict[str, str] = {}
+    search_tools: dict[str, dict] = {}
     from mochi.db import get_adaptive_tool_load_states
     load_states = get_adaptive_tool_load_states()
 
@@ -222,6 +225,13 @@ def build_catalog(
         if not visible_definitions:
             unavailable[name] = "policy_denied"
             continue
+        for definition in visible_definitions:
+            function = definition["function"]
+            search_tools[function["name"]] = {
+                "skill": name,
+                "scope": skill.description,
+                "description": function.get("description", ""),
+            }
 
         visible_resident = tuple(
             _tool_name(definition)
@@ -231,18 +241,10 @@ def build_catalog(
         if visible_resident:
             resident_tools[name] = visible_resident
 
-        requestable_definitions = tuple(
-            definition
-            for definition in visible_definitions
-            if _tool_load(definition) != "resident" or skill.external
-        )
-        if not requestable_definitions:
-            continue
-
         eligible[name] = RequestableNamespace(
             name=name,
             description=getattr(skill, "description", "") or "",
-            definitions=requestable_definitions,
+            definitions=visible_definitions,
             capability_context=getattr(skill, "capability_context", "") or "",
         )
 
@@ -254,10 +256,60 @@ def build_catalog(
         resident_tools=resident_tools,
         denied_tools=frozenset(denied_tools),
         unavailable_tools=unavailable_tools,
+        search_tools=search_tools,
     )
 
 
-def resolve_request(
+async def _select_tool(query: str, catalog: RequestCatalog) -> str | None:
+    if not catalog.search_tools:
+        return None
+    from mochi.config import TOOL_ROUTER_MAX_TOKENS, TOOL_ROUTER_TIMEOUT_S
+    from mochi.db import log_usage
+    from mochi.llm import get_client_for_tier, extract_json
+    from mochi.prompt_loader import get_prompt
+    from mochi.runtime_trace import stage
+
+    template = get_prompt("tool_selector")
+    if not template:
+        raise RuntimeError("Tool selector prompt is missing")
+    groups: dict[str, dict] = {}
+    for name, tool in catalog.search_tools.items():
+        group = groups.setdefault(tool["skill"], {"description": tool["scope"], "tools": {}})
+        group["tools"][name] = tool["description"]
+    prompt = template.replace("{{tool_catalog}}", json.dumps(
+        groups, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ))
+    client = get_client_for_tier("lite")
+    with stage("tool_selection", model_role="LITE", purpose="tool_selection"):
+        response = await asyncio.wait_for(asyncio.to_thread(
+            client.chat,
+            messages=[{"role": "system", "content": prompt}, {"role": "user", "content": query}],
+            tools=None, temperature=0.0, max_tokens=TOOL_ROUTER_MAX_TOKENS,
+            json_mode=True, timeout_seconds=TOOL_ROUTER_TIMEOUT_S,
+            **({"thinking": False} if client.supports_thinking_control else {}),
+        ), timeout=TOOL_ROUTER_TIMEOUT_S)
+    log_usage(
+        response.prompt_tokens, response.completion_tokens, response.total_tokens,
+        model=response.model, purpose="tool_selection", model_role="LITE",
+        usage_stage="tool_selection", reasoning_tokens=response.reasoning_tokens,
+        cached_prompt_tokens=response.cached_prompt_tokens,
+        cache_write_tokens=response.cache_write_tokens,
+        model_span_id=response.usage_span_id,
+    )
+    if response.finish_reason not in {"stop", "end_turn", "completed"}:
+        raise ValueError("Tool selection did not complete normally")
+    result = json.loads(extract_json(response.content))
+    if not isinstance(result, dict) or set(result) != {"tool"}:
+        raise ValueError("Tool selection must contain only tool")
+    selected = result["tool"]
+    if selected is not None and (
+        not isinstance(selected, str) or selected not in catalog.search_tools
+    ):
+        raise ValueError("Tool selection is outside the supplied catalog")
+    return selected
+
+
+async def resolve_request(
     arguments: object,
     availability: ToolAvailability,
     *,
@@ -272,8 +324,34 @@ def resolve_request(
     args = arguments
     assert isinstance(args, dict)
     catalog = build_catalog(transport, excluded_skills=excluded_skills)
-    requested = args.get("skills", [])
+    requested = list(args.get("skills", []))
     query = args.get("query", "").strip()
+    query_selected = None
+    selection_failed = False
+    match_reason = "semantic selection"
+    if query:
+        exact_names = {
+            name.casefold(): name
+            for name in (
+                *catalog.tool_to_namespace, *catalog.eligible,
+                *catalog.unavailable, *catalog.resident_tools, *_WORKSPACE_ALIASES,
+            )
+        }
+        query_selected = exact_names.get(query.casefold())
+        if query_selected is not None:
+            match_reason = (
+                "exact tool name" if query_selected in catalog.tool_to_namespace
+                else "exact skill name"
+            )
+        else:
+            try:
+                query_selected = await _select_tool(query, catalog)
+            except Exception:
+                log.exception("Tool semantic selection failed")
+                selection_failed = True
+            catalog = build_catalog(transport, excluded_skills=excluded_skills)
+        if query_selected is not None:
+            requested.append(query_selected)
 
     selected: dict[str, set[str]] = {}
     seen_namespaces: set[str] = set()
@@ -359,23 +437,11 @@ def resolve_request(
                 continue
             selected.setdefault(namespace, set()).update(tool_names)
 
-    matches: list[dict] = []
-    query_matched_catalog = False
-    if query:
-        query_matched_catalog = any(
-            _match_score(query, item)[0]
-            for item in catalog.eligible.values()
-        )
-        for namespace, match_reason in _search_catalog(
-            query,
-            catalog.eligible.values(),
-            excluded=seen_namespaces,
-        ):
-            seen_namespaces.add(namespace)
-            selected.setdefault(namespace, set()).update(
-                catalog.eligible[namespace].tool_names,
-            )
-            matches.append({"skill": namespace, "match_reason": match_reason})
+    matches = (
+        [{"skill": catalog.tool_to_namespace.get(query_selected, query_selected),
+          "match_reason": match_reason}]
+        if query_selected is not None else []
+    )
 
     loaded: list[dict] = []
     additions: list[dict] = []
@@ -412,13 +478,21 @@ def resolve_request(
             additions.extend(new_definitions)
             known_names.update(tool_names)
 
-    result: dict[str, object] = {"ok": True}
+    result: dict[str, object] = (
+        error_result(
+            "tool_selection_failed",
+            "Tool search did not complete. Exact tool or skill names can still be requested.",
+        )
+        if selection_failed else {"ok": True}
+    )
+    if selection_failed:
+        result.pop("retryable", None)
     for key, value in (
         ("loaded", loaded),
         ("already_loaded", already_loaded),
         ("matches", matches),
         ("unavailable", unavailable_items),
-        ("no_match", bool(query and not query_matched_catalog)),
+        ("no_match", bool(query and query_selected is None and not selection_failed)),
         ("renamed", renamed),
     ):
         if value:
@@ -486,68 +560,6 @@ def _unavailable_reason(
     return None
 
 
-def _search_catalog(
-    query: str,
-    namespaces: Iterable[RequestableNamespace],
-    *,
-    excluded: set[str],
-) -> list[tuple[str, str]]:
-    ranked: list[tuple[int, str, str]] = []
-    for item in namespaces:
-        if item.name in excluded:
-            continue
-        score, reason = _match_score(query, item)
-        if score:
-            ranked.append((score, item.name, reason))
-    ranked.sort(key=lambda match: (-match[0], match[1]))
-    if ranked:
-        minimum_score = ranked[0][0] - 10
-        ranked = [match for match in ranked if match[0] >= minimum_score]
-    return [
-        (namespace, reason)
-        for _, namespace, reason in ranked[:MAX_SEARCH_MATCHES]
-    ]
-
-
-def _match_score(query: str, item: RequestableNamespace) -> tuple[int, str]:
-    normalized = query.casefold().strip()
-    name = item.name.casefold()
-    tool_names = [tool.casefold() for tool in item.tool_names]
-    description = item.description.casefold()
-
-    if normalized == name:
-        return 100, "exact skill name"
-    if normalized in tool_names:
-        return 95, "exact tool name"
-    if normalized in name:
-        return 80, "skill name contains query"
-    if any(normalized in tool for tool in tool_names):
-        return 75, "tool name contains query"
-    if normalized in description:
-        return 70, "description contains query"
-
-    cjk_match_length = _longest_cjk_match(normalized, " ".join([
-        name,
-        *tool_names,
-        description,
-    ]))
-    if cjk_match_length >= 2:
-        return 40 + (10 * cjk_match_length), "CJK phrase match"
-
-    tokens = [
-        token
-        for token in re.findall(r"[\w]+", normalized, flags=re.UNICODE)
-        if token
-    ]
-    if not tokens:
-        return 0, ""
-    haystack = " ".join([name, *tool_names, description])
-    matched = sum(token in haystack for token in tokens)
-    if not matched:
-        return 0, ""
-    return 10 * matched + (5 if matched == len(tokens) else 0), "metadata token match"
-
-
 def _tool_name(definition: dict) -> str:
     function = definition.get("function")
     if not isinstance(function, dict):
@@ -577,20 +589,3 @@ def _normalized_definitions(definitions: Iterable[dict]) -> tuple[dict, ...]:
         valid.append(definition)
         seen.add(name)
     return tuple(valid)
-
-
-def _longest_cjk_match(left: str, right: str) -> int:
-    left_runs = re.findall(r"[\u3400-\u9fff]+", left)
-    right_runs = re.findall(r"[\u3400-\u9fff]+", right)
-    longest = 0
-    for left_run in left_runs:
-        for right_run in right_runs:
-            shorter, longer = sorted((left_run, right_run), key=len)
-            for length in range(min(len(shorter), 8), longest, -1):
-                if any(
-                    shorter[start:start + length] in longer
-                    for start in range(len(shorter) - length + 1)
-                ):
-                    longest = length
-                    break
-    return longest

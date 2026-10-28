@@ -423,8 +423,14 @@ class ChatResult:
 
     def confirm_delivered(self, *, final: bool = False) -> bool:
         """Persist text once; lifecycle actions also require the whole reply."""
+        from mochi.conversation import current
+        generation = current()
         confirmed = False
-        if not self._delivery_confirmed and self._pending_history:
+        if generation:
+            generation.confirm(self, final=final)
+            confirmed = not self._delivery_confirmed
+            self._delivery_confirmed = True
+        elif not self._delivery_confirmed and self._pending_history:
             pending = self._pending_history
             processed = bool(pending.get("processed", True))
             inserted = save_message_once(
@@ -537,6 +543,7 @@ def _build_prompt_zones(user_id: int, capability_context: str = "",
                         diary_journal: str = "",
                         conv_summary: str = "",
                         recent_operations: str = "",
+                        continuation_context: str = "",
                         runtime_entry: MainRuntimeEntry | None = None,
                         dream_context: str = "",
                         policy: ContextPolicy | None = None,
@@ -650,6 +657,8 @@ def _build_prompt_zones(user_id: int, capability_context: str = "",
 
     if recent_operations:
         dynamic_live_context.append(("operations", recent_operations))
+    if continuation_context:
+        dynamic_live_context.append(("history.continuation", continuation_context))
 
     if recalled_memories:
         dynamic_live_context.append(
@@ -729,6 +738,9 @@ async def chat(
     runtime_entry: MainRuntimeEntry | None = None,
 ) -> ChatResult:
     from mochi import config
+    from mochi.conversation import current, checkpoint
+    checkpoint()
+    generation = current()
     from mochi.admin.admin_db import get_system_config
 
     entry = runtime_entry or (message.runtime_entry if message is not None else None)
@@ -738,7 +750,7 @@ async def chat(
         entry.idempotency_key
         if entry and entry.kind in {"self_reminder", "dream", "free_time"}
         and entry.idempotency_key
-        else uuid.uuid4().hex
+        else generation.record["id"] if generation else uuid.uuid4().hex
     )
     user_id = message.user_id if message is not None else entry.user_id
     kind = entry.kind if entry else "chat"
@@ -766,6 +778,8 @@ async def chat(
         with runtime_trace.span("runtime", "main"):
             result = await _chat(message, runtime_entry=entry, _turn_id=turn_id)
         result._trace_id = trace.trace_id
+        if generation:
+            generation.result = result
         runtime_trace.finish_run(
             trace.trace_id,
             "prepared" if result.disposition == "deliver" and (result.text or result.stickers)
@@ -832,6 +846,8 @@ async def _chat(
         if message is not None
         else runtime_entry.intent or ""
     )
+    from mochi import conversation
+    generation = conversation.current()
     image = message.image if message is not None else None
     attachment = message.file if message is not None else None
     is_bedtime = bool(runtime_entry and runtime_entry.kind == "bedtime")
@@ -887,7 +903,12 @@ async def _chat(
         f"[图片] {text}" if image else f"[文件] {text}" if attachment else text
     )
     if message is not None:
-        save_message(user_id, "user", stored_text, turn_id=turn_id)
+        if generation:
+            conversation.checkpoint()
+            from mochi.conversation_store import prepare_input
+            prepare_input(generation.record, stored_text)
+        else:
+            save_message(user_id, "user", stored_text, turn_id=turn_id)
 
     # ── Parallel pre-fetch: router classification + DB queries ──
     tier = "main"
@@ -986,10 +1007,10 @@ async def _chat(
     dream_session = None
     if is_dream:
         from mochi.dream import create_dream_session
-        core_memory, conversation_context = await asyncio.gather(
+        core_memory, conversation_context = await conversation.wait_read(asyncio.gather(
             runtime_trace.prepare("core", read_core),
             _safe_conversation_context(),
-        )
+        ))
         dream_session = create_dream_session(
             user_id=user_id,
             logical_date=runtime_entry.logical_date or "",
@@ -1009,21 +1030,21 @@ async def _chat(
         if escalation_available:
             from mochi.request_tools import REQUEST_TOOLS_DEF
             tools.append(REQUEST_TOOLS_DEF)
-        core_memory, conversation_context = await asyncio.gather(
+        core_memory, conversation_context = await conversation.wait_read(asyncio.gather(
             runtime_trace.prepare("core", read_core),
             _safe_conversation_context(),
-        )
+        ))
         recalled_memories = []
         habits = []
 
     elif skill_mode_off:
         tools = list(turn_plan.resident_definitions)
 
-        core_memory, conversation_context, recalled_memories = await asyncio.gather(
+        core_memory, conversation_context, recalled_memories = await conversation.wait_read(asyncio.gather(
             runtime_trace.prepare("core", read_core),
             _safe_conversation_context(),
             _safe_recalled_memories(),
-        )
+        ))
         habits = []  # not needed in skilloff mode
 
     elif (is_bedtime or is_self_reminder) and TOOL_ROUTER_ENABLED:
@@ -1043,11 +1064,11 @@ async def _chat(
             from mochi.request_tools import REQUEST_TOOLS_DEF
             tools.append(REQUEST_TOOLS_DEF)
 
-        core_memory, conversation_context, recalled_memories = await asyncio.gather(
+        core_memory, conversation_context, recalled_memories = await conversation.wait_read(asyncio.gather(
             runtime_trace.prepare("core", read_core),
             _safe_conversation_context(),
             _safe_recalled_memories(),
-        )
+        ))
 
     elif turn_plan.router_enabled:
         from mochi.tool_router import classify_skills
@@ -1055,7 +1076,7 @@ async def _chat(
         if not image_generation_available:
             router_catalog.pop("image_generation", None)
         # Launch router (with habits hint) + remaining DB fetches concurrently
-        skill_names, core_memory, conversation_context, recalled_memories = await asyncio.gather(
+        skill_names, core_memory, conversation_context, recalled_memories = await conversation.wait_read(asyncio.gather(
             runtime_trace.prepare_async(
                 "router",
                 classify_skills(text, user_id=user_id, habits=habits,
@@ -1064,7 +1085,7 @@ async def _chat(
             runtime_trace.prepare("core", read_core),
             _safe_conversation_context(),
             _safe_recalled_memories(),
-        )
+        ))
 
         routed_skill_names = list(skill_names)
 
@@ -1092,11 +1113,11 @@ async def _chat(
             if tracks_tool_session
             else list(turn_plan.resident_definitions)
         )
-        core_memory, conversation_context, recalled_memories = await asyncio.gather(
+        core_memory, conversation_context, recalled_memories = await conversation.wait_read(asyncio.gather(
             runtime_trace.prepare("core", read_core),
             _safe_conversation_context(),
             _safe_recalled_memories(),
-        )
+        ))
 
     history = (
         [
@@ -1221,6 +1242,23 @@ async def _chat(
         receipt_history = conversation["messages"]
 
     from mochi.tool_execution import recent_operations_context
+    continuation_context = ""
+    if generation:
+        continuation = await generation.prepare_context()
+        for item in continuation.get("inputs", []):
+            prior_file = generation.context_files.get(item["message_id"])
+            if prior_file is not None:
+                item["content"] = await conversation.wait_read(runtime_trace.prepare(
+                    "continuation_file", _file_content, item["content"], prior_file,
+                ))
+        if any(continuation.values()):
+            template = get_prompt("conversation_continuation")
+            if not template:
+                raise RuntimeError("Conversation continuation prompt is missing")
+            continuation_context = template.replace(
+                "{{continuation}}", json.dumps(continuation, ensure_ascii=False, separators=(",", ":")),
+            )
+        pending_exposure_ids.update(generation.memory_exposure_ids)
     recent_operations = (
         ""
         if not prompt_policy.recent_operations
@@ -1228,6 +1266,7 @@ async def _chat(
             "recent_operations",
             recent_operations_context, user_id, receipt_history,
             include_autonomous=True,
+            excluded_turn_ids=generation.prior_turn_ids if generation else frozenset(),
         )
     )
 
@@ -1272,6 +1311,7 @@ async def _chat(
         diary_status=_ds, diary_journal=_dj,
         conv_summary="" if split_turn_context else conv_summary,
         recent_operations=recent_operations,
+        continuation_context=continuation_context,
         runtime_entry=runtime_entry,
         dream_context=(
             dream_session.context.rendered if dream_session else ""
@@ -1320,6 +1360,8 @@ async def _chat(
         })
     else:
         messages.extend(_expand_history(history))
+        if generation:
+            messages.append({"role": "user", "content": stored_text})
     if image:
         _replace_current_user_content(messages, stored_text, _image_content(text, image))
         # Image understanding belongs to the configured Main model.
@@ -1351,6 +1393,14 @@ async def _chat(
                 "</turn_context>"
             ),
         })
+        if generation and generation.context_images:
+            messages[current_index]["content"] = [
+                {"type": "text", "text": messages[current_index]["content"]},
+                *[
+                    {"type": "image_url", "image_url": {"url": image.data_url()}}
+                    for image in generation.context_images
+                ],
+            ]
         if current_index + 1 < len(messages):
             current_input_index = current_index + 1
 
@@ -1361,7 +1411,10 @@ async def _chat(
             )
             continue
         if split_turn_context and index == current_index:
-            runtime_trace.register_token_source("user", context_message["content"], [
+            context_body = context_message["content"]
+            if isinstance(context_body, list):
+                context_body = context_body[0]["text"]
+            runtime_trace.register_token_source("user", context_body, [
                 ("turn_context.wrapper", '<turn_context source="runtime" role="read_only_context">\n'),
                 *token_parts["turn_context"],
                 ("turn_context.wrapper", "\n</turn_context>"),
@@ -1586,7 +1639,7 @@ async def _chat(
                     purpose=usage_purpose,
                     usage_stage="initial" if round_num == 0 else "tool_continuation",
                 ):
-                    response = await asyncio.to_thread(
+                    response = await conversation.wait_read(asyncio.to_thread(
                         client.chat,
                         messages=messages,
                         tools=(
@@ -1596,7 +1649,7 @@ async def _chat(
                         ),
                         max_tokens=DREAM_MAX_COMPLETION_TOKENS if is_dream else AI_CHAT_MAX_COMPLETION_TOKENS,
                         **cache_kwargs,
-                    )
+                    ))
                 break
             except asyncio.CancelledError:
                 log.warning(
@@ -1686,6 +1739,7 @@ async def _chat(
 
         next_availability = round_availability
         for tc in response.tool_calls:
+            conversation.checkpoint()
             if _free_time_cancelled():
                 return _cancelled_result()
             if not response.tool_calls_complete:
@@ -1746,12 +1800,12 @@ async def _chat(
                 if budget_error:
                     request_result, additions = budget_error, []
                 else:
-                    request_result, additions = resolve_request(
+                    request_result, additions = await conversation.wait_read(resolve_request(
                         arguments,
                         next_availability,
                         transport=transport,
                         excluded_skills=excluded_skills,
-                    )
+                    ))
                 next_availability = next_availability.with_definitions(
                     additions, source=f"request_round_{round_num + 1}",
                 )
@@ -1877,6 +1931,7 @@ async def _chat(
                 else f"runtime:{runtime_entry.kind}" if runtime_entry is not None
                 else "chat"
             )
+            conversation.checkpoint()
             execution_id = start_tool_execution(
                 turn_id=turn_id,
                 tool_call_id=tc["id"],
@@ -1935,6 +1990,11 @@ async def _chat(
                     if image_generation_available and message and message.send_image:
                         try:
                             await message.send_image(result.image)
+                        except conversation.Superseded:
+                            result.success = False
+                            result.output = "图片已生成，但发送未确认；未自动重试。"
+                            result.error_code = "delivery_unavailable"
+                            result.retryable = False
                         except DeliveryError as exc:
                             log.warning("Generated image delivery %s: %s", exc.outcome, exc)
                             result.success = False

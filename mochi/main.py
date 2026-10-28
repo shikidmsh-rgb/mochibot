@@ -133,6 +133,8 @@ async def main():
     initialize_process()
     from mochi.db import recover_interrupted_scheduled_runs
     recover_interrupted_scheduled_runs()
+    from mochi import conversation
+    conversation.initialize()
     from mochi.heartbeat_runtime import expire_abandoned_runs
     expire_abandoned_runs()
     log.info("Database ready")
@@ -192,14 +194,14 @@ async def main():
     # 3. Transport — only one active at a time
     transport: Transport | None = None
 
-    if (_setup_mode or agent_enabled) and TELEGRAM_BOT_TOKEN:
+    if config_status != "admin_only" and (_setup_mode or agent_enabled) and TELEGRAM_BOT_TOKEN:
         if WEIXIN_ENABLED:
             log.warning("Both Telegram and WeChat configured — using Telegram. "
                         "Disable one in .env or admin portal to silence this warning.")
         from mochi.transport.telegram import TelegramTransport, set_message_handler
         transport = TelegramTransport()
         set_message_handler(handle_message)
-    elif (_setup_mode or agent_enabled) and WEIXIN_ENABLED and WEIXIN_BOT_TOKEN:
+    elif config_status != "admin_only" and (_setup_mode or agent_enabled) and WEIXIN_ENABLED and WEIXIN_BOT_TOKEN:
         from mochi.transport.weixin import WeixinTransport
         from mochi.transport.weixin import set_message_handler as set_weixin_handler
         transport = WeixinTransport()
@@ -321,6 +323,7 @@ async def main():
             task.cancel()
         if runtime_tasks:
             await asyncio.gather(*runtime_tasks, return_exceptions=True)
+        await conversation.close()
         if transport:
             await transport.stop()
         runtime_running = False

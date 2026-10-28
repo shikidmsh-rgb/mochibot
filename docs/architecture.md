@@ -11,6 +11,10 @@ setup, not broad provider or multi-user infrastructure.
   conversation decisions.
 - **Main runtime** (`mochi/ai_client.py`) owns user-visible reasoning,
   personality, conversation context, model calls, and tool orchestration.
+- **Owner conversations** (`mochi/conversation.py`, `mochi/conversation_store.py`)
+  coordinate durable intake, one active owner generation, and publication facts.
+  New input supersedes execution/publication authority, not the meaning of the
+  prior request or the actions already taken.
 - **Runtime entries** (`mochi/main_runtime.py`) describe system-owned
   situations, such as bedtime and Dream curation, that need Main's semantic
   judgment without inventing a user message.
@@ -41,7 +45,8 @@ setup, not broad provider or multi-user infrastructure.
   Markdown space under `data/mochi_files/`, accessed through the personal
   workspace. Main alone decides whether, what, and how to write.
 
-Dependency direction is transport/heartbeat -> Main -> skills and persistence.
+Dependency direction is transport -> owner conversation -> Main -> skills and
+persistence; heartbeat runtime entries continue to enter Main independently.
 Skills do not import transports or orchestration.
 
 Document extensions contain Markdown only. Their manifest supplies discovery
@@ -98,14 +103,41 @@ date and enter that day's journal or archive without replacing existing content.
 
 ## Main conversation flow
 
-1. A transport receives an owner message and creates an `IncomingMessage`.
+1. A transport authenticates and durably admits an owner message by its platform
+   source ID before advancing its polling offset. The owner worker reconstructs
+   the latest `IncomingMessage`; repeated source IDs do not start another run.
 2. Main loads canonical Core, then the Agent contract, recent conversation, relevant memory, diary,
    and the tools available for that turn.
 3. Main calls the configured Main model and executes requested tools through the
    shared policy and execution ledger.
-4. The transport delivers the result. The assistant turn is persisted only
-   after delivery is confirmed; only then can a complete ordinary conversation
-   wake summary and memory extraction.
+4. The transport records each actual delivery attempt and confirmation. Confirmed
+   text is persisted even when later bubbles are interrupted; unpublished drafts
+   and unconfirmed sends are not assistant speech. Only a completed ordinary
+   conversation chain wakes summary and memory extraction.
+
+An owner input immediately invalidates the previous generation's next model,
+tool-start and publication boundaries. An in-flight tool or send settles before
+the next owner generation runs. Main receives prior raw inputs and the same
+execution ledger's retained results plus independent delivery facts as read-only
+continuation context. It decides whether to continue, change, or abandon the old
+request. This context is not another owner message or an Admin trace projection.
+Interrupted inputs and confirmed partial replies retain their original message
+records; a completed chain is one conversation unit for history, summary and
+extraction, without dropping its earlier user inputs.
+
+Network model calls currently use the existing synchronous clients. Interruption
+stops awaiting and discards late results; it does not promise to abort the remote
+computation or its charges. Late responses cannot dispatch tools or publish.
+Runtime entries retain their existing cancellation/delivery policies.
+
+The inbox retains encrypted platform references, not attachment bytes, while a
+chain is unfinished. Encryption must succeed before admission. Prior media can
+be downloaded again for continuation; unavailable references are reported as
+unavailable, never interpreted as seen. Completion or reset removes the encrypted
+payloads. Restart reclaims input only when no tool or delivery attempt started;
+otherwise it preserves actual/unknown outcomes for the next owner input without
+replaying effects. Reset invalidates in-flight work and its publication rights
+without deleting the original conversation or execution facts.
 
 Main's recent conversation includes bounded, timestamped standalone assistant
 messages only after confirmed delivery, alongside complete ordinary turns.
@@ -161,7 +193,7 @@ Lite selection call. Repeat cooldown applies only to the same query context
 after Main has received it. Reference counts describe actual Main exposure, not
 unshown search candidates.
 
-Explicit personal-history search uses local conversation, Diary journal bodies,
+The resident personal-history search uses local conversation, Diary journal bodies,
 and text-only Memory recall. Unlike automatic context, an explicit search may
 cross a conversation reset; it excludes the current turn and does not change
 reset boundaries. Querying does not count as Memory exposure: returned IDs are
@@ -333,9 +365,14 @@ the turn directly; the Lite pre-router sees only routed skills; and
 on-demand tools for a later provider round, including newly activated personal
 resident tools that were absent at turn startup. It never authorizes another call in
 the same provider response and never mutates the global registry. The system
-prompt lists unloaded requestable tool names grouped by skill. An exact tool
-request loads only that tool; skill names and query matches load the skill's
-requestable tools. Mixed requests deduplicate tools and distinguish new additions
+prompt lists unloaded requestable tool names grouped by skill. Exact tool names
+load only that tool; exact skill names load the skill's requestable tools, without
+a model call. A natural-language query uses Lite to choose zero or one concrete
+tool from the live eligible catalog, including already available capabilities.
+Selection is bounded by the existing Lite deadline and output budget; failure
+is explicit, not a keyword fallback or a false no-match. Eligibility is checked
+again after selection. Mixed requests preserve exact-name additions even when
+query selection fails. Requests deduplicate tools and distinguish new additions
 from tools already available. A skill's shared capability
 context arrives with the `request_tools` result that loads it. Multiple loading
 requests in one response share the accumulated next-round snapshot, so repeated

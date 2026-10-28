@@ -4,11 +4,13 @@ This is the default transport. Requires TELEGRAM_BOT_TOKEN in .env.
 """
 
 import asyncio
+import json
 import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from telegram import Update, ReactionTypeEmoji
+from telegram.error import BadRequest, Forbidden, TelegramError
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
     ContextTypes, filters,
@@ -111,6 +113,7 @@ class TelegramTransport(Transport):
 
     def __init__(self):
         self._app: Application | None = None
+        self._poll_task: asyncio.Task | None = None
 
     @property
     def name(self) -> str:
@@ -121,7 +124,7 @@ class TelegramTransport(Transport):
             log.warning("TELEGRAM_BOT_TOKEN not set, Telegram transport disabled")
             return
 
-        self._app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+        self._app = Application.builder().token(TELEGRAM_BOT_TOKEN).updater(None).build()
 
         # Register handlers
         self._app.add_handler(CommandHandler("help", self._cmd_help))
@@ -143,12 +146,46 @@ class TelegramTransport(Transport):
 
         await self._app.initialize()
         await self._app.start()
-        await self._app.updater.start_polling(drop_pending_updates=True)
+        await self._app.bot.delete_webhook(drop_pending_updates=False)
+        from mochi import conversation
+        conversation.register("telegram", conversation.Adapter(
+            self._respond_owner, self._owner_media,
+        ))
+        self._poll_task = asyncio.create_task(self._poll_loop())
         log.info("Telegram transport started")
+
+    async def _poll_loop(self) -> None:
+        offset = None
+        while True:
+            try:
+                updates = await self._app.bot.get_updates(offset=offset, timeout=30)
+                for update in updates:
+                    message = update.message
+                    command = bool(message and message.entities and any(
+                        entity.type == "bot_command" and entity.offset == 0
+                        for entity in message.entities
+                    ))
+                    context = self._app.context_types.context.from_update(update, self._app)
+                    if message and message.sticker:
+                        await self._handle_sticker(update, context)
+                    elif message and (message.photo or message.text) and not command:
+                        await self._handle_message(update, context)
+                    else:
+                        await self._app.process_update(update)
+                    # The next poll acknowledges only input already admitted durably.
+                    offset = update.update_id + 1
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("Telegram intake failed; keeping the unacknowledged offset")
+                await asyncio.sleep(2)
 
     async def stop(self) -> None:
         if self._app:
-            await self._app.updater.stop()
+            if self._poll_task:
+                self._poll_task.cancel()
+                await asyncio.gather(self._poll_task, return_exceptions=True)
+                self._poll_task = None
             await self._app.stop()
             await self._app.shutdown()
             log.info("Telegram transport stopped")
@@ -170,10 +207,11 @@ class TelegramTransport(Transport):
                 # Respect Telegram 4096 char limit per message
                 for start in range(0, len(bubble), 4096):
                     ensure_delivery_allowed(can_deliver)
-                    await self._app.bot.send_message(
-                        chat_id=user_id,
-                        text=bubble[start:start + 4096],
-                    )
+                    from mochi.conversation import deliver
+                    chunk = bubble[start:start + 4096]
+                    await deliver("text", chunk, lambda: self._app.bot.send_message(
+                        chat_id=user_id, text=chunk,
+                    ), rejected_errors=(BadRequest, Forbidden))
             return True
         except DeliveryError:
             raise
@@ -189,7 +227,10 @@ class TelegramTransport(Transport):
             return False
         try:
             ensure_delivery_allowed(can_deliver)
-            await self._app.bot.send_sticker(chat_id=chat_id, sticker=file_id)
+            from mochi.conversation import deliver
+            await deliver("sticker", "", lambda: self._app.bot.send_sticker(
+                chat_id=chat_id, sticker=file_id,
+            ), rejected_errors=(BadRequest, Forbidden))
             return True
         except DeliveryError:
             raise
@@ -216,6 +257,8 @@ class TelegramTransport(Transport):
     async def _cmd_restart(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not _is_owner(update.effective_user.id):
             return
+        from mochi.conversation import invalidate
+        invalidate(update.effective_user.id)
         await update.message.reply_text("正在重启...")
         from mochi.shutdown import request_restart
         request_restart(update.effective_chat.id)
@@ -245,6 +288,8 @@ class TelegramTransport(Transport):
             return
         from mochi.db import set_context_reset
         set_context_reset(update.effective_user.id)
+        from mochi.conversation import invalidate
+        invalidate(update.effective_user.id)
         await update.message.reply_text("已重置对话上下文，bot 不会记得之前聊了什么。")
 
     async def _cmd_heartbeat(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -317,13 +362,19 @@ class TelegramTransport(Transport):
 
     async def _check_owner(self, update: Update) -> int | None:
         """Validate owner and return user_id, or reply with rejection and return None."""
+        if update.effective_user is None:
+            log.warning("Telegram: rejected an input without an identified sender")
+            return None
         user_id = update.effective_user.id
         from mochi.config import OWNER_USER_ID as _current_owner
         if not _current_owner:
             set_owner_user_id(user_id)
             log.info("Owner auto-detected: user_id=%d", user_id)
         elif user_id != _current_owner:
-            await update.message.reply_text("Sorry, I'm a personal companion bot.")
+            try:
+                await update.message.reply_text("Sorry, I'm a personal companion bot.")
+            except TelegramError as exc:
+                log.warning("Telegram owner-only notice failed (%s)", type(exc).__name__)
             return None
         return user_id
 
@@ -381,13 +432,72 @@ class TelegramTransport(Transport):
         if user_id is None:
             return
 
-        from mochi.heartbeat import active_chat
-        with active_chat():
-            await self._handle_owner_message(update, context, user_id)
+        self._queue_owner(update, user_id)
+
+    def _queue_owner(self, update: Update, user_id: int) -> None:
+        from mochi import conversation
+        self._dispatch_state_signals()
+        original = json.loads(update.to_json())
+        payload = {
+            "update_id": original["update_id"],
+            "message": {
+                key: value for key, value in original["message"].items()
+                if key in {"message_id", "date", "from", "chat", "text", "caption", "photo", "sticker"}
+            },
+        }
+        text = update.message.text or update.message.caption or ""
+        if update.message.photo:
+            text = f"[图片] {text or '请看看这张图片。'}"
+        elif update.message.sticker:
+            text = f"[用户发了一个贴纸 {update.message.sticker.emoji or ''}]" + (f" {text}" if text else "")
+        conversation.receive(
+            user_id=user_id, transport="telegram",
+            source_id=f"telegram:{update.effective_chat.id}:{update.message.message_id}",
+            text=text,
+            payload={"update": payload},
+        )
+
+    async def _respond_owner(self, payload: dict) -> None:
+        update = Update.de_json(payload["update"], self._app.bot)
+        if not _is_owner(update.effective_user.id):
+            raise PermissionError("Queued Telegram owner identity no longer matches")
+        context = self._app.context_types.context.from_update(update, self._app)
+        if update.message.sticker:
+            await self._handle_owner_sticker(update, context, update.effective_user.id)
+        else:
+            await self._handle_owner_message(update, context, update.effective_user.id)
+
+    async def _owner_media(self, payload: dict):
+        update = Update.de_json(payload["update"], self._app.bot)
+        if not _is_owner(update.effective_user.id):
+            raise PermissionError("Prior Telegram input is not the current owner")
+        if not update.message.photo:
+            return None, None
+        photo = update.message.photo[-1]
+        if photo.file_size and photo.file_size > MAX_IMAGE_BYTES:
+            raise ValueError("Telegram image exceeds the size limit")
+        file = await self._app.bot.get_file(photo.file_id)
+        image = ImageAttachment.from_bytes(bytes(await file.download_as_bytearray()))
+        return image, None
+
+    async def _edit_reply_start(self, chat_id: int, message_id: int, text: str) -> None:
+        from mochi.conversation import deliver
+
+        try:
+            await deliver("text", text, lambda: self._app.bot.edit_message_text(
+                chat_id=chat_id, message_id=message_id, text=text,
+            ), rejected_errors=(BadRequest, Forbidden))
+        except BadRequest:
+            # Only the explicitly rejected first packet is replaced, never the whole reply.
+            await deliver("text", text, lambda: self._app.bot.send_message(
+                chat_id=chat_id, text=text,
+            ), rejected_errors=(BadRequest, Forbidden))
 
     async def _handle_owner_message(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int,
     ) -> None:
+        from mochi.conversation import checkpoint, wait_read
+        checkpoint()
         image = None
         text = update.message.text or update.message.caption or "请看看这张图片。"
         if update.message.photo:
@@ -396,8 +506,8 @@ class TelegramTransport(Transport):
                 await update.message.reply_text("图片太大了，请发送 5 MB 以内的图片。")
                 return
             try:
-                tg_file = await context.bot.get_file(photo.file_id)
-                data = bytes(await tg_file.download_as_bytearray())
+                tg_file = await wait_read(context.bot.get_file(photo.file_id))
+                data = bytes(await wait_read(tg_file.download_as_bytearray()))
             except Exception as e:
                 log.warning("Failed to download Telegram image: %s", e)
                 await update.message.reply_text("图片下载失败了，请重新发送一次。")
@@ -407,6 +517,7 @@ class TelegramTransport(Transport):
                 return
             image = ImageAttachment(data=data, media_type="image/jpeg")
 
+        checkpoint()
         self._dispatch_state_signals()
 
         chat_id = update.effective_chat.id
@@ -414,6 +525,8 @@ class TelegramTransport(Transport):
         status = _StatusState()
 
         async def _on_interim(text=None, *, tool_name: str | None = None) -> None:
+            from mochi.conversation import checkpoint
+            checkpoint()
             # Refresh typing indicator
             try:
                 await context.bot.send_chat_action(chat_id=chat_id, action="typing")
@@ -475,14 +588,20 @@ class TelegramTransport(Transport):
 
             async def _process_main_turn() -> None:
                 nonlocal bedtime_claimed
+                from mochi.conversation import checkpoint, deliver
+                checkpoint()
                 result = None
                 try:
                     result = await _on_message_callback(msg)
                 finally:
                     # Finalize status UX: set 👍
                     if TG_STATUS_REACTIONS_ENABLED and status.reaction_state not in ("", "done"):
-                        status.reaction_state = "done"
-                        await _set_reaction(context.bot, chat_id, user_msg_id, "\U0001F44D")
+                        from mochi.conversation import is_current
+                        completed = result is not None and is_current()
+                        status.reaction_state = "done" if completed else ""
+                        await _set_reaction(
+                            context.bot, chat_id, user_msg_id, "\U0001F44D" if completed else None,
+                        )
                     # Clean up orphan status message on error
                     if result is None and status.status_msg_id:
                         try:
@@ -494,6 +613,7 @@ class TelegramTransport(Transport):
 
                 if result:
                     if result.bedtime_requested:
+                        checkpoint()
                         bedtime_claimed = claim_sleep_transition("explicit")
                         if (
                             not bedtime_claimed
@@ -528,16 +648,12 @@ class TelegramTransport(Transport):
                             first = bubbles[0]
                             for start in range(0, len(first), 4096):
                                 if start == 0:
-                                    await context.bot.edit_message_text(
-                                        chat_id=chat_id,
-                                        message_id=status.status_msg_id,
-                                        text=first[:4096],
-                                    )
+                                    await self._edit_reply_start(chat_id, status.status_msg_id, first[:4096])
                                 else:
-                                    await context.bot.send_message(
+                                    await deliver("text", first[start:start + 4096], lambda: context.bot.send_message(
                                         chat_id=chat_id,
                                         text=first[start:start + 4096],
-                                    )
+                                    ), rejected_errors=(BadRequest, Forbidden))
                             # Remaining bubbles → send with typing delay
                             for bubble in bubbles[1:]:
                                 await context.bot.send_chat_action(
@@ -545,10 +661,10 @@ class TelegramTransport(Transport):
                                 )
                                 await asyncio.sleep(TG_BUBBLE_DELAY_S)
                                 for start in range(0, len(bubble), 4096):
-                                    await context.bot.send_message(
+                                    await deliver("text", bubble[start:start + 4096], lambda: context.bot.send_message(
                                         chat_id=chat_id,
                                         text=bubble[start:start + 4096],
-                                    )
+                                    ), rejected_errors=(BadRequest, Forbidden))
                             # Stickers
                             delivered = True
                             result.confirm_delivered()
@@ -562,8 +678,8 @@ class TelegramTransport(Transport):
                                 if sticker_delivered and sticker_skill:
                                     sticker_skill.record_last_sent(chat_id, file_id)
                         except Exception:
-                            # Fallback: send normally if edit fails
-                            delivered = await self.send_chat_result(chat_id, result)
+                            # Earlier packets may already be visible; never replay the whole reply.
+                            raise
                     else:
                         delivered = await self.send_chat_result(chat_id, result)
                     if delivered:
@@ -580,7 +696,12 @@ class TelegramTransport(Transport):
                 log.error("Telegram Bedtime entry failed: %s", exc, exc_info=True)
             finally:
                 if bedtime_claimed:
-                    go_to_sleep("explicit")
+                    from mochi.conversation import is_current
+                    if is_current():
+                        go_to_sleep("explicit")
+                    else:
+                        from mochi.heartbeat import cancel_sleep_transition
+                        cancel_sleep_transition()
         else:
             await update.message.reply_text("I'm still waking up... try again in a moment.")
 
@@ -592,9 +713,7 @@ class TelegramTransport(Transport):
         if user_id is None:
             return
 
-        from mochi.heartbeat import active_chat
-        with active_chat():
-            await self._handle_owner_sticker(update, context, user_id)
+        self._queue_owner(update, user_id)
 
     async def _handle_owner_sticker(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int,
