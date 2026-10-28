@@ -115,7 +115,15 @@ class Generation:
             elif hasattr(operation, "close"):
                 operation.close()
             raise
-        task = asyncio.ensure_future(operation)
+        started = False
+
+        async def execute():
+            nonlocal started
+            self.check()
+            started = True
+            return await operation
+
+        task = asyncio.create_task(execute())
         stop = asyncio.create_task(self.stopped.wait())
         try:
             await asyncio.wait((task, stop), return_when=asyncio.FIRST_COMPLETED)
@@ -126,6 +134,12 @@ class Generation:
             if not task.done():
                 task.cancel()
             await asyncio.gather(task, stop, return_exceptions=True)
+            if not started:
+                if isinstance(operation, asyncio.Future):
+                    operation.cancel()
+                    await asyncio.gather(operation, return_exceptions=True)
+                elif hasattr(operation, "close"):
+                    operation.close()
 
     def confirm(self, result, *, final: bool) -> bool:
         self.check()
