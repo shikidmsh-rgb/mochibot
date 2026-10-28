@@ -272,12 +272,12 @@ async def _select_tool(query: str, catalog: RequestCatalog) -> str | None:
     template = get_prompt("tool_selector")
     if not template:
         raise RuntimeError("Tool selector prompt is missing")
-    groups: dict[str, dict] = {}
-    for name, tool in catalog.search_tools.items():
-        group = groups.setdefault(tool["skill"], {"description": tool["scope"], "tools": {}})
-        group["tools"][name] = tool["description"]
+    tools = [
+        {"tool": name, "description": tool["description"], "scope": tool["scope"]}
+        for name, tool in sorted(catalog.search_tools.items())
+    ]
     prompt = template.replace("{{tool_catalog}}", json.dumps(
-        groups, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        tools, ensure_ascii=False, separators=(",", ":"),
     ))
     client = get_client_for_tier("lite")
     with stage("tool_selection", model_role="LITE", purpose="tool_selection"):
