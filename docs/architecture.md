@@ -173,9 +173,18 @@ read-only boundary at the round in which they become available. Bedtime and
 Dream retain their specialized system layouts. History selection, retention,
 original message roles and storage do not change to manufacture cache hits.
 
+Every model registration stores an explicit API protocol: Chat Completions,
+Responses or Anthropic Messages. Model identifiers are opaque provider-facing
+values, not protocol selectors. Presets supply defaults; normal calls, connection
+tests and import extraction use the same configured adapter. No runtime probing
+or protocol failover changes the user's selection. Introducing the protocol field
+records existing effective routes once without changing credentials or tier assignments.
+
 Native cache and tool capabilities are opt-in properties of a model registration,
-captured by the provider for each Main turn. Changing its provider, model or
-endpoint clears the capabilities. They never affect Lite or select another model.
+captured by the provider for each Main turn. Model and endpoint edits retain the
+user's choices. Validation rejects only options incompatible with the selected
+protocol, not unknown model names. The UI explicitly removes inapplicable options
+when the user changes protocol. They never affect Lite or select another model.
 `mochi/native_payload.py` owns only native request representation, not tool
 selection, permissions or execution. It covers authorized owner chat, Free Time
 and Self Reminders; Bedtime and Dream retain their ordinary provider path.

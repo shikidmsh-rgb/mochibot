@@ -318,6 +318,7 @@ def _run_extract(job_id: str, session_id: str, model_name: str,
             api_key=entry["api_key"],
             model=entry["model"],
             base_url=entry.get("base_url", ""),
+            api_protocol=entry["api_protocol"],
         )
 
         messages = [

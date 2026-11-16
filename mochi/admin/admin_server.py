@@ -534,13 +534,14 @@ if HAS_FASTAPI:
             api_key = source["api_key"]
             base_url = source["base_url"]
         try:
-            native_options_reset = upsert_model(
+            upsert_model(
                 name=name,
                 provider=provider,
                 model=body.get("model", ""),
                 api_key=api_key,
                 base_url=base_url,
                 native_options=body.get("native_options"),
+                api_protocol=body.get("api_protocol", ""),
             )
         except ValueError as e:
             raise HTTPException(400, str(e))
@@ -563,6 +564,7 @@ if HAS_FASTAPI:
                             entry["model"],
                             entry["base_url"],
                             entry["native_options"],
+                            api_protocol=entry["api_protocol"],
                         )
                     except Exception as exc:
                         log.warning("Tier hot-reload failed for '%s': %s", tier, exc)
@@ -571,10 +573,7 @@ if HAS_FASTAPI:
             bool(_runtime_status_provider().get("setup_mode", False))
             and "main" in assigned_tiers
         )
-        return {
-            "ok": True, "restart_required": restart_required,
-            "native_options_reset": native_options_reset,
-        }
+        return {"ok": True, "restart_required": restart_required}
 
     @app.delete("/api/models/{name}", dependencies=[Depends(_verify_token)])
     async def api_delete_model(name: str):
@@ -601,15 +600,20 @@ if HAS_FASTAPI:
                 entry["provider"], entry["api_key"],
                 entry["model"], entry["base_url"],
                 entry["native_options"],
+                api_protocol=entry["api_protocol"],
             )
             start = time.monotonic()
             resp = await asyncio.to_thread(
                 client.chat,
                 messages=[{"role": "user", "content": "Hi"}],
-                max_tokens=5,
+                max_tokens=1024,
+                **({"thinking": False} if client.supports_thinking_control else {}),
             )
             elapsed = int((time.monotonic() - start) * 1000)
-            return {"ok": True, "model": resp.model, "latency_ms": elapsed}
+            return {
+                "ok": True, "model": resp.model, "latency_ms": elapsed,
+                "api_protocol": entry["api_protocol"],
+            }
         except Exception as e:
             err_str = str(e)
             log.warning("Model test failed for '%s': %s", name, err_str[:300])
@@ -672,6 +676,7 @@ if HAS_FASTAPI:
                     tier, entry["provider"], entry["api_key"],
                     entry["model"], entry["base_url"],
                     entry["native_options"],
+                    api_protocol=entry["api_protocol"],
                 )
         except Exception as e:
             log.warning("Tier hot-reload failed for '%s': %s", tier, e)

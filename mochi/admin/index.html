@@ -276,6 +276,14 @@ select.form-input { cursor:pointer; }
     <div class="form-group"><label class="form-label">服务商</label>
       <select class="form-input" id="mm-vendor" onchange="onVendorChange()"><option value="openai">OpenAI</option><option value="deepseek">DeepSeek</option><option value="gemini">Gemini</option><option value="anthropic">Anthropic</option><option value="compatible">OpenAI-compatible</option></select>
     </div>
+    <div class="form-group"><label class="form-label">接口类型</label>
+      <select class="form-input" id="mm-api-protocol" onchange="onProtocolChange()">
+        <option value="chat_completions" data-provider="openai">Chat Completions</option>
+        <option value="responses" data-provider="openai">Responses</option>
+        <option value="messages" data-provider="anthropic">Claude 原生 Messages</option>
+      </select>
+      <div style="font-size:11px;color:var(--text-soft);margin-top:4px">按服务商文档选择。模型名不受名单限制；更换模型不会自动更换接口。</div>
+    </div>
     <div class="form-group"><label class="form-label">模型</label><input class="form-input" id="mm-model" placeholder="例如 gpt-4o"></div>
     <div class="form-group" id="mm-credential-mode-group"><label class="form-label">凭据方式</label>
       <select class="form-input" id="mm-credential-mode" onchange="onCredentialModeChange()">
@@ -285,16 +293,16 @@ select.form-input { cursor:pointer; }
     </div>
     <div class="form-group" id="mm-apikey-group"><label class="form-label">API Key</label><input class="form-input" id="mm-apikey" type="password" autocomplete="new-password" placeholder="sk-..."></div>
     <div class="form-group" id="mm-credential-source-group" style="display:none"><label class="form-label">来源模型</label>
-      <select class="form-input" id="mm-credential-source"></select>
-      <div style="font-size:11px;color:var(--text-soft);margin-top:4px">复制 API Key 和 Base URL；保存后与来源模型互不联动。</div>
+      <select class="form-input" id="mm-credential-source" onchange="onCredentialSourceChange()"></select>
+      <div style="font-size:11px;color:var(--text-soft);margin-top:4px">复制 API Key、Base URL 和接口类型；保存后与来源模型互不联动。</div>
     </div>
     <div class="form-group" id="mm-baseurl-group"><label class="form-label">Base URL（可选）</label><input class="form-input" id="mm-baseurl" placeholder="https://..."><div id="mm-baseurl-help" style="display:none;font-size:11px;color:var(--text-soft);margin-top:4px"></div></div>
-    <div class="form-group">
-      <label class="form-label">Main 原生缓存能力（仅为已实测接口开启）</label>
-      <label><input type="checkbox" id="mm-explicit-cache"> 显式缓存：Responses / Claude 原生 5 分钟</label><br>
-      <label><input type="checkbox" id="mm-additional-tools"> Responses 追加工具声明</label><br>
-      <label><input type="checkbox" id="mm-deferred-tools"> Claude 原生延迟工具</label>
-      <div style="font-size:11px;color:var(--text-soft);margin-top:4px">三个开关互相独立，不作用于 Lite。更换服务商、模型或地址时会清除；连接测试不代表这些能力已验证。</div>
+    <div class="form-group" id="mm-native-options">
+      <label class="form-label">Main 可选增强</label>
+      <label style="display:block" data-native-protocols="responses messages"><input type="checkbox" id="mm-explicit-cache"> <span id="mm-cache-label">显式缓存</span></label>
+      <label style="display:block" data-native-protocols="responses"><input type="checkbox" id="mm-additional-tools"> Responses 追加工具声明</label>
+      <label style="display:block" data-native-protocols="messages"><input type="checkbox" id="mm-deferred-tools"> Claude 原生延迟工具</label>
+      <div style="font-size:11px;color:var(--text-soft);margin-top:4px">独立开关，仅作用于 Main。按服务商支持情况开启；连通测试不验证增强能力。更换模型或地址不自动清空，切换协议只保留适用选项。</div>
     </div>
     <div id="mm-test-result" style="font-size:13px;margin-top:8px"></div>
     <div class="modal-footer">
@@ -1947,12 +1955,16 @@ async function loadSystem() {
 // Page 1: Models
 // ═══════════════════════════════════════════
 const VENDOR_PRESETS = [
-  { vendor: 'openai',    label: 'OpenAI',    compatibleLabel: 'OpenAI-compatible', provider: 'openai', baseUrl: '',                        placeholder: 'gpt-4o' },
-  { vendor: 'deepseek',  label: 'DeepSeek',  provider: 'openai',    baseUrl: 'https://api.deepseek.com/v1',                                placeholder: 'deepseek-chat', fixedBaseUrl: true },
-  { vendor: 'gemini',    label: 'Gemini',    provider: 'openai',    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/',    placeholder: 'gemini-2.5-flash', fixedBaseUrl: true },
-  { vendor: 'anthropic', label: 'Anthropic', provider: 'anthropic', baseUrl: '',                                                           placeholder: 'claude-sonnet-4-20250514' },
-  { vendor: 'compatible', label: 'OpenAI-compatible', provider: 'openai', baseUrl: '',                                                      placeholder: '' },
+  { vendor: 'openai',    label: 'OpenAI',    compatibleLabel: 'OpenAI-compatible', provider: 'openai', apiProtocol: 'responses', baseUrl: '', placeholder: 'gpt-4o' },
+  { vendor: 'deepseek',  label: 'DeepSeek',  provider: 'openai', apiProtocol: 'chat_completions', baseUrl: 'https://api.deepseek.com/v1', placeholder: 'deepseek-chat', fixedBaseUrl: true },
+  { vendor: 'gemini',    label: 'Gemini',    provider: 'openai', apiProtocol: 'chat_completions', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/', placeholder: 'gemini-2.5-flash', fixedBaseUrl: true },
+  { vendor: 'anthropic', label: 'Anthropic', provider: 'anthropic', apiProtocol: 'messages', baseUrl: '', placeholder: 'claude-sonnet-4-20250514' },
+  { vendor: 'compatible', label: 'OpenAI-compatible', provider: 'openai', apiProtocol: 'chat_completions', baseUrl: '', placeholder: '' },
 ];
+
+function modelProtocolLabel(protocol) {
+  return {chat_completions: 'Chat Completions', responses: 'Responses', messages: 'Claude Messages'}[protocol] || protocol || '未选择';
+}
 
 const EMB_VENDOR_PRESETS = [
   { vendor: 'openai',   label: 'OpenAI / 兼容接口', compatibleLabel: 'OpenAI 兼容接口', provider: 'openai', baseUrl: '', placeholder: 'text-embedding-3-small' },
@@ -2064,7 +2076,7 @@ async function loadAdvanced() {
       for (const m of models) {
         html += `<tr>
           <td><strong>${esc(m.name)}</strong></td>
-          <td><span class="badge ${m.supported?'badge-info':'badge-warn'}">${esc(resolveVendorLabel(m.provider, m.base_url))}</span></td>
+          <td><span class="badge ${m.supported?'badge-info':'badge-warn'}">${esc(resolveVendorLabel(m.provider, m.base_url))}</span><div style="font-size:11px;color:var(--text-soft)">${esc(modelProtocolLabel(m.api_protocol))}</div></td>
           <td>${esc(m.model)}</td>
           <td>${m.api_key_set?'<span class="badge badge-ok">已设置</span>':'<span class="badge badge-warn">未设置</span>'}</td>
           <td style="text-align:right">
@@ -2205,6 +2217,12 @@ function onVendorChange() {
   const urlEl = document.getElementById('mm-baseurl');
   const urlHelp = document.getElementById('mm-baseurl-help');
   const modelEl = document.getElementById('mm-model');
+  const protocolEl = document.getElementById('mm-api-protocol');
+  for (const option of protocolEl.options) {
+    option.disabled = option.dataset.provider !== preset.provider;
+  }
+  protocolEl.value = preset.apiProtocol;
+  onProtocolChange();
   urlEl.readOnly = !!preset.fixedBaseUrl;
   // Auto-fill base_url only if current value is empty or was auto-filled last time
   if (preset.fixedBaseUrl || preset.vendor === 'openai' || preset.vendor === 'anthropic'
@@ -2227,13 +2245,42 @@ function onVendorChange() {
   if (preset.vendor === 'compatible' || preset.vendor === 'anthropic') {
     urlEl.placeholder = preset.vendor === 'anthropic' ? 'https://api.example.com' : 'https://api.example.com/v1';
     urlHelp.style.display = 'block';
-    urlHelp.textContent = '填写 HTTPS API 根地址，不要包含 /chat/completions 或 /messages。Anthropic 留空使用官方接口；兼容性以实际测试结果为准。';
+    urlHelp.textContent = '填写 HTTPS API 根地址，不要包含 /chat/completions、/responses 或 /messages。Claude 原生地址不带末尾 /v1；留空使用官方接口。';
   } else {
     urlEl.placeholder = 'https://...';
     urlHelp.style.display = 'none';
     urlHelp.textContent = '';
   }
   refreshCredentialSources();
+}
+
+function onProtocolChange() {
+  const protocol = document.getElementById('mm-api-protocol').value;
+  const group = document.getElementById('mm-native-options');
+  let cleared = false;
+  for (const label of group.querySelectorAll('[data-native-protocols]')) {
+    const applicable = label.dataset.nativeProtocols.split(' ').includes(protocol);
+    label.style.display = applicable ? 'block' : 'none';
+    const checkbox = label.querySelector('input');
+    if (!applicable && checkbox.checked) {
+      checkbox.checked = false;
+      cleared = true;
+    }
+  }
+  group.style.display = protocol === 'chat_completions' ? 'none' : '';
+  document.getElementById('mm-cache-label').textContent = protocol === 'messages'
+    ? 'Claude 原生历史缓存（5 分钟）' : 'Responses 显式缓存边界';
+  if (cleared) showToast('已关闭当前接口类型不适用的增强选项');
+}
+
+function onCredentialSourceChange() {
+  const source = _modelCredentialSources.find(m =>
+    m.name === document.getElementById('mm-credential-source').value
+  );
+  if (source) {
+    document.getElementById('mm-api-protocol').value = source.api_protocol;
+    onProtocolChange();
+  }
 }
 
 function refreshCredentialSources() {
@@ -2266,6 +2313,7 @@ function onCredentialModeChange() {
   document.getElementById('mm-apikey-group').style.display = copying ? 'none' : 'block';
   document.getElementById('mm-credential-source-group').style.display = copying ? 'block' : 'none';
   document.getElementById('mm-baseurl-group').style.display = copying ? 'none' : 'block';
+  if (copying) onCredentialSourceChange();
 }
 
 function openModelModal(name, targetTier) {
@@ -2303,16 +2351,18 @@ function openModelModal(name, targetTier) {
         document.getElementById('mm-vendor').value = vendor;
         document.getElementById('mm-model').value = m.model;
         document.getElementById('mm-baseurl').value = m.base_url || '';
-        const options = m.native_options || {};
-        document.getElementById('mm-explicit-cache').checked = options.explicit_cache === true;
-        document.getElementById('mm-additional-tools').checked = options.responses_additional_tools === true;
-        document.getElementById('mm-deferred-tools').checked = options.anthropic_deferred_tools === true;
         _lastAutoBaseUrl = m.base_url || '';
         onVendorChange();
         // Restore persisted values after preset defaults run.
         document.getElementById('mm-model').value = m.model;
         _lastAutoModel = '';
         document.getElementById('mm-baseurl').value = m.base_url || '';
+        document.getElementById('mm-api-protocol').value = m.api_protocol;
+        const options = m.native_options || {};
+        document.getElementById('mm-explicit-cache').checked = options.explicit_cache === true;
+        document.getElementById('mm-additional-tools').checked = options.responses_additional_tools === true;
+        document.getElementById('mm-deferred-tools').checked = options.anthropic_deferred_tools === true;
+        onProtocolChange();
       }
     }
     refreshCredentialSources();
@@ -2350,6 +2400,7 @@ async function saveModelFromModal(stayOpen) {
   const body = {
     name,
     provider: preset.provider,
+    api_protocol: document.getElementById('mm-api-protocol').value,
     model: document.getElementById('mm-model').value.trim(),
     api_key: (_modelEditName && !apiKey) ? '__KEEP__' : (copyingCredentials ? '' : apiKey),
     base_url: sourceModel?.base_url || (preset.fixedBaseUrl ? preset.baseUrl : enteredBaseUrl),
@@ -2366,12 +2417,7 @@ async function saveModelFromModal(stayOpen) {
     if (targetTier) {
       await api('PUT','/tiers/'+targetTier, {model_name:name});
     }
-    showToast(result.native_options_reset ? '模型已保存；接口已改变，原生能力已关闭' : '模型已保存');
-    if (result.native_options_reset) {
-      for (const id of ['mm-explicit-cache', 'mm-additional-tools', 'mm-deferred-tools']) {
-        document.getElementById(id).checked = false;
-      }
-    }
+    showToast('模型已保存');
     if (!stayOpen) {
       closeModelModal();
       loaded.settings = false;
@@ -2681,7 +2727,7 @@ async function testModel(name, btn) {
     if (r.ok) {
       btn.textContent = '✅ 成功';
       btn.style.color = 'var(--success)';
-      showToast('✅ 模型 ' + name + ' 连接成功' + (r.latency_ms ? '（延迟 '+r.latency_ms+'ms）' : ''));
+      showToast('✅ 模型 ' + name + ' · ' + modelProtocolLabel(r.api_protocol) + ' 连接成功' + (r.latency_ms ? '（延迟 '+r.latency_ms+'ms）' : ''));
       setTimeout(() => { btn.textContent = orig; btn.style.color = ''; }, 3000);
     } else {
       btn.textContent = '❌ 失败';
@@ -2712,7 +2758,7 @@ async function testModelInModal() {
     }
     const r = await api('POST','/models/'+encodeURIComponent(name)+'/test');
     if (r.ok) {
-      res.innerHTML = `<span style="color:var(--success);font-weight:600;font-size:14px">✅ 连接成功！${r.latency_ms?'延迟 '+r.latency_ms+'ms':''}</span>`;
+      res.innerHTML = `<span style="color:var(--success);font-weight:600;font-size:14px">✅ ${esc(modelProtocolLabel(r.api_protocol))} 连接成功！${r.latency_ms?'延迟 '+r.latency_ms+'ms':''}</span>`;
       showToast('✅ 模型 ' + name + ' 测试通过');
     } else {
       res.innerHTML = `<span style="color:var(--danger);font-weight:600;font-size:14px">❌ 连接失败: ${esc(r.error||'未知错误')}</span>`;

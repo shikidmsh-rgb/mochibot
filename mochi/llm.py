@@ -41,16 +41,11 @@ def _client_with_timeout(client, timeout_seconds: float | None):
     return client.with_options(timeout=timeout_seconds, max_retries=0)
 
 
-_RESPONSES_API_MODELS = frozenset({
-    "gpt-5.6-sol",
-    "gpt-6-astra",
-    "gpt-6-sol",
-})
-
-
-def _uses_responses_api(model: str) -> bool:
-    """Return whether a verified model requires the Responses API."""
-    return model.strip().lower() in _RESPONSES_API_MODELS
+MODEL_PROTOCOL_PROVIDERS = {
+    "chat_completions": "openai",
+    "responses": "openai",
+    "messages": "anthropic",
+}
 
 
 def _decode_data_image(block: dict) -> tuple[str, bytes]:
@@ -638,10 +633,13 @@ class _OpenAICompatChat:
 class OpenAIProvider(_OpenAICompatChat, LLMProvider):
     """OpenAI-compatible API provider for OpenAI and DeepSeek."""
 
-    def __init__(self, api_key: str, model: str, base_url: str = ""):
+    def __init__(
+        self, api_key: str, model: str, base_url: str = "", *, api_protocol: str,
+    ):
         from openai import OpenAI
         register_secret(api_key)
         self._model = model
+        self._api_protocol = api_protocol
         self._base_url = base_url
         self._use_max_completion_tokens = None
         self._requires_reasoning_placeholders = False
@@ -660,17 +658,20 @@ class OpenAIProvider(_OpenAICompatChat, LLMProvider):
 
     @property
     def supports_thinking_control(self) -> bool:
-        return urlsplit(self._base_url).hostname == "api.deepseek.com"
+        return (
+            self._api_protocol == "chat_completions"
+            and urlsplit(self._base_url).hostname == "api.deepseek.com"
+        )
 
     @property
     def supports_explicit_cache(self) -> bool:
-        return _uses_responses_api(self._model)
+        return self._api_protocol == "responses"
 
     @property
     def reasoning_source(self) -> str:
         return (
             f"{self._caps_cache_key}::responses"
-            if _uses_responses_api(self._model)
+            if self._api_protocol == "responses"
             else self._caps_cache_key
         )
 
@@ -687,7 +688,7 @@ class OpenAIProvider(_OpenAICompatChat, LLMProvider):
             raise ValueError("This provider does not support the native Responses payload")
         client = _client_with_timeout(self._client, timeout_seconds)
         receipt: dict = {}
-        if _uses_responses_api(self._model):
+        if self._api_protocol == "responses":
             kwargs: dict = {
                 "model": self._model,
                 "input": _responses_input(messages),
@@ -958,19 +959,21 @@ class AnthropicProvider(LLMProvider):
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def validate_native_options(provider: str, model: str, options: NativeOptions) -> None:
-    responses = provider == "openai" and _uses_responses_api(model)
-    if options.explicit_cache and not (responses or provider == "anthropic"):
+def validate_native_options(provider: str, api_protocol: str, options: NativeOptions) -> None:
+    if not isinstance(api_protocol, str) or MODEL_PROTOCOL_PROVIDERS.get(api_protocol) != provider:
+        raise ValueError("Select an API protocol matching the provider adapter")
+    responses = api_protocol == "responses"
+    if options.explicit_cache and api_protocol not in {"responses", "messages"}:
         raise ValueError("Explicit caching requires a Responses or native Anthropic model")
     if options.responses_additional_tools and not responses:
         raise ValueError("Additional tools require a Responses model")
-    if options.anthropic_deferred_tools and provider != "anthropic":
+    if options.anthropic_deferred_tools and api_protocol != "messages":
         raise ValueError("Deferred tools require a native Anthropic model")
 
 
 def _make_client(
     provider: str, api_key: str, model: str, base_url: str,
-    native_options: dict | None = None,
+    native_options: dict | None = None, *, api_protocol: str,
 ) -> LLMProvider:
     """Instantiate a fresh LLM provider."""
     model = model.strip()
@@ -979,9 +982,11 @@ def _make_client(
             "Model name is required. Configure it in the admin portal."
         )
     options = NativeOptions.from_dict(native_options)
-    validate_native_options(provider, model, options)
+    validate_native_options(provider, api_protocol, options)
     if provider == "openai":
-        client = OpenAIProvider(api_key=api_key, model=model, base_url=base_url)
+        client = OpenAIProvider(
+            api_key=api_key, model=model, base_url=base_url, api_protocol=api_protocol,
+        )
     elif provider == "anthropic":
         client = AnthropicProvider(api_key=api_key, model=model, base_url=base_url)
     else:

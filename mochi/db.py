@@ -309,6 +309,7 @@ def init_db() -> None:
         CREATE TABLE IF NOT EXISTS model_registry (
             name       TEXT PRIMARY KEY,
             provider   TEXT NOT NULL,
+            api_protocol TEXT NOT NULL DEFAULT 'chat_completions',
             model      TEXT NOT NULL,
             api_key    TEXT NOT NULL DEFAULT '',
             base_url   TEXT NOT NULL DEFAULT '',
@@ -416,6 +417,16 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
     _add_col("runtime_traces", "facts_json", "TEXT DEFAULT NULL")
     _add_col("tool_executions", "result_json", "TEXT DEFAULT NULL")
     _add_col("model_registry", "native_options", "TEXT NOT NULL DEFAULT '{}'")
+    if not _has_col("model_registry", "api_protocol"):
+        # Record existing effective routes once; model names never select protocols at runtime.
+        _add_col("model_registry", "api_protocol", "TEXT NOT NULL DEFAULT 'chat_completions'")
+        conn.execute(
+            "UPDATE model_registry SET api_protocol=CASE "
+            "WHEN provider='anthropic' THEN 'messages' "
+            "WHEN provider='openai' AND lower(trim(model)) IN "
+            "('gpt-5.6-sol','gpt-6-astra','gpt-6-sol') THEN 'responses' "
+            "ELSE 'chat_completions' END"
+        )
 
     # memory_items
     _add_col("memory_items", "access_count", "INTEGER NOT NULL DEFAULT 0")

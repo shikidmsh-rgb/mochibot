@@ -13,10 +13,11 @@ from urllib.parse import urlsplit
 
 from mochi.config import (
     TZ,
-    MAIN_PROVIDER, MAIN_API_KEY, MAIN_MODEL, MAIN_BASE_URL,
+    MAIN_PROVIDER, MAIN_API_PROTOCOL, MAIN_API_KEY, MAIN_MODEL, MAIN_BASE_URL,
 )
 from mochi.db import _connect
 from mochi.admin.admin_crypto import encrypt_api_key, decrypt_api_key, is_encrypted
+from mochi.llm import MODEL_PROTOCOL_PROVIDERS
 
 log = logging.getLogger(__name__)
 
@@ -31,8 +32,12 @@ def _normalize_base_url(base_url: str) -> str:
     return (base_url or "").strip().rstrip("/")
 
 
-def _is_supported_model(provider: str, base_url: str) -> bool:
+def _is_supported_model(
+    provider: str, base_url: str, api_protocol: str | None = None,
+) -> bool:
     provider = (provider or "").strip().lower()
+    if api_protocol is not None and MODEL_PROTOCOL_PROVIDERS.get(api_protocol) != provider:
+        return False
     normalized = _normalize_base_url(base_url)
     if provider not in _VALID_PROVIDERS or not normalized:
         return provider in _VALID_PROVIDERS
@@ -51,7 +56,7 @@ def _is_supported_model(provider: str, base_url: str) -> bool:
             and parsed.password is None
             and not parsed.query
             and not parsed.fragment
-            and not parsed.path.rstrip("/").lower().endswith(("/chat/completions", "/messages"))
+            and not parsed.path.rstrip("/").lower().endswith(("/chat/completions", "/responses", "/messages"))
         )
     except ValueError:
         return False
@@ -65,7 +70,7 @@ def list_models(*, mask_keys: bool = True) -> list[dict]:
     """List all model registry entries."""
     conn = _connect()
     rows = conn.execute(
-        "SELECT name, provider, model, api_key, base_url, native_options, created_at, updated_at "
+        "SELECT name, provider, api_protocol, model, api_key, base_url, native_options, created_at, updated_at "
         "FROM model_registry ORDER BY name"
     ).fetchall()
     conn.close()
@@ -80,7 +85,7 @@ def list_models(*, mask_keys: bool = True) -> list[dict]:
             d["api_key_set"] = False
             d["api_key"] = ""
         d["supported"] = _is_supported_model(
-            d["provider"], d["base_url"],
+            d["provider"], d["base_url"], d["api_protocol"],
         )
         result.append(d)
     return result
@@ -90,7 +95,7 @@ def get_model(name: str, *, mask_key: bool = False) -> dict | None:
     """Get a single model registry entry."""
     conn = _connect()
     row = conn.execute(
-        "SELECT name, provider, model, api_key, base_url, native_options, created_at, updated_at "
+        "SELECT name, provider, api_protocol, model, api_key, base_url, native_options, created_at, updated_at "
         "FROM model_registry WHERE name = ?",
         (name,),
     ).fetchone()
@@ -109,36 +114,34 @@ def get_model(name: str, *, mask_key: bool = False) -> dict | None:
 
 def upsert_model(name: str, provider: str, model: str,
                  api_key: str, base_url: str = "",
-                 native_options: dict | None = None) -> bool:
+                 native_options: dict | None = None, *, api_protocol: str) -> None:
     """Create or update a model registry entry.
 
     Pass api_key='__KEEP__' to preserve the existing key on update.
+    Omitted native options retain the saved choices.
     """
     if provider not in _VALID_PROVIDERS:
         raise ValueError(f"Invalid provider: {provider!r}")
     if not _is_supported_model(provider, base_url):
         raise ValueError(
             "Invalid endpoint. Base URL must be an HTTPS API root without "
-            "credentials, query, fragment, /chat/completions, or /messages."
+            "credentials, query, fragment, /chat/completions, /responses, or /messages."
         )
     from mochi.llm import validate_native_options
     from mochi.native_payload import NativeOptions
-    options = NativeOptions.from_dict(native_options)
     base_url = _normalize_base_url(base_url)
     model = model.strip()
     now = datetime.now(TZ).isoformat()
     conn = _connect()
     try:
         existing = conn.execute(
-            "SELECT provider, model, base_url, api_key FROM model_registry WHERE name = ?", (name,)
+            "SELECT api_key, native_options FROM model_registry WHERE name = ?", (name,)
         ).fetchone()
-        reset = bool(existing and (
-            existing["provider"], existing["model"], _normalize_base_url(existing["base_url"])
-        ) != (provider, model, base_url) and any(options.to_dict().values()))
-        if reset:
-            options = NativeOptions()
-            log.info("Cleared native options after model endpoint changed: %s", name)
-        validate_native_options(provider, model, options)
+        options = NativeOptions.from_dict(
+            json.loads(existing["native_options"])
+            if native_options is None and existing else native_options
+        )
+        validate_native_options(provider, api_protocol, options)
         if api_key == __KEEP__:
             api_key = existing["api_key"] if existing else ""
         else:
@@ -147,18 +150,21 @@ def upsert_model(name: str, provider: str, model: str,
                 raise ValueError("API key encryption failed; the model was not saved")
         conn.execute(
             "INSERT INTO model_registry "
-            "(name, provider, model, api_key, base_url, native_options, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+            "(name, provider, api_protocol, model, api_key, base_url, native_options, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(name) DO UPDATE SET "
             "provider=excluded.provider, model=excluded.model, api_key=excluded.api_key, "
+            "api_protocol=excluded.api_protocol, "
             "base_url=excluded.base_url, native_options=excluded.native_options, updated_at=excluded.updated_at",
-            (name, provider, model, api_key, base_url, json.dumps(options.to_dict()), now, now),
+            (name, provider, api_protocol, model, api_key, base_url, json.dumps(options.to_dict()), now, now),
         )
         conn.commit()
     finally:
         conn.close()
-    log.info("Upserted model: %s (provider=%s, model=%s)", name, provider, model)
-    return reset
+    log.info(
+        "Upserted model: %s (provider=%s, protocol=%s, model=%s)",
+        name, provider, api_protocol, model,
+    )
 
 
 def delete_model(name: str) -> bool:
@@ -194,7 +200,7 @@ def seed_models_from_env() -> None:
         return
 
     provider = (MAIN_PROVIDER or "openai").strip().lower()
-    if not _is_supported_model(provider, MAIN_BASE_URL):
+    if not _is_supported_model(provider, MAIN_BASE_URL, MAIN_API_PROTOCOL):
         log.error(
             "MAIN_PROVIDER '%s' is unsupported; configure an OpenAI-compatible "
             "or Anthropic model in the admin portal",
@@ -203,7 +209,10 @@ def seed_models_from_env() -> None:
         return
 
     name = MAIN_MODEL
-    upsert_model(name, provider, MAIN_MODEL, MAIN_API_KEY, MAIN_BASE_URL)
+    upsert_model(
+        name, provider, MAIN_MODEL, MAIN_API_KEY, MAIN_BASE_URL,
+        api_protocol=MAIN_API_PROTOCOL,
+    )
     set_tier_assignment("main", name)
     log.info("Seeded MAIN_* model '%s' for the main tier", name)
 
@@ -227,12 +236,12 @@ def set_tier_assignment(tier: str, model_name: str) -> None:
     # Verify model exists
     conn = _connect()
     entry = conn.execute(
-        "SELECT provider, base_url FROM model_registry WHERE name = ?", (model_name,)
+        "SELECT provider, base_url, api_protocol FROM model_registry WHERE name = ?", (model_name,)
     ).fetchone()
     if not entry:
         conn.close()
         raise ValueError(f"Model '{model_name}' not found in registry")
-    if not _is_supported_model(entry["provider"], entry["base_url"]):
+    if not _is_supported_model(entry["provider"], entry["base_url"], entry["api_protocol"]):
         conn.close()
         raise ValueError(
             f"Model '{model_name}' uses unsupported provider "
@@ -273,6 +282,7 @@ def get_tier_effective_config() -> dict[str, dict]:
             if model_entry:
                 result[tier] = {
                     "provider": model_entry["provider"],
+                    "api_protocol": model_entry["api_protocol"],
                     "model": model_entry["model"],
                     "base_url": model_entry["base_url"],
                     "native_options": model_entry["native_options"],
@@ -280,7 +290,7 @@ def get_tier_effective_config() -> dict[str, dict]:
                     "api_key_set": bool(model_entry["api_key"]),
                     "assigned_name": assignments[tier],
                     "supported": _is_supported_model(
-                        model_entry["provider"], model_entry["base_url"],
+                        model_entry["provider"], model_entry["base_url"], model_entry["api_protocol"],
                     ),
                     "fallback_from": "",
                 }
@@ -288,7 +298,7 @@ def get_tier_effective_config() -> dict[str, dict]:
 
         # No DB assignment — tier is unconfigured
         result[tier] = {
-            "provider": "", "model": "", "base_url": "",
+            "provider": "", "api_protocol": "", "model": "", "base_url": "",
             "api_key": "", "api_key_set": False, "assigned_name": "",
             "supported": False, "fallback_from": "",
         }

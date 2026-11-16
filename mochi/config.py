@@ -32,6 +32,10 @@ def _env_float(key: str, default: float) -> float:
 # Runtime model configuration lives in the DB registry. MAIN_* only seeds a
 # first installation.
 MAIN_PROVIDER = _env("MAIN_PROVIDER", "openai")
+MAIN_API_PROTOCOL = _env(
+    "MAIN_API_PROTOCOL",
+    "messages" if MAIN_PROVIDER.strip().lower() == "anthropic" else "chat_completions",
+)
 MAIN_API_KEY = _env("MAIN_API_KEY")
 MAIN_MODEL = _env("MAIN_MODEL")
 MAIN_BASE_URL = _env("MAIN_BASE_URL")
