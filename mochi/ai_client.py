@@ -1228,12 +1228,12 @@ async def _chat(
     bedtime_review = ""
     receipt_history = history
     if is_bedtime:
-        conversation = await runtime_trace.prepare(
+        day_conversation = await runtime_trace.prepare(
             "bedtime_conversation",
             get_day_conversation, user_id, diary_source_date,
         )
-        bedtime_review = bedtime_context(conversation, diary_today, diary_tomorrow)
-        receipt_history = conversation["messages"]
+        bedtime_review = bedtime_context(day_conversation, diary_today, diary_tomorrow)
+        receipt_history = day_conversation["messages"]
 
     from mochi.tool_execution import recent_operations_context
     continuation_context = ""
@@ -1865,7 +1865,7 @@ async def _chat(
                         retryable=True,
                     ))
                 else:
-                    conversation = await asyncio.to_thread(
+                    day_conversation = await asyncio.to_thread(
                         get_day_conversation, user_id, diary_source_date,
                     )
                     tomorrow_date = diary_target_dates["tomorrow"]
@@ -1876,7 +1876,7 @@ async def _chat(
                         visible_tomorrow = diary_tomorrow
                         document_updates.setdefault(tomorrow_date, visible_tomorrow)
                     review = bedtime_context(
-                        conversation,
+                        day_conversation,
                         document_updates.get(
                             diary_source_date, diary_expected[diary_source_date],
                         ),
