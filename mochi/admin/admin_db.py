@@ -16,7 +16,7 @@ from mochi.config import (
     MAIN_PROVIDER, MAIN_API_KEY, MAIN_MODEL, MAIN_BASE_URL,
 )
 from mochi.db import _connect
-from mochi.admin.admin_crypto import encrypt_api_key, decrypt_api_key
+from mochi.admin.admin_crypto import encrypt_api_key, decrypt_api_key, is_encrypted
 
 log = logging.getLogger(__name__)
 
@@ -143,6 +143,8 @@ def upsert_model(name: str, provider: str, model: str,
             api_key = existing["api_key"] if existing else ""
         else:
             api_key = encrypt_api_key(api_key)
+            if api_key and not is_encrypted(api_key):
+                raise ValueError("API key encryption failed; the model was not saved")
         conn.execute(
             "INSERT INTO model_registry "
             "(name, provider, model, api_key, base_url, native_options, created_at, updated_at) "
