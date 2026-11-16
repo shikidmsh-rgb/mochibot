@@ -21,7 +21,8 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from typing import Callable
 
-from mochi.llm import get_client_for_tier, LLMResponse, ResponsesCacheContext
+from mochi.llm import get_client_for_tier, LLMResponse
+from mochi.native_payload import AnthropicTurn
 from mochi.prompt_loader import get_prompt, get_system_chat_modules
 from mochi.db import (
     save_message, save_message_once, log_usage,
@@ -370,11 +371,10 @@ def _format_completed_history(history: list[dict]) -> str:
     )
 
 
-def _format_free_time_activation(history: list[dict]) -> str:
+def _format_free_time_activation() -> str:
     return (
         '<free_time_activation source="runtime">\n'
-        "本轮是 Free Time 系统唤醒，没有新的用户消息。\n"
-        f"{_format_completed_history(history)}\n"
+        "现在是你的 Free Time，没有新的用户消息。\n"
         "</free_time_activation>"
     )
 
@@ -505,31 +505,12 @@ def _render_runtime_context(template: str, diary_status: str = "",
     return result.strip()
 
 
-def _fill_agent_section(
-    agent: str, name: str, value: str,
-    token_parts: list[tuple[str, str]] | None = None,
-) -> str:
-    """Fill an agent.md placeholder, dropping its heading when empty."""
-    placeholder = "{{" + name + "}}"
-    pattern = re.escape(placeholder) if value else r"\n*#+ [^\n]*\n+" + re.escape(placeholder)
-    if token_parts is not None:
-        from mochi.token_distribution import replace_range
-        for match in reversed(list(re.finditer(pattern, agent))):
-            replace_range(
-                token_parts, match.start(), match.end(),
-                [(f"agent.{name}", value)] if value else [],
-            )
-    if value:
-        return agent.replace(placeholder, value)
-    return re.sub(
-        r"\n*#+ [^\n]*\n+" + re.escape(placeholder), "", agent,
-    )
-
-
-def _build_system_prompt(user_id: int, **kwargs) -> str:
-    """Single system prompt for entries that keep per-turn context in system."""
-    stable, turn_context = _build_prompt_zones(user_id, **kwargs)
-    return "\n\n".join(part for part in (stable, turn_context) if part)
+@dataclass(frozen=True)
+class PromptZones:
+    identity: str
+    stable: str
+    instructions: str
+    facts: str
 
 
 def _build_prompt_zones(user_id: int, capability_context: str = "",
@@ -549,11 +530,11 @@ def _build_prompt_zones(user_id: int, capability_context: str = "",
                         policy: ContextPolicy | None = None,
                         habit_progress_context: str = "",
                         history_timestamps: str = "",
-                        completed_history: str = "",
                         day_start_context: str = "",
                         bedtime_review: str = "",
                         token_parts: dict[str, list[tuple[str, str]]] | None = None,
-                        ) -> tuple[str, str]:
+                        split_context: bool = True,
+                        ) -> PromptZones:
     """Return the cross-turn stable prompt and this turn's live context."""
 
     modules = get_system_chat_modules()
@@ -569,6 +550,15 @@ def _build_prompt_zones(user_id: int, capability_context: str = "",
     )
 
     stable_identity = []
+    tool_instructions = []
+    if capability_context:
+        tool_instructions.append((
+            "agent.capability_context", f"### 当前工具说明\n\n{capability_context}",
+        ))
+    if requestable_tools:
+        tool_instructions.append((
+            "agent.requestable_tools", f"### 可通过 request_tools 加载\n\n{requestable_tools}",
+        ))
     detailed_parts: dict[str, list[tuple[str, str]]] = {}
     if core_memory:
         stable_identity.append(("core", core_memory))
@@ -576,11 +566,13 @@ def _build_prompt_zones(user_id: int, capability_context: str = "",
         agent = modules["agent"].replace(
             "{{deployment_environment}}", _deployment_environment(),
         )
-        agent_parts = [("agent", agent)]
-        agent = _fill_agent_section(agent, "capability_context", capability_context, agent_parts)
-        agent = _fill_agent_section(agent, "requestable_tools", requestable_tools, agent_parts)
-        detailed_parts["agent"] = agent_parts
         stable_identity.append(("agent", agent))
+    identity = "\n\n".join(body for _, body in stable_identity)
+    if token_parts is not None:
+        from mochi.token_distribution import joined_parts
+        token_parts["identity"] = joined_parts(stable_identity)
+    if not split_context:
+        stable_identity.extend(tool_instructions)
     early_runtime_situation = []
     if policy.early_runtime_situation and runtime_entry:
         situation = get_prompt("free_time_entry")
@@ -596,7 +588,7 @@ def _build_prompt_zones(user_id: int, capability_context: str = "",
     dynamic_live_context = []
     if habit_progress_context and not is_autonomous:
         dynamic_live_context.append(
-            ("habits.progress", f"## 本轮习惯进度快照（只读事实）\n{habit_progress_context}")
+            ("habits.progress", f"## 习惯进度\n{habit_progress_context}")
         )
     elif tool_names and habits:
         from mochi.skills.habit.logic import describe_frequency
@@ -607,7 +599,9 @@ def _build_prompt_zones(user_id: int, capability_context: str = "",
                 for h in habits
             )
             if habit_lines:
-                capability_parts.append(("habits.list", f"## 习惯列表 (打卡用)\n{habit_lines}"))
+                (dynamic_live_context if split_context else capability_parts).append(
+                    ("habits.list", f"## 习惯列表 (打卡用)\n{habit_lines}"),
+                )
 
     if policy.prompt_sections and not is_dream:
         for index, section in enumerate(skill_registry.get_prompt_sections(compact=True)):
@@ -625,13 +619,6 @@ def _build_prompt_zones(user_id: int, capability_context: str = "",
             dynamic_live_context.append(
                 ("history.timestamps", hist_ts_inst.replace("{{history_timestamps}}", history_timestamps))
             )
-    if completed_history:
-        dynamic_live_context.append((
-            "history.completed",
-            "## 最近已完成的对话\n"
-            "这些是只读背景，不是等待回复的消息。\n"
-            f"{completed_history}",
-        ))
     if is_autonomous:
         today_parts = [("today.heading", "## 今天")]
         if habit_progress_context:
@@ -711,7 +698,10 @@ def _build_prompt_zones(user_id: int, capability_context: str = "",
         except (ValueError, TypeError):
             pass
 
-    stable = stable_identity + early_runtime_situation + capability_parts
+    stable = stable_identity + (
+        [] if split_context else early_runtime_situation
+    ) + capability_parts
+    instructions = early_runtime_situation + tool_instructions if split_context else []
     from mochi.day_start import calendar_horizon
     time_line = f"当前时间：{now_str}"
     horizon = calendar_horizon(now)
@@ -720,15 +710,19 @@ def _build_prompt_zones(user_id: int, capability_context: str = "",
     turn_context = dynamic_live_context + [("time.current", time_line)]
     if token_parts is not None:
         from mochi.token_distribution import joined_parts
-        for zone, sections in (("system", stable), ("turn_context", turn_context)):
+        for zone, sections in (
+            ("system", stable), ("instructions", instructions), ("turn_context", turn_context),
+        ):
             token_parts[zone] = [
                 part
                 for source, body in joined_parts(sections)
                 for part in detailed_parts.get(source, [(source, body)])
             ]
-    return (
-        "\n\n".join(body for _, body in stable),
-        "\n\n".join(body for _, body in turn_context),
+    return PromptZones(
+        identity=identity,
+        stable="\n\n".join(body for _, body in stable),
+        instructions="\n\n".join(body for _, body in instructions),
+        facts="\n\n".join(body for _, body in turn_context),
     )
 
 
@@ -819,7 +813,7 @@ async def _chat(
         TOOL_LOOP_MAX_ROUNDS, AI_CHAT_MAX_COMPLETION_TOKENS,
         TOOL_ROUTER_ENABLED, TOOL_ESCALATION_ENABLED,
         TOOL_ESCALATION_MAX_PER_TURN, TOOL_LOOP_TOTAL_TOOL_LIMIT,
-        TOOL_LOOP_PER_TOOL_LIMIT, DREAM_MAX_COMPLETION_TOKENS, MAIN_EXPLICIT_CACHE,
+        TOOL_LOOP_PER_TOOL_LIMIT, DREAM_MAX_COMPLETION_TOKENS,
     )
 
     runtime_entry = runtime_entry or (
@@ -1163,7 +1157,7 @@ async def _chat(
     )
 
     # Build context
-    active_tool_names = list(availability.names)
+    active_tool_names = [entry.name for entry in availability.entries]
     capability_context = runtime_trace.prepare_sync(
         "capability_context", skill_registry.get_capability_context_for_tools,
         active_tool_names,
@@ -1294,7 +1288,9 @@ async def _chat(
                 lambda: day_start.mark_done(day_start_day)
             )
 
-    split_turn_context = message is not None and runtime_entry is None
+    split_turn_context = (
+        (message is not None and runtime_entry is None) or is_autonomous or is_self_reminder
+    )
     summary_context = (
         _format_conversation_summary(
             conv_summary, conversation_context.get("summary_source_time"),
@@ -1302,7 +1298,7 @@ async def _chat(
         if split_turn_context else ""
     )
     token_parts: dict[str, list[tuple[str, str]]] = {}
-    system_prompt, turn_context = runtime_trace.prepare_sync(
+    zones = runtime_trace.prepare_sync(
         "prompt", _build_prompt_zones,
         user_id, capability_context=capability_context,
         requestable_tools=requestable_tools, tool_names=active_tool_names,
@@ -1321,30 +1317,43 @@ async def _chat(
         history_timestamps=(
             "" if is_autonomous or is_self_reminder else _format_history_timestamps(history)
         ),
-        completed_history=(
-            _format_completed_history(history) if is_self_reminder else ""
-        ),
         day_start_context=day_start_context,
         bedtime_review=bedtime_review,
         token_parts=token_parts,
+        split_context=split_turn_context,
     )
-    # User turns keep the system prompt stable so providers can reuse the
-    # system + history prefix; runtime entries keep everything in system.
+    system_prompt, turn_context = zones.stable, zones.facts
     if not split_turn_context:
         system_prompt = f"{system_prompt}\n\n{turn_context}"
         token_parts["system"].extend([
             ("separator", "\n\n"), *token_parts["turn_context"],
         ])
     runtime_trace.register_token_source("system", system_prompt, token_parts["system"])
+    if split_turn_context and client.native_options.explicit_cache:
+        runtime_trace.register_token_source("system", zones.identity, token_parts["identity"])
+        tail = system_prompt[len(zones.identity):]
+        if tail:
+            offset = 0
+            tail_parts = []
+            for source, body in token_parts["system"]:
+                start = max(0, len(zones.identity) - offset)
+                if start < len(body):
+                    tail_parts.append((source, body[start:]))
+                offset += len(body)
+            runtime_trace.register_token_source("system", tail, tail_parts)
 
     # Build messages array
     messages = [{"role": "system", "content": system_prompt}]
     if summary_context:
         messages.append({"role": "user", "content": summary_context})
+    completed_history_index = None
+    if (is_autonomous or is_self_reminder) and history:
+        completed_history_index = len(messages)
+        messages.append({"role": "user", "content": _format_completed_history(history)})
     if is_autonomous:
         messages.append({
             "role": "user",
-            "content": _format_free_time_activation(history),
+            "content": _format_free_time_activation(),
         })
     elif is_self_reminder:
         reminder_context = get_prompt("self_reminder_entry")
@@ -1372,19 +1381,38 @@ async def _chat(
             await runtime_trace.prepare("attachment", _file_content, text, attachment),
         )
     current_input_index = None
-    cache_kwargs: dict[str, ResponsesCacheContext] = {}
+    native_kwargs: dict = {}
+    main_turn = None
+    instruction_index = None
     if split_turn_context:
         current_index = (
             len(messages) - 1 if messages[-1].get("role") == "user"
             else len(messages)
         )
-        if (
-            MAIN_EXPLICIT_CACHE and tier == "main" and message.owner_authorized
-            and client.supports_explicit_cache
-        ):
-            cache_kwargs["cache_context"] = ResponsesCacheContext.from_messages(
-                messages[:current_index], key="mochibot-main-owner-chat-v1",
+        if message is None or message.owner_authorized:
+            deferred_catalog = []
+            if client.native_options.anthropic_deferred_tools and "request_tools" in availability.names:
+                from mochi.request_tools import build_catalog
+                catalog = build_catalog(transport, excluded_skills=excluded_skills)
+                deferred_catalog = [
+                    definition for namespace in catalog.eligible.values()
+                    for definition in namespace.definitions
+                ]
+            resident_names = [
+                tool["function"]["name"] for tool in turn_plan.resident_definitions
+            ] + ["request_tools", ENTER_BEDTIME_TOOL_NAME]
+            main_turn = client.start_main_turn(
+                messages[:current_index], availability.provider_tools(),
+                identity=zones.identity, key=f"mochibot-main:{user_id}",
+                resident_names=resident_names, deferred_catalog=deferred_catalog,
             )
+            if main_turn is not None:
+                native_kwargs["main_turn"] = main_turn
+        if zones.instructions:
+            instruction_index = current_index
+            messages.insert(current_index, {"role": "system", "content": zones.instructions})
+            runtime_trace.register_token_source("system", zones.instructions, token_parts["instructions"])
+            current_index += 1
         messages.insert(current_index, {
             "role": "user",
             "content": (
@@ -1405,6 +1433,8 @@ async def _chat(
             current_input_index = current_index + 1
 
     for index, context_message in enumerate(messages[1:], start=1):
+        if index == instruction_index:
+            continue
         if summary_context and index == 1:
             runtime_trace.register_token_source(
                 "user", summary_context, [("history.summary", summary_context)],
@@ -1422,7 +1452,8 @@ async def _chat(
             continue
         role = context_message["role"]
         source = (
-            "runtime.activation_history" if is_autonomous
+            "history.completed" if index == completed_history_index
+            else "runtime.event" if is_autonomous
             else "runtime.event" if is_self_reminder
             else "input.current" if index == current_input_index
             else f"history.{role}"
@@ -1611,16 +1642,18 @@ async def _chat(
         if not habit_context_loaded:
             habit_progress_context = await _habit_progress_context()
             if habit_progress_context:
-                messages.append({
-                    "role": "system",
-                    "content": (
-                        f"### 习惯\n{habit_progress_context}" if is_autonomous
-                        else f"## 本轮习惯进度快照（只读事实）\n{habit_progress_context}"
-                    ),
-                })
-                runtime_trace.register_token_source("system", messages[-1]["content"], [
-                    ("habits.progress", messages[-1]["content"]),
-                ])
+                body = (
+                    f"### 习惯\n{habit_progress_context}" if is_autonomous
+                    else f"## 习惯进度\n{habit_progress_context}"
+                )
+                if split_turn_context:
+                    body = (
+                        '<turn_context source="runtime" role="read_only_context">\n'
+                        f"{body}\n</turn_context>"
+                    )
+                role = "user" if split_turn_context else "system"
+                messages.append({"role": role, "content": body})
+                runtime_trace.register_token_source(role, body, [("habits.progress", body)])
                 habit_context_loaded = True
         document_updates: dict[str, str] = {}
         availability = availability.refresh_extensions(transport)
@@ -1648,7 +1681,7 @@ async def _chat(
                             else None
                         ),
                         max_tokens=DREAM_MAX_COMPLETION_TOKENS if is_dream else AI_CHAT_MAX_COMPLETION_TOKENS,
-                        **cache_kwargs,
+                        **native_kwargs,
                     ))
                 break
             except asyncio.CancelledError:
@@ -1809,6 +1842,8 @@ async def _chat(
                 next_availability = next_availability.with_definitions(
                     additions, source=f"request_round_{round_num + 1}",
                 )
+                if isinstance(main_turn, AnthropicTurn):
+                    main_turn.record_load(tc["id"], additions, request_result)
                 if tracks_tool_session:
                     extend_session_tools(user_id, additions)
                 result_text = json.dumps(

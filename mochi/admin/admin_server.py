@@ -534,12 +534,13 @@ if HAS_FASTAPI:
             api_key = source["api_key"]
             base_url = source["base_url"]
         try:
-            upsert_model(
+            native_options_reset = upsert_model(
                 name=name,
                 provider=provider,
                 model=body.get("model", ""),
                 api_key=api_key,
                 base_url=base_url,
+                native_options=body.get("native_options"),
             )
         except ValueError as e:
             raise HTTPException(400, str(e))
@@ -561,6 +562,7 @@ if HAS_FASTAPI:
                             entry["api_key"],
                             entry["model"],
                             entry["base_url"],
+                            entry["native_options"],
                         )
                     except Exception as exc:
                         log.warning("Tier hot-reload failed for '%s': %s", tier, exc)
@@ -569,7 +571,10 @@ if HAS_FASTAPI:
             bool(_runtime_status_provider().get("setup_mode", False))
             and "main" in assigned_tiers
         )
-        return {"ok": True, "restart_required": restart_required}
+        return {
+            "ok": True, "restart_required": restart_required,
+            "native_options_reset": native_options_reset,
+        }
 
     @app.delete("/api/models/{name}", dependencies=[Depends(_verify_token)])
     async def api_delete_model(name: str):
@@ -595,6 +600,7 @@ if HAS_FASTAPI:
             client = _make_client(
                 entry["provider"], entry["api_key"],
                 entry["model"], entry["base_url"],
+                entry["native_options"],
             )
             start = time.monotonic()
             resp = await asyncio.to_thread(
@@ -665,6 +671,7 @@ if HAS_FASTAPI:
                 get_pool().reload_tier(
                     tier, entry["provider"], entry["api_key"],
                     entry["model"], entry["base_url"],
+                    entry["native_options"],
                 )
         except Exception as e:
             log.warning("Tier hot-reload failed for '%s': %s", tier, e)

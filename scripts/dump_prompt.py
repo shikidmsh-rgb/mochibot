@@ -43,7 +43,8 @@ async def dump() -> str:
     )
     from mochi.core_store import read_core
     from mochi.ai_client import (
-        _build_system_prompt, _expand_history, _retrieve_memories_for_turn,
+        _build_prompt_zones, _expand_history, _format_conversation_summary,
+        _retrieve_memories_for_turn,
     )
     from mochi.skills.habit.queries import list_habits
     import mochi.skills as skill_registry
@@ -139,20 +140,19 @@ async def dump() -> str:
     )
     core_memory = read_core()
 
-    system_prompt = _build_system_prompt(
+    zones = _build_prompt_zones(
         user_id, capability_context=capability_context,
         requestable_tools=requestable_tools,
         tool_names=tool_names_list,
         core_memory=core_memory, habits=habits,
         recalled_memories=recalled_memories,
-        conv_summary=conversation_context["summary"],
+    )
+    system_prompt = "\n\n".join(part for part in (zones.stable, zones.instructions) if part)
+    summary = _format_conversation_summary(
+        conversation_context["summary"], conversation_context.get("summary_source_time"),
     )
 
-    # Build messages array (same as chat())
     formatted_history = _expand_history(history)
-    messages = [{"role": "system", "content": system_prompt}]
-    if formatted_history:
-        messages.extend(formatted_history)
 
     # ── Output ──
     now = datetime.now(CST)
@@ -192,9 +192,15 @@ async def dump() -> str:
 
     # System prompt (rendered)
     out.append("=" * 60)
-    out.append("SYSTEM PROMPT (rendered, as sent to API)")
+    out.append("SYSTEM SECTIONS (reconstructed; native placement depends on protocol)")
     out.append("=" * 60)
     out.append(system_prompt)
+    out.append("")
+    out.append("HISTORICAL SUMMARY")
+    out.append(summary)
+    out.append("")
+    out.append("CURRENT READ-ONLY FACTS")
+    out.append(zones.facts)
     out.append("")
 
     # History
@@ -246,6 +252,7 @@ async def dump() -> str:
     )
     tool_tokens = _estimate_tokens(json.dumps(tools, ensure_ascii=False)) if tools else 0
     core_tokens = _estimate_tokens(core_memory)
+    context_tokens = _estimate_tokens(summary + zones.facts)
 
     out.append("=" * 60)
     out.append("TOKEN ESTIMATES")
@@ -253,8 +260,9 @@ async def dump() -> str:
     out.append(f"  System prompt:  ~{sys_tokens} tokens")
     out.append(f"    Core memory:  ~{core_tokens} tokens (included in system)")
     out.append(f"  History:        ~{hist_tokens} tokens")
+    out.append(f"  Context:        ~{context_tokens} tokens")
     out.append(f"  Tool defs:      ~{tool_tokens} tokens")
-    out.append(f"  Total:          ~{sys_tokens + hist_tokens + tool_tokens} tokens")
+    out.append(f"  Total:          ~{sys_tokens + hist_tokens + context_tokens + tool_tokens} tokens")
     out.append("")
     out.append("=== DONE ===")
 

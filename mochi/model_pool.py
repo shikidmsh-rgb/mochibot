@@ -200,7 +200,7 @@ class ModelPool:
             return self._tiers.get(tier)
 
     def reload_tier(self, tier: str, provider: str, api_key: str,
-                    model: str, base_url: str) -> None:
+                    model: str, base_url: str, native_options: dict | None = None) -> None:
         """Hot-swap a tier's LLM client at runtime.
 
         Called by admin portal after model registry/tier assignment changes.
@@ -208,7 +208,7 @@ class ModelPool:
         """
         if tier not in VALID_TIERS:
             raise ValueError(f"Invalid tier: {tier}")
-        client = _make_client(provider, api_key, model, base_url)
+        client = _make_client(provider, api_key, model, base_url, native_options)
         with self._lock:
             self._tiers[tier] = client
             self._tier_models[tier] = model
@@ -239,6 +239,7 @@ class ModelPool:
                     self.reload_tier(
                         tier, cfg["provider"], cfg.get("api_key", ""),
                         cfg["model"], cfg.get("base_url", ""),
+                        cfg.get("native_options"),
                     )
                 except Exception as e:
                     log.error("Failed to load tier '%s' from DB: %s", tier, e)

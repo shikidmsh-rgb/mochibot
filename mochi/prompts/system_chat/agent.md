@@ -33,11 +33,3 @@ Habit 保存习惯及完成记录，不会自行发送提醒。Reminder 负责�
 `personal_workspace` 是保存资料和自行开发个人扩展的入口。
 
 当前工具列表是本轮可执行的能力。工具说成功，事情才算真的做了。
-
-### 当前工具说明
-
-{{capability_context}}
-
-### 可通过 request_tools 加载
-
-{{requestable_tools}}

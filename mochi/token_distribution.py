@@ -67,6 +67,7 @@ def _json(value) -> str:
 
 def cache_fingerprint(request: dict) -> dict:
     """Describe client-visible prefix equality, not provider cache eligibility."""
+    request = {**request, **(request.get("extra_body") or {})}
     def digest(value) -> str:
         return hashlib.sha256(_json(value).encode("utf-8")).hexdigest()
 
@@ -96,14 +97,16 @@ def cache_fingerprint(request: dict) -> dict:
         "input_prefixes": prefixes,
         "cache_policy": {
             key: request.get(key, (request.get("extra_body") or {}).get(key))
-            for key in ("prompt_cache_key", "prompt_cache_options", "prompt_cache_retention")
+            for key in ("prompt_cache_key", "prompt_cache_options", "prompt_cache_retention", "cache_control")
         },
+        "anthropic_beta": (request.get("extra_headers") or {}).get("anthropic-beta"),
         "reasoning": request.get("reasoning", (request.get("extra_body") or {}).get("thinking")),
     }
 
 
 def capture_request(request: dict, sources: list[TextSource]) -> dict:
     """Count original SDK-boundary content before evidence redaction."""
+    request = {**request, **(request.get("extra_body") or {})}
     started = time.monotonic()
     encoding = _encoding()
     parts: list[dict] = []
@@ -187,6 +190,8 @@ def capture_request(request: dict, sources: list[TextSource]) -> dict:
                 opaque(value, path, f"{source}.{kind}")
             elif kind in {"tool_use", "function_call"}:
                 structured(value, path, f"tool_call.{value.get('name', 'unknown')}")
+            elif kind == "tool_reference":
+                structured(value, path, f"tool_reference.{value.get('tool_name', 'unknown')}")
             elif kind in {"tool_result", "function_call_output"}:
                 call_id = value.get("tool_use_id", value.get("call_id", "unknown"))
                 key = "content" if "content" in value else "output"
@@ -225,6 +230,13 @@ def capture_request(request: dict, sources: list[TextSource]) -> dict:
             continue
         for index, message in enumerate(values):
             path = f"{key}[{index}]"
+            if isinstance(message, dict) and message.get("type") == "additional_tools":
+                for tool_index, tool in enumerate(message.get("tools") or []):
+                    structured(
+                        tool, f"{path}.tools[{tool_index}]",
+                        f"tool_schema.{tool.get('name', 'unknown')}",
+                    )
+                continue
             if not isinstance(message, dict) or "role" not in message:
                 content(message, path, "input")
                 continue

@@ -23,6 +23,7 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx
 
 from mochi.runtime_trace import register_secret, sdk_call
+from mochi.native_payload import AnthropicTurn, NativeOptions, ResponsesTurn
 
 log = logging.getLogger(__name__)
 
@@ -102,14 +103,40 @@ class ResponsesCacheContext:
 
     input_prefix: list[dict]
     key: str
+    identity: str = ""
 
     @classmethod
-    def from_messages(cls, messages: list[dict], *, key: str) -> "ResponsesCacheContext":
-        return cls(input_prefix=deepcopy(_responses_input(messages)), key=key)
+    def from_messages(
+        cls, messages: list[dict], *, key: str, identity: str = "",
+    ) -> "ResponsesCacheContext":
+        return cls(input_prefix=deepcopy(_responses_input(messages)), key=key, identity=identity)
 
 
 class LLMProvider(ABC):
     """Abstract base class for LLM providers."""
+
+    native_options = NativeOptions()
+
+    def start_main_turn(
+        self, messages: list[dict], tools: list[dict], *, identity: str,
+        key: str, resident_names: list[str], deferred_catalog: list[dict],
+    ) -> ResponsesTurn | AnthropicTurn | None:
+        options = self.native_options
+        if self.provider_name() == "openai" and (
+            options.explicit_cache or options.responses_additional_tools
+        ):
+            return ResponsesTurn(
+                messages, tools, identity=identity, key=key,
+                options=options, resident_names=resident_names,
+            )
+        if self.provider_name() == "anthropic" and (
+            options.explicit_cache or options.anthropic_deferred_tools
+        ):
+            return AnthropicTurn(
+                messages, tools, identity=identity, options=options,
+                deferred_catalog=deferred_catalog,
+            )
+        return None
 
     @property
     def supports_thinking_control(self) -> bool:
@@ -128,7 +155,7 @@ class LLMProvider(ABC):
     def chat(self, messages: list[dict], tools: list[dict] | None = None,
              temperature: float | None = None, max_tokens: int = 2048,
              json_mode: bool = False, *, thinking: bool | None = None,
-             cache_context: ResponsesCacheContext | None = None,
+             main_turn: ResponsesTurn | AnthropicTurn | None = None,
              timeout_seconds: float | None = None) -> LLMResponse:
         """Send a chat completion request.
 
@@ -138,7 +165,7 @@ class LLMProvider(ABC):
         the framework-layer markdown fence strip.
         thinking is a per-request override only for providers advertising
         supports_thinking_control. None preserves the provider's default.
-        cache_context is only sent to providers advertising supports_explicit_cache.
+        main_turn owns native payload state for one Main invocation, never Lite.
         timeout_seconds bounds each network operation without SDK retries, using
         a request-local client; callers own any overall async waiting deadline.
         """
@@ -335,6 +362,17 @@ def _with_stable_cache_boundary(
 
     # Replayed provider output can share nested objects with stored history.
     request_items = deepcopy(items)
+    if context.identity:
+        first = request_items[0]
+        text = first.get("content")
+        if first.get("role") != "system" or not isinstance(text, str) or not text.startswith(context.identity):
+            raise ValueError("Explicit cache identity does not match the request")
+        first["content"] = [{
+            "type": "input_text", "text": context.identity,
+            "prompt_cache_breakpoint": {"mode": "explicit"},
+        }]
+        if remaining := text[len(context.identity):]:
+            first["content"].append({"type": "input_text", "text": remaining})
     for index in range(len(prefix) - 1, -1, -1):
         item = request_items[index]
         if item.get("type") == "function_call_output":
@@ -639,12 +677,14 @@ class OpenAIProvider(_OpenAICompatChat, LLMProvider):
     def chat(self, messages: list[dict], tools: list[dict] | None = None,
              temperature: float | None = None, max_tokens: int = 2048,
              json_mode: bool = False, *, thinking: bool | None = None,
-             cache_context: ResponsesCacheContext | None = None,
+             main_turn: ResponsesTurn | AnthropicTurn | None = None,
              timeout_seconds: float | None = None) -> LLMResponse:
         if thinking is not None and not self.supports_thinking_control:
             raise ValueError("This provider does not support per-request thinking control")
-        if cache_context is not None and not self.supports_explicit_cache:
-            raise ValueError("This provider does not support explicit prefix caching")
+        if main_turn is not None and (
+            not isinstance(main_turn, ResponsesTurn) or not self.supports_explicit_cache
+        ):
+            raise ValueError("This provider does not support the native Responses payload")
         client = _client_with_timeout(self._client, timeout_seconds)
         receipt: dict = {}
         if _uses_responses_api(self._model):
@@ -655,16 +695,13 @@ class OpenAIProvider(_OpenAICompatChat, LLMProvider):
                 "store": False,
                 "include": ["reasoning.encrypted_content"],
             }
-            if cache_context is not None:
-                kwargs["input"] = _with_stable_cache_boundary(kwargs["input"], cache_context)
-                kwargs["prompt_cache_key"] = cache_context.key
-                kwargs["extra_body"] = {
-                    "prompt_cache_options": {"mode": "implicit", "ttl": "30m"},
-                }
+            if main_turn is not None:
+                kwargs.pop("input")
+                kwargs.update(main_turn.request(messages, tools))
             from mochi import config
             if config.REASONING_EFFORT:
                 kwargs["reasoning"] = {"effort": config.REASONING_EFFORT}
-            if tools:
+            if tools and main_turn is None:
                 kwargs["tools"] = _responses_tools(tools)
             if temperature is not None:
                 kwargs["temperature"] = temperature
@@ -700,11 +737,14 @@ class OpenAIProvider(_OpenAICompatChat, LLMProvider):
 class AnthropicProvider(LLMProvider):
     """Anthropic Claude API provider."""
 
-    def __init__(self, api_key: str, model: str):
+    def __init__(self, api_key: str, model: str, base_url: str = ""):
         import anthropic
         register_secret(api_key)
         self._model = model
-        self._client = anthropic.Anthropic(api_key=api_key)
+        kwargs = {"base_url": base_url} if base_url else {}
+        self._client = anthropic.Anthropic(
+            api_key=api_key, max_retries=0, timeout=_HTTP_TIMEOUT, **kwargs,
+        )
 
     def provider_name(self) -> str:
         return "anthropic"
@@ -712,12 +752,12 @@ class AnthropicProvider(LLMProvider):
     def chat(self, messages: list[dict], tools: list[dict] | None = None,
              temperature: float | None = None, max_tokens: int = 2048,
              json_mode: bool = False, *, thinking: bool | None = None,
-             cache_context: ResponsesCacheContext | None = None,
+             main_turn: ResponsesTurn | AnthropicTurn | None = None,
              timeout_seconds: float | None = None) -> LLMResponse:
         if thinking is not None:
             raise ValueError("This provider does not support per-request thinking control")
-        if cache_context is not None:
-            raise ValueError("This provider does not support explicit prefix caching")
+        if main_turn is not None and not isinstance(main_turn, AnthropicTurn):
+            raise ValueError("This provider requires an Anthropic native payload")
         client = _client_with_timeout(self._client, timeout_seconds)
         # Anthropic has no native JSON mode. Caller must rely on prompting.
         # Framework-layer strip below is the safety net (gated on json_mode).
@@ -740,19 +780,17 @@ class AnthropicProvider(LLMProvider):
         )
         if temperature is not None:
             kwargs["temperature"] = temperature
-        if system_msg:
+        if main_turn is not None:
+            kwargs.update(main_turn.request(messages, tools))
+        elif system_msg:
             from mochi.runtime_trace import joined_system_token_source
             joined_system_token_source(messages, system_msg.strip())
-            # System as a list-of-blocks with cache_control: ephemeral.
-            # Mochi's system prompt (Core + Agent + runtime) is 4-8KB and
-            # 100% stable across a conversation — perfect cache target.
-            # Cached reads bill at 10% of input rate.
             kwargs["system"] = [{
                 "type": "text",
                 "text": system_msg.strip(),
                 "cache_control": {"type": "ephemeral"},
             }]
-        if tools:
+        if tools and main_turn is None:
             # Convert OpenAI tool format to Anthropic format
             kwargs["tools"] = self._convert_tools(tools)
 
@@ -801,6 +839,7 @@ class AnthropicProvider(LLMProvider):
 
         return LLMResponse(
             content=content,
+            response_items=[block.model_dump(exclude_none=True) for block in resp.content],
             tool_calls=tool_calls,
             prompt_tokens=usage.input_tokens if usage else 0,
             completion_tokens=usage.output_tokens if usage else 0,
@@ -846,7 +885,10 @@ class AnthropicProvider(LLMProvider):
         while i < len(messages):
             m = messages[i]
 
-            if m["role"] == "assistant" and "tool_calls" in m:
+            if m["role"] == "assistant" and "response_items" in m:
+                converted.append({"role": "assistant", "content": deepcopy(m["response_items"])})
+                i += 1
+            elif m["role"] == "assistant" and "tool_calls" in m:
                 # Convert assistant tool_calls to content blocks
                 content_blocks = []
                 if m.get("content"):
@@ -905,7 +947,7 @@ class AnthropicProvider(LLMProvider):
                             })
                     converted.append({**m, "content": blocks})
                 else:
-                    converted.append(m)
+                    converted.append(deepcopy(m))
                 i += 1
 
         return converted
@@ -916,22 +958,39 @@ class AnthropicProvider(LLMProvider):
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def _make_client(provider: str, api_key: str, model: str, base_url: str) -> LLMProvider:
+def validate_native_options(provider: str, model: str, options: NativeOptions) -> None:
+    responses = provider == "openai" and _uses_responses_api(model)
+    if options.explicit_cache and not (responses or provider == "anthropic"):
+        raise ValueError("Explicit caching requires a Responses or native Anthropic model")
+    if options.responses_additional_tools and not responses:
+        raise ValueError("Additional tools require a Responses model")
+    if options.anthropic_deferred_tools and provider != "anthropic":
+        raise ValueError("Deferred tools require a native Anthropic model")
+
+
+def _make_client(
+    provider: str, api_key: str, model: str, base_url: str,
+    native_options: dict | None = None,
+) -> LLMProvider:
     """Instantiate a fresh LLM provider."""
     model = model.strip()
     if not model:
         raise ValueError(
             "Model name is required. Configure it in the admin portal."
         )
+    options = NativeOptions.from_dict(native_options)
+    validate_native_options(provider, model, options)
     if provider == "openai":
-        return OpenAIProvider(api_key=api_key, model=model, base_url=base_url)
+        client = OpenAIProvider(api_key=api_key, model=model, base_url=base_url)
     elif provider == "anthropic":
-        return AnthropicProvider(api_key=api_key, model=model)
+        client = AnthropicProvider(api_key=api_key, model=model, base_url=base_url)
     else:
         raise ValueError(
             f"Unknown provider: {provider!r}. "
             "Supported: openai (including compatible APIs) and anthropic"
         )
+    client.native_options = options
+    return client
 
 
 def get_client_for_tier(tier: str = "main") -> LLMProvider:

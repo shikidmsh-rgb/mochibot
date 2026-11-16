@@ -149,15 +149,17 @@ prepended to speech, where it could become a self-reinforcing reply pattern.
 
 Free Time and Self Reminders instead present their selected completed history as
 read-only records, with speaker, timestamp, and unchanged content. They do not
-reopen historical user/assistant messages or replay their reasoning. Free Time
-carries these records inside its runtime-labelled activation. Self Reminders
-keep them in system context and put the current reminder intent in a separate,
-latest runtime-event input. Activations use the provider's user input channel,
+reopen historical user/assistant messages or replay their reasoning. Both place
+these records before current facts and the separate, latest runtime activation.
+Activations use the provider's user input channel,
 not owner authority, and are never persisted as user messages or extracted into
 memory. Existing execution receipts remain separate from these speech records.
 
-For owner message turns, the system prompt holds only cross-turn stable content
-(Core, Agent contract, capability guides). An early-conversation summary appears
+For owner message turns, Free Time and Self Reminders, the leading system prompt
+holds stable identity and shared guidance. Current tool guides, loadable capability
+lists and entry instructions remain separate native system content, never facts
+or owner speech. OpenAI-compatible protocols place those instructions after
+stable history; Anthropic retains them in its native system blocks. An early-conversation summary appears
 once as read-only historical context before recent conversation, with the source
 boundary message's local time (or explicitly unknown), not its generation time.
 It uses the provider's user input channel without becoming an owner message or
@@ -166,17 +168,38 @@ generation still uses only the previous summary and retiring complete turns.
 Per-turn facts — the history time table, today, recent operations, recalled
 memory, habit snapshot and current time — travel as one read-only
 `turn_context` message just before the
-current input and are never persisted, so providers can reuse the system +
-summary + history prefix across turns. Runtime entries keep their existing
-summary and per-turn context placement in system.
+current input and are never persisted. Late-loaded habit facts use the same
+read-only boundary at the round in which they become available. Bedtime and
+Dream retain their specialized system layouts. History selection, retention,
+original message roles and storage do not change to manufacture cache hits.
 
-Ordinary authorized owner chat may opt into explicit Main Responses caching.
-The adapter marks a supported text boundary within the stable prefix captured
-before `turn_context`, keeps implicit caching enabled, and verifies that prefix
-on every tool round without modifying history or provider reasoning. The option
-is off by default and does not affect Lite, runtime entries, or other protocols;
-endpoint acceptance and savings require real provider evidence, not a model
-name or client-side prefix match alone.
+Native cache and tool capabilities are opt-in properties of a model registration,
+captured by the provider for each Main turn. Changing its provider, model or
+endpoint clears the capabilities. They never affect Lite or select another model.
+`mochi/native_payload.py` owns only native request representation, not tool
+selection, permissions or execution. It covers authorized owner chat, Free Time
+and Self Reminders; Bedtime and Dream retain their ordinary provider path.
+
+Responses can mark identity and stable-history text boundaries while retaining
+implicit 30-minute caching. Its independent `additional_tools` option leaves
+resident definitions at the front and appends eager and subsequently loaded
+definitions at their actual positions. Anthropic can cache identity, native
+system instructions, stable history and the growing conversation with a maximum
+of four 5-minute boundaries. Its independent deferred-tool option keeps the
+filtered catalog stable within the turn while preserving eagerly loaded tools.
+Only real loader outcomes produce native references; original loading status and
+guidance remain correlated with the actual call ID. Continuations preserve native
+response blocks, including thinking signatures. No synthetic call chain or
+persisted schema history is introduced.
+
+Execution still checks current `ToolAvailability`, even when a native request
+retains an earlier declaration. New catalog entries can cause a cache miss;
+changing a declared schema during an opted-in turn fails explicitly rather than
+misrepresenting the schema. Tool-disabled final requests keep the native catalog
+and disable tool choice. Endpoint acceptance and savings require real provider
+evidence, not a model name, a connection test or client-side prefix equality.
+These options are independent and off by default; rejection never silently
+falls back to a different protocol.
 
 Once per logical day, during awake hours, the first owner chat turn or Free
 Time run — whichever comes first — also carries a "new day" look at the last

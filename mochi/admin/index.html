@@ -289,6 +289,13 @@ select.form-input { cursor:pointer; }
       <div style="font-size:11px;color:var(--text-soft);margin-top:4px">复制 API Key 和 Base URL；保存后与来源模型互不联动。</div>
     </div>
     <div class="form-group" id="mm-baseurl-group"><label class="form-label">Base URL（可选）</label><input class="form-input" id="mm-baseurl" placeholder="https://..."><div id="mm-baseurl-help" style="display:none;font-size:11px;color:var(--text-soft);margin-top:4px"></div></div>
+    <div class="form-group">
+      <label class="form-label">Main 原生缓存能力（仅为已实测接口开启）</label>
+      <label><input type="checkbox" id="mm-explicit-cache"> 显式缓存：Responses / Claude 原生 5 分钟</label><br>
+      <label><input type="checkbox" id="mm-additional-tools"> Responses 追加工具声明</label><br>
+      <label><input type="checkbox" id="mm-deferred-tools"> Claude 原生延迟工具</label>
+      <div style="font-size:11px;color:var(--text-soft);margin-top:4px">三个开关互相独立，不作用于 Lite。更换服务商、模型或地址时会清除；连接测试不代表这些能力已验证。</div>
+    </div>
     <div id="mm-test-result" style="font-size:13px;margin-top:8px"></div>
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="closeModelModal()">取消</button>
@@ -2217,10 +2224,10 @@ function onVendorChange() {
     if (modelEl.value === _lastAutoModel) modelEl.value = '';
     _lastAutoModel = '';
   }
-  if (preset.vendor === 'compatible') {
-    urlEl.placeholder = 'https://api.example.com/v1';
+  if (preset.vendor === 'compatible' || preset.vendor === 'anthropic') {
+    urlEl.placeholder = preset.vendor === 'anthropic' ? 'https://api.example.com' : 'https://api.example.com/v1';
     urlHelp.style.display = 'block';
-    urlHelp.textContent = '填写 HTTPS API 根地址，不要包含 /chat/completions。兼容性以实际测试结果为准。';
+    urlHelp.textContent = '填写 HTTPS API 根地址，不要包含 /chat/completions 或 /messages。Anthropic 留空使用官方接口；兼容性以实际测试结果为准。';
   } else {
     urlEl.placeholder = 'https://...';
     urlHelp.style.display = 'none';
@@ -2279,6 +2286,9 @@ function openModelModal(name, targetTier) {
   document.getElementById('mm-credential-mode').value = 'new';
   document.getElementById('mm-baseurl').value = '';
   document.getElementById('mm-test-result').innerHTML = '';
+  for (const id of ['mm-explicit-cache', 'mm-additional-tools', 'mm-deferred-tools']) {
+    document.getElementById(id).checked = false;
+  }
   onVendorChange();
   document.getElementById('model-modal').classList.add('open');
   api('GET','/models').then(models => {
@@ -2293,6 +2303,10 @@ function openModelModal(name, targetTier) {
         document.getElementById('mm-vendor').value = vendor;
         document.getElementById('mm-model').value = m.model;
         document.getElementById('mm-baseurl').value = m.base_url || '';
+        const options = m.native_options || {};
+        document.getElementById('mm-explicit-cache').checked = options.explicit_cache === true;
+        document.getElementById('mm-additional-tools').checked = options.responses_additional_tools === true;
+        document.getElementById('mm-deferred-tools').checked = options.anthropic_deferred_tools === true;
         _lastAutoBaseUrl = m.base_url || '';
         onVendorChange();
         // Restore persisted values after preset defaults run.
@@ -2339,6 +2353,11 @@ async function saveModelFromModal(stayOpen) {
     model: document.getElementById('mm-model').value.trim(),
     api_key: (_modelEditName && !apiKey) ? '__KEEP__' : (copyingCredentials ? '' : apiKey),
     base_url: sourceModel?.base_url || (preset.fixedBaseUrl ? preset.baseUrl : enteredBaseUrl),
+    native_options: {
+      explicit_cache: document.getElementById('mm-explicit-cache').checked,
+      responses_additional_tools: document.getElementById('mm-additional-tools').checked,
+      anthropic_deferred_tools: document.getElementById('mm-deferred-tools').checked,
+    },
   };
   if (credentialSource) body.credential_source_model = credentialSource;
   const targetTier = stayOpen ? null : _modelTargetTier;
@@ -2347,7 +2366,12 @@ async function saveModelFromModal(stayOpen) {
     if (targetTier) {
       await api('PUT','/tiers/'+targetTier, {model_name:name});
     }
-    showToast('模型已保存');
+    showToast(result.native_options_reset ? '模型已保存；接口已改变，原生能力已关闭' : '模型已保存');
+    if (result.native_options_reset) {
+      for (const id of ['mm-explicit-cache', 'mm-additional-tools', 'mm-deferred-tools']) {
+        document.getElementById(id).checked = false;
+      }
+    }
     if (!stayOpen) {
       closeModelModal();
       loaded.settings = false;

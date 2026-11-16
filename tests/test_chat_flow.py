@@ -122,7 +122,7 @@ async def test_delivery_history_becomes_background_for_the_next_activation(mock_
         tool["function"]["name"] for tool in client.call_log[0]["tools"]
     }
     assert [item["role"] for item in messages] == [
-        "system", "user", "user", "assistant", "user", "user",
+        "system", "user", "user", "assistant", "system", "user", "user",
     ]
     assert summary in messages[1]["content"]
     assert source_time[:16].replace("T", " ") in messages[1]["content"]
@@ -150,13 +150,16 @@ async def test_delivery_history_becomes_background_for_the_next_activation(mock_
     await chat(runtime_entry=entry)
     assert len(client.call_log) == 2
     messages = client.call_log[1]["messages"]
-    assert [item["role"] for item in messages] == ["system", "user"]
+    assert [item["role"] for item in messages] == [
+        "system", "user", "user", "system", "user", "user",
+    ]
     assert entry.intent in messages[-1]["content"]
     assert entry.scheduled_for in messages[-1]["content"]
     assert entry.intent not in messages[0]["content"]
-    assert summary in messages[0]["content"]
+    assert summary in messages[1]["content"]
+    assert sum(summary in item["content"] for item in messages) == 1
     assert next(fact for fact in _receipt_facts(messages) if "reads" in fact) == folded
-    records = json.loads(messages[0]["content"].split(
+    records = json.loads(messages[2]["content"].split(
         '<recent_completed_turns role="read_only_evidence">\n', 1,
     )[1].split("\n</recent_completed_turns>", 1)[0])
     assert records == [

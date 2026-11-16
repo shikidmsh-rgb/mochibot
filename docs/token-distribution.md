@@ -37,6 +37,13 @@ encrypted reasoning and unclassified blocks have sizes but no invented token
 count. `totals.uncounted_parts` makes this visible. Message role framing and
 other provider-internal overhead are not counted.
 
+SDK `extra_body` input overrides are measured as the effective request, once.
+Responses `additional_tools` schemas are attributed at their inline positions;
+Anthropic native tool references are counted separately from their schemas.
+Deferred schemas describe bytes sent to the provider, not a claim that every
+schema has entered model context or been billed. Cache policy fingerprints also
+retain native Anthropic cache settings and the requested tool beta.
+
 `provider_usage` preserves the usage object reported for that exact attempt.
 Input/output, cache and reasoning counters remain separate fields in their
 native provider convention; nested counters must not be added to their parent

@@ -312,6 +312,7 @@ def init_db() -> None:
             model      TEXT NOT NULL,
             api_key    TEXT NOT NULL DEFAULT '',
             base_url   TEXT NOT NULL DEFAULT '',
+            native_options TEXT NOT NULL DEFAULT '{}',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -414,6 +415,7 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
     _add_col("messages", "reasoning_source", "TEXT NOT NULL DEFAULT ''")
     _add_col("runtime_traces", "facts_json", "TEXT DEFAULT NULL")
     _add_col("tool_executions", "result_json", "TEXT DEFAULT NULL")
+    _add_col("model_registry", "native_options", "TEXT NOT NULL DEFAULT '{}'")
 
     # memory_items
     _add_col("memory_items", "access_count", "INTEGER NOT NULL DEFAULT 0")

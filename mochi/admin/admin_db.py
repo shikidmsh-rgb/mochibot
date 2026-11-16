@@ -5,6 +5,7 @@ preferences; internal values remain registered for typed legacy overrides.
 """
 
 import logging
+import json
 import os
 import re
 from datetime import datetime
@@ -33,10 +34,8 @@ def _normalize_base_url(base_url: str) -> str:
 def _is_supported_model(provider: str, base_url: str) -> bool:
     provider = (provider or "").strip().lower()
     normalized = _normalize_base_url(base_url)
-    if provider == "anthropic":
-        return not normalized
-    if provider != "openai" or not normalized:
-        return provider == "openai"
+    if provider not in _VALID_PROVIDERS or not normalized:
+        return provider in _VALID_PROVIDERS
     if re.search(r"[\x00-\x1f\x7f]", normalized):
         return False
     try:
@@ -52,7 +51,7 @@ def _is_supported_model(provider: str, base_url: str) -> bool:
             and parsed.password is None
             and not parsed.query
             and not parsed.fragment
-            and not parsed.path.rstrip("/").lower().endswith("/chat/completions")
+            and not parsed.path.rstrip("/").lower().endswith(("/chat/completions", "/messages"))
         )
     except ValueError:
         return False
@@ -66,13 +65,14 @@ def list_models(*, mask_keys: bool = True) -> list[dict]:
     """List all model registry entries."""
     conn = _connect()
     rows = conn.execute(
-        "SELECT name, provider, model, api_key, base_url, created_at, updated_at "
+        "SELECT name, provider, model, api_key, base_url, native_options, created_at, updated_at "
         "FROM model_registry ORDER BY name"
     ).fetchall()
     conn.close()
     result = []
     for r in rows:
         d = dict(r)
+        d["native_options"] = json.loads(d["native_options"])
         if mask_keys and d.get("api_key"):
             d["api_key"] = "***"
             d["api_key_set"] = True
@@ -90,7 +90,7 @@ def get_model(name: str, *, mask_key: bool = False) -> dict | None:
     """Get a single model registry entry."""
     conn = _connect()
     row = conn.execute(
-        "SELECT name, provider, model, api_key, base_url, created_at, updated_at "
+        "SELECT name, provider, model, api_key, base_url, native_options, created_at, updated_at "
         "FROM model_registry WHERE name = ?",
         (name,),
     ).fetchone()
@@ -98,6 +98,7 @@ def get_model(name: str, *, mask_key: bool = False) -> dict | None:
     if not row:
         return None
     d = dict(row)
+    d["native_options"] = json.loads(d["native_options"])
     if mask_key:
         d["api_key_set"] = bool(d.get("api_key"))
         d["api_key"] = "***" if d.get("api_key") else ""
@@ -107,7 +108,8 @@ def get_model(name: str, *, mask_key: bool = False) -> dict | None:
 
 
 def upsert_model(name: str, provider: str, model: str,
-                 api_key: str, base_url: str = "") -> None:
+                 api_key: str, base_url: str = "",
+                 native_options: dict | None = None) -> bool:
     """Create or update a model registry entry.
 
     Pass api_key='__KEEP__' to preserve the existing key on update.
@@ -116,33 +118,45 @@ def upsert_model(name: str, provider: str, model: str,
         raise ValueError(f"Invalid provider: {provider!r}")
     if not _is_supported_model(provider, base_url):
         raise ValueError(
-            "Invalid endpoint. OpenAI-compatible Base URL must be an HTTPS API "
-            "root without credentials, query, fragment, or /chat/completions. "
-            "Anthropic uses its official API without a Base URL."
+            "Invalid endpoint. Base URL must be an HTTPS API root without "
+            "credentials, query, fragment, /chat/completions, or /messages."
         )
+    from mochi.llm import validate_native_options
+    from mochi.native_payload import NativeOptions
+    options = NativeOptions.from_dict(native_options)
+    base_url = _normalize_base_url(base_url)
+    model = model.strip()
     now = datetime.now(TZ).isoformat()
     conn = _connect()
-
-    if api_key == __KEEP__:
+    try:
         existing = conn.execute(
-            "SELECT api_key FROM model_registry WHERE name = ?", (name,)
+            "SELECT provider, model, base_url, api_key FROM model_registry WHERE name = ?", (name,)
         ).fetchone()
-        api_key = existing["api_key"] if existing else ""
-        # Already encrypted in DB — don't re-encrypt
-    else:
-        api_key = encrypt_api_key(api_key)
-
-    conn.execute(
-        "INSERT INTO model_registry (name, provider, model, api_key, base_url, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?) "
-        "ON CONFLICT(name) DO UPDATE SET "
-        "provider=excluded.provider, model=excluded.model, api_key=excluded.api_key, "
-        "base_url=excluded.base_url, updated_at=excluded.updated_at",
-        (name, provider, model, api_key, base_url, now, now),
-    )
-    conn.commit()
-    conn.close()
+        reset = bool(existing and (
+            existing["provider"], existing["model"], _normalize_base_url(existing["base_url"])
+        ) != (provider, model, base_url) and any(options.to_dict().values()))
+        if reset:
+            options = NativeOptions()
+            log.info("Cleared native options after model endpoint changed: %s", name)
+        validate_native_options(provider, model, options)
+        if api_key == __KEEP__:
+            api_key = existing["api_key"] if existing else ""
+        else:
+            api_key = encrypt_api_key(api_key)
+        conn.execute(
+            "INSERT INTO model_registry "
+            "(name, provider, model, api_key, base_url, native_options, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(name) DO UPDATE SET "
+            "provider=excluded.provider, model=excluded.model, api_key=excluded.api_key, "
+            "base_url=excluded.base_url, native_options=excluded.native_options, updated_at=excluded.updated_at",
+            (name, provider, model, api_key, base_url, json.dumps(options.to_dict()), now, now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
     log.info("Upserted model: %s (provider=%s, model=%s)", name, provider, model)
+    return reset
 
 
 def delete_model(name: str) -> bool:
@@ -259,6 +273,7 @@ def get_tier_effective_config() -> dict[str, dict]:
                     "provider": model_entry["provider"],
                     "model": model_entry["model"],
                     "base_url": model_entry["base_url"],
+                    "native_options": model_entry["native_options"],
                     "api_key": model_entry["api_key"],
                     "api_key_set": bool(model_entry["api_key"]),
                     "assigned_name": assignments[tier],
