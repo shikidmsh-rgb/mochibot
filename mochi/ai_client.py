@@ -194,7 +194,7 @@ def _retrieve_memories_for_turn(text: str, user_id: int) -> list[dict]:
         MEMORY_AUTO_RECALL_COOLDOWN,
     )
 
-    if not MEMORY_AUTO_RECALL or not user_id or not text or not text.strip():
+    if not MEMORY_AUTO_RECALL or not text or not text.strip():
         return []
 
     try:
