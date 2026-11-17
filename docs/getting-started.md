@@ -37,10 +37,10 @@ MochiBot 由 AI API 驱动，目前支持以下 Provider：
 默认安装[最新正式版](https://github.com/shikidmsh-rgb/mochibot/releases/latest)，两种方式任选其一：
 
 - **ZIP**：打开正式版页面，在 **Assets** 中下载 **Source code (zip)**，解压。
-- **Git**：安装 [Git](https://git-scm.com/downloads)，按 Release 页的版本标签下载。需要聊天自助更新时使用此方式。以下以 `v1.0.23` 为例，发布新版后替换标签：
+- **Git**：安装 [Git](https://git-scm.com/downloads)，按 Release 页的版本标签下载。需要聊天自助更新时使用此方式。以下以 `v1.0.24` 为例，发布新版后替换标签：
 
 ```bash
-git clone --branch v1.0.23 https://github.com/shikidmsh-rgb/mochibot.git
+git clone --branch v1.0.24 https://github.com/shikidmsh-rgb/mochibot.git
 cd mochibot
 ```
 
@@ -157,11 +157,11 @@ core是最重要的agent核心！！！虽然他自己也会写但是靠谱度�
 手动更新步骤：
 
 1. 完整退出，备份 `data` 和 `.env`，确认没有未提交的源码改动。
-2. 打开[最新正式版](https://github.com/shikidmsh-rgb/mochibot/releases/latest)，确认目标版本标签，在项目目录执行以下命令。将示例中的 `v1.0.23` 替换为目标标签：
+2. 打开[最新正式版](https://github.com/shikidmsh-rgb/mochibot/releases/latest)，确认目标版本标签，在项目目录执行以下命令。将示例中的 `v1.0.24` 替换为目标标签：
 
 ```bash
-git fetch origin tag v1.0.23
-git checkout --detach v1.0.23
+git fetch origin tag v1.0.24
+git checkout --detach v1.0.24
 ```
 
 3. Windows 运行 `setup.bat`，macOS / Linux 运行 `bash setup.sh`，安装依赖并启动。
