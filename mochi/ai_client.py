@@ -1477,6 +1477,7 @@ async def _chat(
         "habit_context": habit_progress_context,
         "tools": list(availability.names),
         "message_roles": [item["role"] for item in messages],
+        "native_optimizations": client.native_options.to_dict() if main_turn is not None else None,
     })
 
     # ── LLM call with tool loop ──

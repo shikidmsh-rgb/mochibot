@@ -180,11 +180,15 @@ tests and import extraction use the same configured adapter. No runtime probing
 or protocol failover changes the user's selection. Introducing the protocol field
 records existing effective routes once without changing credentials or tier assignments.
 
-Native cache and tool capabilities are opt-in properties of a model registration,
-captured by the provider for each Main turn. Model and endpoint edits retain the
-user's choices. Validation rejects only options incompatible with the selected
-protocol, not unknown model names. The UI explicitly removes inapplicable options
-when the user changes protocol. They never affect Lite or select another model.
+Native cache and tool optimizations default on for their applicable protocol:
+Responses uses explicit caching and appended tools; Anthropic uses history caching
+and deferred tools. Missing options, including an empty saved object, inherit these
+defaults; explicit false values remain off. One resolver supplies effective values
+to Admin and provider construction, so displayed defaults are actual runtime settings.
+Providers capture them for each Main turn. Model and endpoint edits retain the
+user's choices. Validation rejects only protocol-incompatible options, not unknown
+model names. The UI retains advanced compatibility controls and a restore-defaults
+action. These optimizations never affect Lite or select another model.
 `mochi/native_payload.py` owns only native request representation, not tool
 selection, permissions or execution. It covers authorized owner chat, Free Time
 and Self Reminders; Bedtime and Dream retain their ordinary provider path.
@@ -202,13 +206,16 @@ response blocks, including thinking signatures. No synthetic call chain or
 persisted schema history is introduced.
 
 Execution still checks current `ToolAvailability`, even when a native request
-retains an earlier declaration. New catalog entries can cause a cache miss;
-changing a declared schema during an opted-in turn fails explicitly rather than
-misrepresenting the schema. Tool-disabled final requests keep the native catalog
+retains an earlier declaration. New catalog entries can cause a cache miss.
+Legitimate schema updates refresh the native catalog: Responses rebuilds its tool
+declaration projection from the current definitions, while Anthropic updates its
+top-level definitions. Original messages and execution results remain unchanged;
+cache reuse never blocks an authorized extension update. Tool-disabled final requests keep the native catalog
 and disable tool choice. Endpoint acceptance and savings require real provider
 evidence, not a model name, a connection test or client-side prefix equality.
-These options are independent and off by default; rejection never silently
-falls back to a different protocol.
+Explicit compatibility overrides remain independent; rejection never silently
+falls back to a different protocol. Human-only context-ready evidence records the
+options actually applied to that run, independently of provider-reported cache hits.
 
 Once per logical day, during awake hours, the first owner chat turn or Free
 Time run — whichever comes first — also carries a "new day" look at the last

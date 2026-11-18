@@ -18,6 +18,7 @@ from mochi.config import (
 from mochi.db import _connect
 from mochi.admin.admin_crypto import encrypt_api_key, decrypt_api_key, is_encrypted
 from mochi.llm import MODEL_PROTOCOL_PROVIDERS
+from mochi.native_payload import NativeOptions
 
 log = logging.getLogger(__name__)
 
@@ -77,7 +78,9 @@ def list_models(*, mask_keys: bool = True) -> list[dict]:
     result = []
     for r in rows:
         d = dict(r)
-        d["native_options"] = json.loads(d["native_options"])
+        d["native_options"] = NativeOptions.from_dict(
+            json.loads(d["native_options"]), api_protocol=d["api_protocol"],
+        ).to_dict()
         if mask_keys and d.get("api_key"):
             d["api_key"] = "***"
             d["api_key_set"] = True
@@ -103,7 +106,9 @@ def get_model(name: str, *, mask_key: bool = False) -> dict | None:
     if not row:
         return None
     d = dict(row)
-    d["native_options"] = json.loads(d["native_options"])
+    d["native_options"] = NativeOptions.from_dict(
+        json.loads(d["native_options"]), api_protocol=d["api_protocol"],
+    ).to_dict()
     if mask_key:
         d["api_key_set"] = bool(d.get("api_key"))
         d["api_key"] = "***" if d.get("api_key") else ""
@@ -128,7 +133,6 @@ def upsert_model(name: str, provider: str, model: str,
             "credentials, query, fragment, /chat/completions, /responses, or /messages."
         )
     from mochi.llm import validate_native_options
-    from mochi.native_payload import NativeOptions
     base_url = _normalize_base_url(base_url)
     model = model.strip()
     now = datetime.now(TZ).isoformat()
@@ -139,7 +143,8 @@ def upsert_model(name: str, provider: str, model: str,
         ).fetchone()
         options = NativeOptions.from_dict(
             json.loads(existing["native_options"])
-            if native_options is None and existing else native_options
+            if native_options is None and existing else native_options,
+            api_protocol=api_protocol,
         )
         validate_native_options(provider, api_protocol, options)
         if api_key == __KEEP__:

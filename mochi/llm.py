@@ -110,7 +110,7 @@ class ResponsesCacheContext:
 class LLMProvider(ABC):
     """Abstract base class for LLM providers."""
 
-    native_options = NativeOptions()
+    native_options = NativeOptions(False, False, False)
 
     def start_main_turn(
         self, messages: list[dict], tools: list[dict], *, identity: str,
@@ -981,7 +981,7 @@ def _make_client(
         raise ValueError(
             "Model name is required. Configure it in the admin portal."
         )
-    options = NativeOptions.from_dict(native_options)
+    options = NativeOptions.from_dict(native_options, api_protocol=api_protocol)
     validate_native_options(provider, api_protocol, options)
     if provider == "openai":
         client = OpenAIProvider(

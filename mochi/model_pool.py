@@ -216,8 +216,8 @@ class ModelPool:
             self._tiers[tier] = client
             self._tier_models[tier] = model
         log.info(
-            "Hot-reloaded tier '%s': provider=%s protocol=%s model=%s",
-            tier, provider, api_protocol, model,
+            "Hot-reloaded tier '%s': provider=%s protocol=%s model=%s native_options=%s",
+            tier, provider, api_protocol, model, client.native_options.to_dict(),
         )
 
     def clear_tier(self, tier: str) -> None:

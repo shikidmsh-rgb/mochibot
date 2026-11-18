@@ -3,24 +3,35 @@
 from copy import deepcopy
 from dataclasses import asdict, dataclass
 import json
+import logging
+
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
 class NativeOptions:
-    explicit_cache: bool = False
-    responses_additional_tools: bool = False
-    anthropic_deferred_tools: bool = False
+    explicit_cache: bool
+    responses_additional_tools: bool
+    anthropic_deferred_tools: bool
 
     @classmethod
-    def from_dict(cls, value: dict | None) -> "NativeOptions":
+    def from_dict(cls, value: dict | None, *, api_protocol: str) -> "NativeOptions":
+        if not isinstance(api_protocol, str):
+            raise ValueError("API protocol must be a string")
         if value is None:
-            return cls()
+            value = {}
         if not isinstance(value, dict):
             raise ValueError("Native options must be an object")
         known = cls.__dataclass_fields__
         if any(key not in known or not isinstance(item, bool) for key, item in value.items()):
             raise ValueError("Native options require known boolean fields")
-        return cls(**value)
+        defaults = {
+            "explicit_cache": api_protocol in {"responses", "messages"},
+            "responses_additional_tools": api_protocol == "responses",
+            "anthropic_deferred_tools": api_protocol == "messages",
+        }
+        return cls(**{**defaults, **value})
 
     def to_dict(self) -> dict[str, bool]:
         return asdict(self)
@@ -58,9 +69,15 @@ class ResponsesTurn:
         if self.options.responses_additional_tools:
             if tools is not None:
                 definitions = {tool["name"]: tool for tool in _responses_tools(tools)}
-                for name, definition in definitions.items():
-                    if name in self.declared and self.declared[name] != definition:
-                        raise ValueError(f"Responses tool changed during an active turn: {name}")
+                changed = [
+                    name for name, tool in definitions.items()
+                    if name in self.declared and self.declared[name] != tool
+                ]
+                if changed:
+                    log.info("Refreshing Responses tool catalog after schema changes: %s", changed)
+                    self.base = deepcopy(list(definitions.values()))
+                    self.declared = deepcopy(definitions)
+                    self.declarations.clear()
                 additions = [
                     tool for name, tool in definitions.items() if name not in self.declared
                 ]
@@ -133,7 +150,8 @@ class AnthropicTurn:
                     if old is None:
                         self.tools.append({**deepcopy(tool), "defer_loading": True})
                     elif {k: v for k, v in old.items() if k != "defer_loading"} != tool:
-                        raise ValueError(f"Anthropic tool changed during an active turn: {tool['name']}")
+                        log.info("Refreshing Anthropic tool schema: %s", tool["name"])
+                        old.update(deepcopy(tool))
             else:
                 self.tools = available
         system = [

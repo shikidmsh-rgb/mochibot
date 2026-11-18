@@ -297,13 +297,14 @@ select.form-input { cursor:pointer; }
       <div style="font-size:11px;color:var(--text-soft);margin-top:4px">复制 API Key、Base URL 和接口类型；保存后与来源模型互不联动。</div>
     </div>
     <div class="form-group" id="mm-baseurl-group"><label class="form-label">Base URL（可选）</label><input class="form-input" id="mm-baseurl" placeholder="https://..."><div id="mm-baseurl-help" style="display:none;font-size:11px;color:var(--text-soft);margin-top:4px"></div></div>
-    <div class="form-group" id="mm-native-options">
-      <label class="form-label">Main 可选增强</label>
-      <label style="display:block" data-native-protocols="responses messages"><input type="checkbox" id="mm-explicit-cache"> <span id="mm-cache-label">显式缓存</span></label>
-      <label style="display:block" data-native-protocols="responses"><input type="checkbox" id="mm-additional-tools"> Responses 追加工具声明</label>
-      <label style="display:block" data-native-protocols="messages"><input type="checkbox" id="mm-deferred-tools"> Claude 原生延迟工具</label>
-      <div style="font-size:11px;color:var(--text-soft);margin-top:4px">独立开关，仅作用于 Main。按服务商支持情况开启；连通测试不验证增强能力。更换模型或地址不自动清空，切换协议只保留适用选项。</div>
-    </div>
+    <details class="form-group" id="mm-native-options">
+      <summary class="form-label" id="mm-native-summary">缓存与工具优化已开启（高级兼容选项）</summary>
+      <label style="display:block" data-native-protocols="responses messages"><input type="checkbox" id="mm-explicit-cache" onchange="updateNativeOptionsSummary()"> <span id="mm-cache-label">显式缓存</span></label>
+      <label style="display:block" data-native-protocols="responses"><input type="checkbox" id="mm-additional-tools" onchange="updateNativeOptionsSummary()"> Responses 追加工具声明</label>
+      <label style="display:block" data-native-protocols="messages"><input type="checkbox" id="mm-deferred-tools" onchange="updateNativeOptionsSummary()"> Claude 原生延迟工具</label>
+      <div style="font-size:11px;color:var(--text-soft);margin-top:4px">按接口类型默认开启，用于 Main 聊天、Free Time 和 Self Reminder。兼容接口不支持时，可关闭相应项，不影响服务商自身的自动缓存。明确关闭的选择会保留；连通测试不代表实际缓存命中。</div>
+      <button class="btn btn-ghost btn-sm" type="button" onclick="useDefaultNativeOptions()">使用默认优化</button>
+    </details>
     <div id="mm-test-result" style="font-size:13px;margin-top:8px"></div>
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="closeModelModal()">取消</button>
@@ -2041,6 +2042,7 @@ let _modelTargetTier = null;
 let _modelCredentialSources = [];
 let _lastAutoBaseUrl = '';  // tracks auto-filled base_url to detect manual edits
 let _lastAutoModel = '';
+let _modelOptionsProtocol = null;
 
 async function loadAdvanced() {
   const el = document.getElementById('advanced-content');
@@ -2259,18 +2261,41 @@ function onProtocolChange() {
   const group = document.getElementById('mm-native-options');
   let cleared = false;
   for (const label of group.querySelectorAll('[data-native-protocols]')) {
-    const applicable = label.dataset.nativeProtocols.split(' ').includes(protocol);
+    const protocols = label.dataset.nativeProtocols.split(' ');
+    const applicable = protocols.includes(protocol);
+    const wasApplicable = protocols.includes(_modelOptionsProtocol);
     label.style.display = applicable ? 'block' : 'none';
     const checkbox = label.querySelector('input');
+    if (applicable && !wasApplicable) checkbox.checked = true;
     if (!applicable && checkbox.checked) {
       checkbox.checked = false;
       cleared = true;
     }
   }
-  group.style.display = protocol === 'chat_completions' ? 'none' : '';
+  group.style.display = ['responses', 'messages'].includes(protocol) ? '' : 'none';
   document.getElementById('mm-cache-label').textContent = protocol === 'messages'
     ? 'Claude 原生历史缓存（5 分钟）' : 'Responses 显式缓存边界';
+  _modelOptionsProtocol = protocol;
+  updateNativeOptionsSummary();
   if (cleared) showToast('已关闭当前接口类型不适用的增强选项');
+}
+
+function updateNativeOptionsSummary() {
+  const protocol = document.getElementById('mm-api-protocol').value;
+  const labels = [...document.querySelectorAll('#mm-native-options [data-native-protocols]')]
+    .filter(label => label.dataset.nativeProtocols.split(' ').includes(protocol));
+  const enabled = labels.filter(label => label.querySelector('input').checked).length;
+  document.getElementById('mm-native-summary').textContent = enabled > 0 && enabled === labels.length
+    ? '缓存与工具优化已开启（高级兼容选项）'
+    : enabled ? '部分缓存与工具优化已关闭（高级兼容选项）' : '缓存与工具优化已关闭（高级兼容选项）';
+}
+
+function useDefaultNativeOptions() {
+  const protocol = document.getElementById('mm-api-protocol').value;
+  for (const label of document.querySelectorAll('#mm-native-options [data-native-protocols]')) {
+    label.querySelector('input').checked = label.dataset.nativeProtocols.split(' ').includes(protocol);
+  }
+  updateNativeOptionsSummary();
 }
 
 function onCredentialSourceChange() {
@@ -2324,6 +2349,8 @@ function openModelModal(name, targetTier) {
   _modelCredentialSources = [];
   _lastAutoBaseUrl = '';
   _lastAutoModel = '';
+  _modelOptionsProtocol = null;
+  document.getElementById('mm-native-options').open = false;
   document.getElementById('model-modal-title').textContent = name ? '编辑模型' : '添加模型';
   document.getElementById('mm-name').value = name || '';
   document.getElementById('mm-name').disabled = !!name;
@@ -2358,11 +2385,12 @@ function openModelModal(name, targetTier) {
         _lastAutoModel = '';
         document.getElementById('mm-baseurl').value = m.base_url || '';
         document.getElementById('mm-api-protocol').value = m.api_protocol;
-        const options = m.native_options || {};
+        onProtocolChange();
+        const options = m.native_options;
         document.getElementById('mm-explicit-cache').checked = options.explicit_cache === true;
         document.getElementById('mm-additional-tools').checked = options.responses_additional_tools === true;
         document.getElementById('mm-deferred-tools').checked = options.anthropic_deferred_tools === true;
-        onProtocolChange();
+        updateNativeOptionsSummary();
       }
     }
     refreshCredentialSources();

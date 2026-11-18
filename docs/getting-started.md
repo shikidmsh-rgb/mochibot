@@ -37,10 +37,10 @@ MochiBot 由 AI API 驱动，目前支持以下 Provider：
 默认安装[最新正式版](https://github.com/shikidmsh-rgb/mochibot/releases/latest)，两种方式任选其一：
 
 - **ZIP**：打开正式版页面，在 **Assets** 中下载 **Source code (zip)**，解压。
-- **Git**：安装 [Git](https://git-scm.com/downloads)，按 Release 页的版本标签下载。需要聊天自助更新时使用此方式。以下以 `v1.0.24` 为例，发布新版后替换标签：
+- **Git**：安装 [Git](https://git-scm.com/downloads)，按 Release 页的版本标签下载。需要聊天自助更新时使用此方式。以下以 `v1.0.25` 为例，发布新版后替换标签：
 
 ```bash
-git clone --branch v1.0.24 https://github.com/shikidmsh-rgb/mochibot.git
+git clone --branch v1.0.25 https://github.com/shikidmsh-rgb/mochibot.git
 cd mochibot
 ```
 
@@ -65,9 +65,13 @@ cd mochibot
 Main 负责对话、判断和行动，以及 Core、记忆与关系的整理；Lite 负责分类、摘要和记忆提取。
 
 接口类型按服务商文档选择 Chat Completions、Responses 或 Claude 原生 Messages，
-不根据模型名字猜测。同接口换型号无需改代码；原有协议和增强开关会保留。
+不根据模型名字猜测。同接口换型号无需改代码；原有协议和明确设置的增强开关会保留。
 复制已有模型凭据时，也会带上其地址和接口类型，之后可独立调整。
 「测试」只调用所选接口，不自动尝试其他协议，也不验证可选缓存与工具增强。
+
+Responses／Claude 的适用缓存与工具复用优化默认开启，未配置这些选项的旧模型也采用默认值。
+明确关闭的选择不会被覆盖；需要重新启用时，在模型编辑的高级兼容选项中点击「使用默认优化」并保存。
+若兼容接口不支持某项扩展，可单独关闭，不需要换模型或协议。
 
 ### 消息平台
 
@@ -157,11 +161,11 @@ core是最重要的agent核心！！！虽然他自己也会写但是靠谱度�
 手动更新步骤：
 
 1. 完整退出，备份 `data` 和 `.env`，确认没有未提交的源码改动。
-2. 打开[最新正式版](https://github.com/shikidmsh-rgb/mochibot/releases/latest)，确认目标版本标签，在项目目录执行以下命令。将示例中的 `v1.0.24` 替换为目标标签：
+2. 打开[最新正式版](https://github.com/shikidmsh-rgb/mochibot/releases/latest)，确认目标版本标签，在项目目录执行以下命令。将示例中的 `v1.0.25` 替换为目标标签：
 
 ```bash
-git fetch origin tag v1.0.24
-git checkout --detach v1.0.24
+git fetch origin tag v1.0.25
+git checkout --detach v1.0.25
 ```
 
 3. Windows 运行 `setup.bat`，macOS / Linux 运行 `bash setup.sh`，安装依赖并启动。
